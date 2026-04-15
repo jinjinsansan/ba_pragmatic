@@ -191,16 +191,20 @@ class Collector:
         ws.on("framereceived", handler)
         ws.on("close", lambda: logger.warning(f"[WS CLOSE] {url}"))
 
-    def run(self, duration: int | None = None, profile_dir: Path | None = None):
+    def run(self, duration: int | None = None, profile_dir: Path | None = None,
+            cookies_file: Path | None = None):
+        import json as _json
         init_db()
         profile = profile_dir or DEFAULT_PROFILE
-        # 初回起動時: LAPLACE側のログイン済みプロファイルをコピーして独立プロファイル作成
-        if not profile.exists():
-            if not SOURCE_PROFILE.exists():
-                logger.error(f"Source profile not found: {SOURCE_PROFILE}")
-                return 1
+        profile.mkdir(parents=True, exist_ok=True)
+
+        # 初回起動で profile が空ならソースからコピー (ローカル開発時のみ)
+        is_empty = not any(profile.iterdir())
+        if is_empty and SOURCE_PROFILE.exists():
             logger.info(f"Cloning profile {SOURCE_PROFILE} -> {profile}")
             import shutil
+            # rmdir first then copytree
+            profile.rmdir()
             shutil.copytree(str(SOURCE_PROFILE), str(profile))
         logger.info(f"DB initialized. Profile: {profile}")
 
@@ -224,6 +228,16 @@ class Collector:
         with Camoufox(**launch_opts) as ctx:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.on("websocket", self._on_ws)
+
+            # VPS 運用パターン: stake_cookies.json があれば復元
+            if cookies_file and cookies_file.exists():
+                try:
+                    with open(cookies_file) as cf:
+                        cookies = _json.load(cf)
+                    ctx.add_cookies(cookies)
+                    logger.info(f"Restored {len(cookies)} cookies from {cookies_file}")
+                except Exception as e:
+                    logger.warning(f"Cookie restore failed: {e}")
 
             logger.info(f"Navigating to {LOBBY_URL}")
             page.goto(LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
@@ -262,11 +276,13 @@ def main():
     parser.add_argument("--duration", type=int, help="指定秒数で自動停止 (テスト用)")
     parser.add_argument("--raw-log", action="store_true", help="全WSメッセージをDBに記録 (デバッグ用)")
     parser.add_argument("--profile", type=str, help="Camoufoxプロファイルパス (デフォルト: auth_state/camoufox_profile_collector)")
+    parser.add_argument("--cookies", type=str, help="stake_cookies.json パス (VPS運用: 起動時にcookie復元)")
     args = parser.parse_args()
 
     c = Collector(headless=args.headless, raw_log=args.raw_log)
     profile = Path(args.profile) if args.profile else None
-    return c.run(duration=args.duration, profile_dir=profile)
+    cookies = Path(args.cookies) if args.cookies else None
+    return c.run(duration=args.duration, profile_dir=profile, cookies_file=cookies)
 
 
 if __name__ == "__main__":
