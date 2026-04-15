@@ -60,6 +60,7 @@ debug_*.py
 
 # LAPLACE2: Pragmatic R&D ツールは追跡する
 !capture_pragmatic.py
+!capture_pragmatic_table.py
 
 # Claude Code cache
 .claude/

@@ -37,7 +37,9 @@ from camoufox.sync_api import Camoufox  # type: ignore
 from analytics_pragmatic_db import init_db, save_shoe, log_raw, stats
 
 LOBBY_URL = "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat"
-PROFILE_DIR = BA_ROOT / "auth_state" / "camoufox_profile"
+# 収集器専用のCamoufoxプロファイル (LAPLACE Evolution側と競合しないよう分離)
+DEFAULT_PROFILE = Path(__file__).parent / "auth_state" / "camoufox_profile_collector"
+SOURCE_PROFILE = BA_ROOT / "auth_state" / "camoufox_profile"
 PRAGMATIC_WS_PATTERN = "dga.pragmaticplaylive.net"
 
 # 最小有効シュー長 (これ未満ならゴミとみなしスキップ)
@@ -189,18 +191,23 @@ class Collector:
         ws.on("framereceived", handler)
         ws.on("close", lambda: logger.warning(f"[WS CLOSE] {url}"))
 
-    def run(self, duration: int | None = None):
+    def run(self, duration: int | None = None, profile_dir: Path | None = None):
         init_db()
-        logger.info(f"DB initialized. Profile: {PROFILE_DIR}")
-
-        if not PROFILE_DIR.exists():
-            logger.error(f"Camoufox profile not found: {PROFILE_DIR}")
-            return 1
+        profile = profile_dir or DEFAULT_PROFILE
+        # 初回起動時: LAPLACE側のログイン済みプロファイルをコピーして独立プロファイル作成
+        if not profile.exists():
+            if not SOURCE_PROFILE.exists():
+                logger.error(f"Source profile not found: {SOURCE_PROFILE}")
+                return 1
+            logger.info(f"Cloning profile {SOURCE_PROFILE} -> {profile}")
+            import shutil
+            shutil.copytree(str(SOURCE_PROFILE), str(profile))
+        logger.info(f"DB initialized. Profile: {profile}")
 
         launch_opts = {
             "headless": self.headless,
             "persistent_context": True,
-            "user_data_dir": str(PROFILE_DIR),
+            "user_data_dir": str(profile),
         }
 
         def on_signal(signum, frame):
@@ -254,10 +261,12 @@ def main():
     parser.add_argument("--headless", action="store_true", help="ヘッドレスモードで起動")
     parser.add_argument("--duration", type=int, help="指定秒数で自動停止 (テスト用)")
     parser.add_argument("--raw-log", action="store_true", help="全WSメッセージをDBに記録 (デバッグ用)")
+    parser.add_argument("--profile", type=str, help="Camoufoxプロファイルパス (デフォルト: auth_state/camoufox_profile_collector)")
     args = parser.parse_args()
 
     c = Collector(headless=args.headless, raw_log=args.raw_log)
-    return c.run(duration=args.duration)
+    profile = Path(args.profile) if args.profile else None
+    return c.run(duration=args.duration, profile_dir=profile)
 
 
 if __name__ == "__main__":
