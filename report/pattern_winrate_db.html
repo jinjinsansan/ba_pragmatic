@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>V. 大路パターン × 逆張り勝率 データベース</title>
+<style>
+* { box-sizing: border-box; }
+body { font-family: -apple-system, "Segoe UI", sans-serif; background: #0f1419; color: #e0e6ed; margin: 0; padding: 24px; line-height: 1.5; }
+.container { max-width: 1400px; margin: 0 auto; }
+h1 { color: #ffd700; font-size: 28px; border-bottom: 2px solid #ffd700; padding-bottom: 8px; }
+h2 { color: #c084fc; margin-top: 32px; font-size: 22px; }
+h3 { color: #6dd5ed; margin-top: 20px; }
+.nav { margin: 16px 0 24px; }
+.nav a { display: inline-block; margin-right: 12px; padding: 8px 16px; background: #1a2332; color: #6dd5ed; text-decoration: none; border-radius: 4px; border: 1px solid #2a3441; font-size: 13px; }
+.banner { background: #1a2a1a; border-left: 5px solid #4ade80; padding: 14px 18px; margin: 16px 0; font-size: 14px; border-radius: 4px; line-height: 1.8; }
+.banner strong { color: #4ade80; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 20px 0; }
+.card { background: #1a2332; padding: 14px; border-radius: 4px; border-left: 4px solid #6dd5ed; }
+.card .label { font-size: 11px; color: #8a96a8; text-transform: uppercase; }
+.card .value { font-size: 22px; font-weight: bold; color: #ffd700; }
+.card.profit .value { color: #4ade80; }
+.card.bankrupt .value { color: #f87171; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 16px 0; }
+table th { background: #0f1419; color: #c084fc; padding: 8px; text-align: left; border-bottom: 2px solid #2a3441; }
+table td { padding: 6px 8px; border-bottom: 1px solid #1a2332; }
+table tr:hover { background: rgba(255,255,255,0.03); }
+.note { color: #8a96a8; font-size: 13px; margin: 8px 0; }
+.highlight { background: #11192a; border: 2px solid #4ade80; border-radius: 8px; padding: 16px; margin: 16px 0; }
+.highlight h3 { margin-top: 0; color: #4ade80; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>V. 大路パターン × 逆張り勝率 データベース</h1>
+
+<div class="nav">
+<a href="index.html">← レポートTOP</a>
+<a href="entry_exit_optimization.html">P. 入退室最適化</a>
+<a href="tereko_lifespan_risk.html">S. テレコ寿命リスク</a>
+</div>
+
+<div class="banner">
+<strong>📊 大路罫線のパターンと逆張り勝率の関係をデータベース化。</strong><br>
+全17,240シュー・1,041,409ハンドで、直近N列の大路パターン別に逆張り勝率を計算。<br>
+「どのような大路の形の時に逆張りが当たりやすいか」を可視化。<br>
+<strong>Evolution が大路を変えてきても、このデータベースを更新すれば最新の勝てるパターンがわかる。</strong>
+</div>
+
+<div class="summary">
+  <div class="card"><div class="label">総ハンド数</div><div class="value">1,041,409</div></div>
+  <div class="card profit"><div class="label">逆張り勝率</div><div class="value">49.97%</div></div>
+  <div class="card"><div class="label">勝ち</div><div class="value">520,428</div></div>
+  <div class="card bankrupt"><div class="label">負け</div><div class="value">520,981</div></div>
+</div>
+
+<h2>大路の列長分布</h2>
+<p class="note">全テーブルで出現した列長 (何落ちか) の分布。1落ち (テレコ) が圧倒的に多い。</p>
+
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">1落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:203.5793616023734px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">264,871 (50.9%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">2落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:99.93005756800171px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">130,016 (25.0%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">3落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:48.90974351879607px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">63,635 (12.2%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">4落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:24.06865118709985px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">31,315 (6.0%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">5落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:11.993974190473994px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">15,605 (3.0%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">6落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:5.815982230010683px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">7,567 (1.5%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">7落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:2.8860860676212656px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">3,755 (0.7%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">8落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:1.4149892011959386px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">1,841 (0.4%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">9落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.6940441329059928px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">903 (0.2%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">10落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.3435633747607738px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">447 (0.1%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">11落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.18215776245705456px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">237 (0.0%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">12落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.09300037661309538px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">121 (0.0%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">13落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.04304149661432513px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">56 (0.0%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">14落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.025363739076298738px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">33 (0.0%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">15落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.013066168615062988px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">17 (0.0%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">16落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.003074392615308938px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">4 (0.0%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">17落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.0007685981538272345px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">1 (0.0%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">18落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.001537196307654469px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">2 (0.0%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">19落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.0007685981538272345px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">1 (0.0%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:3px 0;font-size:13px">
+  <div style="min-width:50px">23落ち</div>
+  <div style="flex:1;height:18px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.0007685981538272345px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">1 (0.0%)</div>
+</div>
+
+<h2>短列率 × 逆張り勝率の相関 (10列窓)</h2>
+<p class="note">
+短列率 (1落ち+2落ちの割合) が高いほど逆張り勝率が高い傾向。<br>
+<strong>現在の入室条件 (短列率85%以上) の根拠がここにある。</strong>
+</p>
+
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:13px">
+  <div style="min-width:80px">短列80-90%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:16.151809355692848px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:100px;text-align:right;color:#f87171;font-weight:bold">45.81%</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:13px">
+  <div style="min-width:80px">短列90-100%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:84.92346645183574px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:100px;text-align:right;color:#f87171;font-weight:bold">49.25%</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:13px">
+  <div style="min-width:80px">短列100-110%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:104.08287629494211px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:100px;text-align:right;color:#f87171;font-weight:bold">50.20%</div>
+</div>
+
+<div class="highlight">
+<h3>📌 読み方ガイド</h3>
+<p class="note">
+<strong>パターン</strong>: 直近N列の列長を並べたもの。例: 1-2-1-1-2-1 = 1落ち2落ちの繰り返し (テレコ混合)。<br>
+<strong>短列率</strong>: パターン内の1落ち+2落ちの割合。高いほどテレコ。<br>
+<strong>逆張り勝率</strong>: そのパターンの時に逆張り (前手の逆) でBETした勝率。53%+ が有効。<br>
+<strong>サンプル</strong>: 最低50以上のパターンのみ表示。
+</p>
+</div>
+
+
+<h2>直近 6 列パターン</h2>
+<div class="summary">
+  <div class="card"><div class="label">パターン数</div><div class="value">2359</div></div>
+  <div class="card profit"><div class="label">勝率53%+</div><div class="value">628</div></div>
+  <div class="card" style="border-left-color:#4ade80"><div class="label">勝率55%+</div><div class="value">357</div></div>
+  <div class="card bankrupt"><div class="label">勝率50%未満</div><div class="value">963</div></div>
+</div>
+<p class="note">勝率分布: <span style='color:#4ade80'>55%+: 357 (15%)</span> &nbsp; <span style='color:#4ade80'>53-55%: 271 (11%)</span> &nbsp; <span style='color:#4ade80'>51-53%: 451 (19%)</span> &nbsp; <span style='color:#fbbf24'>50-51%: 317 (13%)</span> &nbsp; <span style='color:#f87171'>50%未満: 963 (41%)</span> &nbsp; </p>
+
+<h3>Top 30 (勝率が高い大路パターン)</h3>
+<p class="note">パターン = 直近6列の列長。例: 1-2-1-1-2-1 = テレコ+ニコ混合。短列率 = 1落ち+2落ちの割合。</p>
+<table>
+<thead><tr><th>#</th><th>パターン (列長)</th><th>サンプル</th><th>逆張り勝率</th><th>短列率</th><th>勝敗</th></tr></thead>
+<tbody><tr style='background:#1a3a1a;'><td>#1</td><td style='font-family:monospace;font-size:12px'>1-2-1-1-2-6</td><td>55</td><td style='font-weight:bold;color:#4ade80'>69.09%</td><td style='color:#4ade80'>83%</td><td>38W / 17L</td></tr><tr style='background:#1a3a1a;'><td>#2</td><td style='font-family:monospace;font-size:12px'>1-2-1-2-6-1</td><td>98</td><td style='font-weight:bold;color:#4ade80'>68.37%</td><td style='color:#4ade80'>83%</td><td>67W / 31L</td></tr><tr style='background:#1a3a1a;'><td>#3</td><td style='font-family:monospace;font-size:12px'>2-1-3-3-3-1</td><td>75</td><td style='font-weight:bold;color:#4ade80'>68.00%</td><td style='color:#8a96a8'>50%</td><td>51W / 24L</td></tr><tr style='background:#1a3a1a;'><td>#4</td><td style='font-family:monospace;font-size:12px'>1-3-3-1-4-1</td><td>65</td><td style='font-weight:bold;color:#4ade80'>66.15%</td><td style='color:#8a96a8'>50%</td><td>43W / 22L</td></tr><tr style='background:#1a3a1a;'><td>#5</td><td style='font-family:monospace;font-size:12px'>5-1-2-2-3-1</td><td>52</td><td style='font-weight:bold;color:#4ade80'>65.38%</td><td style='color:#fbbf24'>67%</td><td>34W / 18L</td></tr><tr style='background:#1a3a1a;'><td>#6</td><td style='font-family:monospace;font-size:12px'>1-1-2-2-3-4</td><td>60</td><td style='font-weight:bold;color:#4ade80'>65.00%</td><td style='color:#fbbf24'>67%</td><td>39W / 21L</td></tr><tr style='background:#1a3a1a;'><td>#7</td><td style='font-family:monospace;font-size:12px'>1-4-2-4-2-1</td><td>51</td><td style='font-weight:bold;color:#4ade80'>64.71%</td><td style='color:#fbbf24'>67%</td><td>33W / 18L</td></tr><tr style='background:#1a3a1a;'><td>#8</td><td style='font-family:monospace;font-size:12px'>5-1-1-5-1-1</td><td>53</td><td style='font-weight:bold;color:#4ade80'>64.15%</td><td style='color:#fbbf24'>67%</td><td>34W / 19L</td></tr><tr style='background:#1a3a1a;'><td>#9</td><td style='font-family:monospace;font-size:12px'>2-4-4-1-1-1</td><td>85</td><td style='font-weight:bold;color:#4ade80'>63.53%</td><td style='color:#fbbf24'>67%</td><td>54W / 31L</td></tr><tr style='background:#1a3a1a;'><td>#10</td><td style='font-family:monospace;font-size:12px'>1-3-1-1-1-6</td><td>63</td><td style='font-weight:bold;color:#4ade80'>63.49%</td><td style='color:#fbbf24'>67%</td><td>40W / 23L</td></tr><tr style='background:#1a3a1a;'><td>#11</td><td style='font-family:monospace;font-size:12px'>1-1-3-2-4-3</td><td>52</td><td style='font-weight:bold;color:#4ade80'>63.46%</td><td style='color:#8a96a8'>50%</td><td>33W / 19L</td></tr><tr style='background:#1a3a1a;'><td>#12</td><td style='font-family:monospace;font-size:12px'>1-3-2-2-3-2</td><td>82</td><td style='font-weight:bold;color:#4ade80'>63.41%</td><td style='color:#fbbf24'>67%</td><td>52W / 30L</td></tr><tr style='background:#1a3a1a;'><td>#13</td><td style='font-family:monospace;font-size:12px'>1-3-1-2-3-3</td><td>82</td><td style='font-weight:bold;color:#4ade80'>63.41%</td><td style='color:#8a96a8'>50%</td><td>52W / 30L</td></tr><tr style='background:#1a3a1a;'><td>#14</td><td style='font-family:monospace;font-size:12px'>3-1-3-1-3-3</td><td>60</td><td style='font-weight:bold;color:#4ade80'>63.33%</td><td style='color:#8a96a8'>33%</td><td>38W / 22L</td></tr><tr style='background:#1a3a1a;'><td>#15</td><td style='font-family:monospace;font-size:12px'>1-2-2-2-3-2</td><td>136</td><td style='font-weight:bold;color:#4ade80'>63.24%</td><td style='color:#4ade80'>83%</td><td>86W / 50L</td></tr><tr style='background:#1a3a1a;'><td>#16</td><td style='font-family:monospace;font-size:12px'>1-2-4-3-2-1</td><td>86</td><td style='font-weight:bold;color:#4ade80'>62.79%</td><td style='color:#fbbf24'>67%</td><td>54W / 32L</td></tr><tr style='background:#1a3a1a;'><td>#17</td><td style='font-family:monospace;font-size:12px'>2-3-1-1-2-4</td><td>99</td><td style='font-weight:bold;color:#4ade80'>62.63%</td><td style='color:#fbbf24'>67%</td><td>62W / 37L</td></tr><tr style='background:#1a3a1a;'><td>#18</td><td style='font-family:monospace;font-size:12px'>2-2-1-6-1-1</td><td>72</td><td style='font-weight:bold;color:#4ade80'>62.50%</td><td style='color:#4ade80'>83%</td><td>45W / 27L</td></tr><tr style='background:#1a3a1a;'><td>#19</td><td style='font-family:monospace;font-size:12px'>1-3-1-2-3-4</td><td>61</td><td style='font-weight:bold;color:#4ade80'>62.30%</td><td style='color:#8a96a8'>50%</td><td>38W / 23L</td></tr><tr style='background:#1a3a1a;'><td>#20</td><td style='font-family:monospace;font-size:12px'>2-1-2-2-2-5</td><td>53</td><td style='font-weight:bold;color:#4ade80'>62.26%</td><td style='color:#4ade80'>83%</td><td>33W / 20L</td></tr><tr style='background:#1a3a1a;'><td>#21</td><td style='font-family:monospace;font-size:12px'>1-2-1-6-3-1</td><td>53</td><td style='font-weight:bold;color:#4ade80'>62.26%</td><td style='color:#fbbf24'>67%</td><td>33W / 20L</td></tr><tr style='background:#1a3a1a;'><td>#22</td><td style='font-family:monospace;font-size:12px'>5-2-2-3-1-1</td><td>58</td><td style='font-weight:bold;color:#4ade80'>62.07%</td><td style='color:#fbbf24'>67%</td><td>36W / 22L</td></tr><tr style='background:#1a3a1a;'><td>#23</td><td style='font-family:monospace;font-size:12px'>3-1-3-1-4-1</td><td>91</td><td style='font-weight:bold;color:#4ade80'>61.54%</td><td style='color:#8a96a8'>50%</td><td>56W / 35L</td></tr><tr style='background:#1a3a1a;'><td>#24</td><td style='font-family:monospace;font-size:12px'>3-1-2-2-2-3</td><td>65</td><td style='font-weight:bold;color:#4ade80'>61.54%</td><td style='color:#fbbf24'>67%</td><td>40W / 25L</td></tr><tr style='background:#1a3a1a;'><td>#25</td><td style='font-family:monospace;font-size:12px'>3-5-3-1-1-1</td><td>52</td><td style='font-weight:bold;color:#4ade80'>61.54%</td><td style='color:#8a96a8'>50%</td><td>32W / 20L</td></tr><tr style='background:#1a3a1a;'><td>#26</td><td style='font-family:monospace;font-size:12px'>1-2-5-2-2-1</td><td>78</td><td style='font-weight:bold;color:#4ade80'>61.54%</td><td style='color:#4ade80'>83%</td><td>48W / 30L</td></tr><tr style='background:#1a3a1a;'><td>#27</td><td style='font-family:monospace;font-size:12px'>1-2-1-3-5-1</td><td>96</td><td style='font-weight:bold;color:#4ade80'>61.46%</td><td style='color:#fbbf24'>67%</td><td>59W / 37L</td></tr><tr style='background:#1a3a1a;'><td>#28</td><td style='font-family:monospace;font-size:12px'>1-1-1-7-2-1</td><td>83</td><td style='font-weight:bold;color:#4ade80'>61.45%</td><td style='color:#4ade80'>83%</td><td>51W / 32L</td></tr><tr style='background:#1a3a1a;'><td>#29</td><td style='font-family:monospace;font-size:12px'>2-1-1-2-2-5</td><td>88</td><td style='font-weight:bold;color:#4ade80'>61.36%</td><td style='color:#4ade80'>83%</td><td>54W / 34L</td></tr><tr style='background:#1a3a1a;'><td>#30</td><td style='font-family:monospace;font-size:12px'>2-2-3-2-3-1</td><td>62</td><td style='font-weight:bold;color:#4ade80'>61.29%</td><td style='color:#fbbf24'>67%</td><td>38W / 24L</td></tr></tbody>
+</table>
+
+<h3>Bottom 10 (最も勝率が低いパターン)</h3>
+<table>
+<thead><tr><th>パターン</th><th>サンプル</th><th>勝率</th><th>短列率</th></tr></thead>
+<tbody><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-1-4-3-3-1</td><td>70</td><td style='font-weight:bold;color:#f87171'>35.71%</td><td>50%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-2-1-2-4-3</td><td>73</td><td style='font-weight:bold;color:#f87171'>35.62%</td><td>67%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>6-2-1-1-2-3</td><td>50</td><td style='font-weight:bold;color:#f87171'>34.00%</td><td>67%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-6-1-1-1-4</td><td>64</td><td style='font-weight:bold;color:#f87171'>32.81%</td><td>67%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>3-1-1-1-7-2</td><td>78</td><td style='font-weight:bold;color:#f87171'>32.05%</td><td>67%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-2-3-1-3-4</td><td>50</td><td style='font-weight:bold;color:#f87171'>32.00%</td><td>50%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-1-5-2-3-1</td><td>79</td><td style='font-weight:bold;color:#f87171'>31.65%</td><td>67%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-1-6-1-4</td><td>95</td><td style='font-weight:bold;color:#f87171'>31.58%</td><td>67%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-4-1-4-4</td><td>51</td><td style='font-weight:bold;color:#f87171'>31.37%</td><td>50%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-5-1-1-4-2</td><td>58</td><td style='font-weight:bold;color:#f87171'>27.59%</td><td>67%</td></tr></tbody>
+</table>
+
+<h2>直近 8 列パターン</h2>
+<div class="summary">
+  <div class="card"><div class="label">パターン数</div><div class="value">2167</div></div>
+  <div class="card profit"><div class="label">勝率53%+</div><div class="value">605</div></div>
+  <div class="card" style="border-left-color:#4ade80"><div class="label">勝率55%+</div><div class="value">354</div></div>
+  <div class="card bankrupt"><div class="label">勝率50%未満</div><div class="value">983</div></div>
+</div>
+<p class="note">勝率分布: <span style='color:#4ade80'>55%+: 354 (16%)</span> &nbsp; <span style='color:#4ade80'>53-55%: 251 (12%)</span> &nbsp; <span style='color:#4ade80'>51-53%: 305 (14%)</span> &nbsp; <span style='color:#fbbf24'>50-51%: 274 (13%)</span> &nbsp; <span style='color:#f87171'>50%未満: 983 (45%)</span> &nbsp; </p>
+
+<h3>Top 30 (勝率が高い大路パターン)</h3>
+<p class="note">パターン = 直近8列の列長。例: 1-2-1-1-2-1 = テレコ+ニコ混合。短列率 = 1落ち+2落ちの割合。</p>
+<table>
+<thead><tr><th>#</th><th>パターン (列長)</th><th>サンプル</th><th>逆張り勝率</th><th>短列率</th><th>勝敗</th></tr></thead>
+<tbody><tr style='background:#1a3a1a;'><td>#1</td><td style='font-family:monospace;font-size:12px'>1-1-1-6-1-1-1-1</td><td>60</td><td style='font-weight:bold;color:#4ade80'>70.00%</td><td style='color:#4ade80'>88%</td><td>42W / 18L</td></tr><tr style='background:#1a3a1a;'><td>#2</td><td style='font-family:monospace;font-size:12px'>1-1-1-2-1-4-2-1</td><td>65</td><td style='font-weight:bold;color:#4ade80'>69.23%</td><td style='color:#4ade80'>88%</td><td>45W / 20L</td></tr><tr style='background:#1a3a1a;'><td>#3</td><td style='font-family:monospace;font-size:12px'>2-1-2-2-1-1-1-3</td><td>69</td><td style='font-weight:bold;color:#4ade80'>68.12%</td><td style='color:#4ade80'>88%</td><td>47W / 22L</td></tr><tr style='background:#1a3a1a;'><td>#4</td><td style='font-family:monospace;font-size:12px'>5-1-1-1-1-1-1-2</td><td>92</td><td style='font-weight:bold;color:#4ade80'>67.39%</td><td style='color:#4ade80'>88%</td><td>62W / 30L</td></tr><tr style='background:#1a3a1a;'><td>#5</td><td style='font-family:monospace;font-size:12px'>1-3-1-2-1-1-3-1</td><td>79</td><td style='font-weight:bold;color:#4ade80'>67.09%</td><td style='color:#fbbf24'>75%</td><td>53W / 26L</td></tr><tr style='background:#1a3a1a;'><td>#6</td><td style='font-family:monospace;font-size:12px'>2-2-1-3-1-1-1-2</td><td>104</td><td style='font-weight:bold;color:#4ade80'>66.35%</td><td style='color:#4ade80'>88%</td><td>69W / 35L</td></tr><tr style='background:#1a3a1a;'><td>#7</td><td style='font-family:monospace;font-size:12px'>1-2-1-1-1-1-2-4</td><td>59</td><td style='font-weight:bold;color:#4ade80'>66.10%</td><td style='color:#4ade80'>88%</td><td>39W / 20L</td></tr><tr style='background:#1a3a1a;'><td>#8</td><td style='font-family:monospace;font-size:12px'>1-4-1-1-1-1-2-2</td><td>87</td><td style='font-weight:bold;color:#4ade80'>65.52%</td><td style='color:#4ade80'>88%</td><td>57W / 30L</td></tr><tr style='background:#1a3a1a;'><td>#9</td><td style='font-family:monospace;font-size:12px'>2-1-2-1-1-1-4-1</td><td>117</td><td style='font-weight:bold;color:#4ade80'>64.96%</td><td style='color:#4ade80'>88%</td><td>76W / 41L</td></tr><tr style='background:#1a3a1a;'><td>#10</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-5-1-1-1</td><td>154</td><td style='font-weight:bold;color:#4ade80'>64.94%</td><td style='color:#4ade80'>88%</td><td>100W / 54L</td></tr><tr style='background:#1a3a1a;'><td>#11</td><td style='font-family:monospace;font-size:12px'>2-1-3-2-1-1-1-2</td><td>76</td><td style='font-weight:bold;color:#4ade80'>64.47%</td><td style='color:#4ade80'>88%</td><td>49W / 27L</td></tr><tr style='background:#1a3a1a;'><td>#12</td><td style='font-family:monospace;font-size:12px'>1-1-1-2-2-2-2-2</td><td>90</td><td style='font-weight:bold;color:#4ade80'>64.44%</td><td style='color:#4ade80'>100%</td><td>58W / 32L</td></tr><tr style='background:#1a3a1a;'><td>#13</td><td style='font-family:monospace;font-size:12px'>1-1-1-2-2-2-1-2</td><td>149</td><td style='font-weight:bold;color:#4ade80'>64.43%</td><td style='color:#4ade80'>100%</td><td>96W / 53L</td></tr><tr style='background:#1a3a1a;'><td>#14</td><td style='font-family:monospace;font-size:12px'>3-3-1-1-1-1-3-1</td><td>59</td><td style='font-weight:bold;color:#4ade80'>64.41%</td><td style='color:#fbbf24'>62%</td><td>38W / 21L</td></tr><tr style='background:#1a3a1a;'><td>#15</td><td style='font-family:monospace;font-size:12px'>1-2-1-1-1-3-3-1</td><td>78</td><td style='font-weight:bold;color:#4ade80'>64.10%</td><td style='color:#fbbf24'>75%</td><td>50W / 28L</td></tr><tr style='background:#1a3a1a;'><td>#16</td><td style='font-family:monospace;font-size:12px'>2-4-1-1-2-1-1-1</td><td>78</td><td style='font-weight:bold;color:#4ade80'>64.10%</td><td style='color:#4ade80'>88%</td><td>50W / 28L</td></tr><tr style='background:#1a3a1a;'><td>#17</td><td style='font-family:monospace;font-size:12px'>1-2-2-1-2-2-2-2</td><td>50</td><td style='font-weight:bold;color:#4ade80'>64.00%</td><td style='color:#4ade80'>100%</td><td>32W / 18L</td></tr><tr style='background:#1a3a1a;'><td>#18</td><td style='font-family:monospace;font-size:12px'>1-1-1-4-1-1-4-1</td><td>50</td><td style='font-weight:bold;color:#4ade80'>64.00%</td><td style='color:#fbbf24'>75%</td><td>32W / 18L</td></tr><tr style='background:#1a3a1a;'><td>#19</td><td style='font-family:monospace;font-size:12px'>1-2-5-1-1-1-1-1</td><td>75</td><td style='font-weight:bold;color:#4ade80'>64.00%</td><td style='color:#4ade80'>88%</td><td>48W / 27L</td></tr><tr style='background:#1a3a1a;'><td>#20</td><td style='font-family:monospace;font-size:12px'>2-4-2-1-2-1-1-1</td><td>50</td><td style='font-weight:bold;color:#4ade80'>64.00%</td><td style='color:#4ade80'>88%</td><td>32W / 18L</td></tr><tr style='background:#1a3a1a;'><td>#21</td><td style='font-family:monospace;font-size:12px'>1-1-1-2-1-3-2-2</td><td>72</td><td style='font-weight:bold;color:#4ade80'>63.89%</td><td style='color:#4ade80'>88%</td><td>46W / 26L</td></tr><tr style='background:#1a3a1a;'><td>#22</td><td style='font-family:monospace;font-size:12px'>2-3-1-1-1-3-1-1</td><td>102</td><td style='font-weight:bold;color:#4ade80'>63.73%</td><td style='color:#fbbf24'>75%</td><td>65W / 37L</td></tr><tr style='background:#1a3a1a;'><td>#23</td><td style='font-family:monospace;font-size:12px'>1-2-3-1-1-1-3-1</td><td>88</td><td style='font-weight:bold;color:#4ade80'>63.64%</td><td style='color:#fbbf24'>75%</td><td>56W / 32L</td></tr><tr style='background:#1a3a1a;'><td>#24</td><td style='font-family:monospace;font-size:12px'>1-1-1-3-2-2-1-1</td><td>156</td><td style='font-weight:bold;color:#4ade80'>63.46%</td><td style='color:#4ade80'>88%</td><td>99W / 57L</td></tr><tr style='background:#1a3a1a;'><td>#25</td><td style='font-family:monospace;font-size:12px'>1-1-4-3-1-1-1-1</td><td>76</td><td style='font-weight:bold;color:#4ade80'>63.16%</td><td style='color:#fbbf24'>75%</td><td>48W / 28L</td></tr><tr style='background:#1a3a1a;'><td>#26</td><td style='font-family:monospace;font-size:12px'>1-2-1-3-1-4-1-1</td><td>57</td><td style='font-weight:bold;color:#4ade80'>63.16%</td><td style='color:#fbbf24'>75%</td><td>36W / 21L</td></tr><tr style='background:#1a3a1a;'><td>#27</td><td style='font-family:monospace;font-size:12px'>3-1-1-1-1-4-1-1</td><td>76</td><td style='font-weight:bold;color:#4ade80'>63.16%</td><td style='color:#fbbf24'>75%</td><td>48W / 28L</td></tr><tr style='background:#1a3a1a;'><td>#28</td><td style='font-family:monospace;font-size:12px'>1-1-1-3-2-2-1-2</td><td>92</td><td style='font-weight:bold;color:#4ade80'>63.04%</td><td style='color:#4ade80'>88%</td><td>58W / 34L</td></tr><tr style='background:#1a3a1a;'><td>#29</td><td style='font-family:monospace;font-size:12px'>2-2-1-1-3-2-1-1</td><td>92</td><td style='font-weight:bold;color:#4ade80'>63.04%</td><td style='color:#4ade80'>88%</td><td>58W / 34L</td></tr><tr style='background:#1a3a1a;'><td>#30</td><td style='font-family:monospace;font-size:12px'>1-2-1-1-3-3-1-1</td><td>81</td><td style='font-weight:bold;color:#4ade80'>62.96%</td><td style='color:#fbbf24'>75%</td><td>51W / 30L</td></tr></tbody>
+</table>
+
+<h3>Bottom 10 (最も勝率が低いパターン)</h3>
+<table>
+<thead><tr><th>パターン</th><th>サンプル</th><th>勝率</th><th>短列率</th></tr></thead>
+<tbody><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-2-1-2-1-3-1-3</td><td>83</td><td style='font-weight:bold;color:#f87171'>34.94%</td><td>75%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-1-2-2-2-2-2-1</td><td>63</td><td style='font-weight:bold;color:#f87171'>34.92%</td><td>100%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-1-3-1-3-2-2</td><td>55</td><td style='font-weight:bold;color:#f87171'>34.55%</td><td>75%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-4-2-2-1-2-1</td><td>70</td><td style='font-weight:bold;color:#f87171'>34.29%</td><td>88%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-2-1-1-2-2-2-4</td><td>53</td><td style='font-weight:bold;color:#f87171'>33.96%</td><td>88%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-2-1-1-2-1-6-1</td><td>53</td><td style='font-weight:bold;color:#f87171'>33.96%</td><td>88%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-1-1-5-2-1-2-1</td><td>53</td><td style='font-weight:bold;color:#f87171'>33.96%</td><td>88%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>6-1-1-1-3-1-1-1</td><td>70</td><td style='font-weight:bold;color:#f87171'>32.86%</td><td>75%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-2-3-1-2-3-1</td><td>66</td><td style='font-weight:bold;color:#f87171'>30.30%</td><td>75%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-3-1-1-4-2-3-1</td><td>50</td><td style='font-weight:bold;color:#f87171'>30.00%</td><td>62%</td></tr></tbody>
+</table>
+
+<h2>直近 10 列パターン</h2>
+<div class="summary">
+  <div class="card"><div class="label">パターン数</div><div class="value">638</div></div>
+  <div class="card profit"><div class="label">勝率53%+</div><div class="value">170</div></div>
+  <div class="card" style="border-left-color:#4ade80"><div class="label">勝率55%+</div><div class="value">97</div></div>
+  <div class="card bankrupt"><div class="label">勝率50%未満</div><div class="value">309</div></div>
+</div>
+<p class="note">勝率分布: <span style='color:#4ade80'>55%+: 97 (15%)</span> &nbsp; <span style='color:#4ade80'>53-55%: 73 (11%)</span> &nbsp; <span style='color:#4ade80'>51-53%: 91 (14%)</span> &nbsp; <span style='color:#fbbf24'>50-51%: 68 (11%)</span> &nbsp; <span style='color:#f87171'>50%未満: 309 (48%)</span> &nbsp; </p>
+
+<h3>Top 30 (勝率が高い大路パターン)</h3>
+<p class="note">パターン = 直近10列の列長。例: 1-2-1-1-2-1 = テレコ+ニコ混合。短列率 = 1落ち+2落ちの割合。</p>
+<table>
+<thead><tr><th>#</th><th>パターン (列長)</th><th>サンプル</th><th>逆張り勝率</th><th>短列率</th><th>勝敗</th></tr></thead>
+<tbody><tr style='background:#1a3a1a;'><td>#1</td><td style='font-family:monospace;font-size:12px'>2-1-1-1-1-1-1-1-3-2</td><td>52</td><td style='font-weight:bold;color:#4ade80'>69.23%</td><td style='color:#4ade80'>90%</td><td>36W / 16L</td></tr><tr style='background:#1a3a1a;'><td>#2</td><td style='font-family:monospace;font-size:12px'>1-2-2-1-1-1-2-1-1-1</td><td>86</td><td style='font-weight:bold;color:#4ade80'>66.28%</td><td style='color:#4ade80'>100%</td><td>57W / 29L</td></tr><tr style='background:#1a3a1a;'><td>#3</td><td style='font-family:monospace;font-size:12px'>1-2-1-1-1-1-1-4-1-1</td><td>50</td><td style='font-weight:bold;color:#4ade80'>66.00%</td><td style='color:#4ade80'>90%</td><td>33W / 17L</td></tr><tr style='background:#1a3a1a;'><td>#4</td><td style='font-family:monospace;font-size:12px'>2-1-1-1-1-2-3-1-1-1</td><td>50</td><td style='font-weight:bold;color:#4ade80'>64.00%</td><td style='color:#4ade80'>90%</td><td>32W / 18L</td></tr><tr style='background:#1a3a1a;'><td>#5</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-2-2-1-2-1-2</td><td>54</td><td style='font-weight:bold;color:#4ade80'>62.96%</td><td style='color:#4ade80'>100%</td><td>34W / 20L</td></tr><tr style='background:#1a3a1a;'><td>#6</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-4-1-1-1</td><td>91</td><td style='font-weight:bold;color:#4ade80'>62.64%</td><td style='color:#4ade80'>90%</td><td>57W / 34L</td></tr><tr style='background:#1a3a1a;'><td>#7</td><td style='font-family:monospace;font-size:12px'>1-3-1-1-1-1-1-2-1-1</td><td>72</td><td style='font-weight:bold;color:#4ade80'>62.50%</td><td style='color:#4ade80'>90%</td><td>45W / 27L</td></tr><tr style='background:#1a3a1a;'><td>#8</td><td style='font-family:monospace;font-size:12px'>1-1-1-2-1-1-2-2-1-1</td><td>74</td><td style='font-weight:bold;color:#4ade80'>62.16%</td><td style='color:#4ade80'>100%</td><td>46W / 28L</td></tr><tr style='background:#1a3a1a;'><td>#9</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-3-1-2-1-1-1</td><td>87</td><td style='font-weight:bold;color:#4ade80'>62.07%</td><td style='color:#4ade80'>90%</td><td>54W / 33L</td></tr><tr style='background:#1a3a1a;'><td>#10</td><td style='font-family:monospace;font-size:12px'>1-2-2-1-1-1-2-1-2-1</td><td>50</td><td style='font-weight:bold;color:#4ade80'>62.00%</td><td style='color:#4ade80'>100%</td><td>31W / 19L</td></tr><tr style='background:#1a3a1a;'><td>#11</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-2-1-3-1</td><td>83</td><td style='font-weight:bold;color:#4ade80'>61.45%</td><td style='color:#4ade80'>90%</td><td>51W / 32L</td></tr><tr style='background:#1a3a1a;'><td>#12</td><td style='font-family:monospace;font-size:12px'>2-1-1-1-1-1-2-1-1-2</td><td>70</td><td style='font-weight:bold;color:#4ade80'>61.43%</td><td style='color:#4ade80'>100%</td><td>43W / 27L</td></tr><tr style='background:#1a3a1a;'><td>#13</td><td style='font-family:monospace;font-size:12px'>2-1-1-1-1-2-2-1-1-1</td><td>82</td><td style='font-weight:bold;color:#4ade80'>60.98%</td><td style='color:#4ade80'>100%</td><td>50W / 32L</td></tr><tr style='background:#1a3a1a;'><td>#14</td><td style='font-family:monospace;font-size:12px'>2-1-1-1-4-1-1-1-1-1</td><td>61</td><td style='font-weight:bold;color:#4ade80'>60.66%</td><td style='color:#4ade80'>90%</td><td>37W / 24L</td></tr><tr style='background:#1a3a1a;'><td>#15</td><td style='font-family:monospace;font-size:12px'>1-1-3-1-1-1-1-1-2-1</td><td>66</td><td style='font-weight:bold;color:#4ade80'>60.61%</td><td style='color:#4ade80'>90%</td><td>40W / 26L</td></tr><tr style='background:#1a3a1a;'><td>#16</td><td style='font-family:monospace;font-size:12px'>1-1-4-1-1-2-1-1-1-1</td><td>53</td><td style='font-weight:bold;color:#4ade80'>60.38%</td><td style='color:#4ade80'>90%</td><td>32W / 21L</td></tr><tr style='background:#1a3a1a;'><td>#17</td><td style='font-family:monospace;font-size:12px'>3-1-1-1-1-1-1-2-1-1</td><td>78</td><td style='font-weight:bold;color:#4ade80'>60.26%</td><td style='color:#4ade80'>90%</td><td>47W / 31L</td></tr><tr style='background:#1a3a1a;'><td>#18</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-2-1-1-1-3</td><td>83</td><td style='font-weight:bold;color:#4ade80'>60.24%</td><td style='color:#4ade80'>90%</td><td>50W / 33L</td></tr><tr style='background:#1a3a1a;'><td>#19</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-2-1-2-1-2</td><td>98</td><td style='font-weight:bold;color:#4ade80'>60.20%</td><td style='color:#4ade80'>100%</td><td>59W / 39L</td></tr><tr style='background:#1a3a1a;'><td>#20</td><td style='font-family:monospace;font-size:12px'>1-3-1-2-1-1-1-1-1-1</td><td>85</td><td style='font-weight:bold;color:#4ade80'>60.00%</td><td style='color:#4ade80'>90%</td><td>51W / 34L</td></tr><tr style='background:#1a3a1a;'><td>#21</td><td style='font-family:monospace;font-size:12px'>2-1-1-1-2-1-2-1-1-2</td><td>50</td><td style='font-weight:bold;color:#4ade80'>60.00%</td><td style='color:#4ade80'>100%</td><td>30W / 20L</td></tr><tr style='background:#1a3a1a;'><td>#22</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-1-1-2-3</td><td>97</td><td style='font-weight:bold;color:#4ade80'>59.79%</td><td style='color:#4ade80'>90%</td><td>58W / 39L</td></tr><tr style='background:#1a3a1a;'><td>#23</td><td style='font-family:monospace;font-size:12px'>1-1-2-1-1-1-1-2-2-1</td><td>87</td><td style='font-weight:bold;color:#4ade80'>59.77%</td><td style='color:#4ade80'>100%</td><td>52W / 35L</td></tr><tr style='background:#1a3a1a;'><td>#24</td><td style='font-family:monospace;font-size:12px'>4-1-1-1-1-1-1-1-1-1</td><td>84</td><td style='font-weight:bold;color:#4ade80'>59.52%</td><td style='color:#4ade80'>90%</td><td>50W / 34L</td></tr><tr style='background:#1a3a1a;'><td>#25</td><td style='font-family:monospace;font-size:12px'>1-1-3-1-1-2-1-1-1-2</td><td>64</td><td style='font-weight:bold;color:#4ade80'>59.38%</td><td style='color:#4ade80'>90%</td><td>38W / 26L</td></tr><tr style='background:#1a3a1a;'><td>#26</td><td style='font-family:monospace;font-size:12px'>2-1-1-1-2-1-2-1-1-1</td><td>91</td><td style='font-weight:bold;color:#4ade80'>59.34%</td><td style='color:#4ade80'>100%</td><td>54W / 37L</td></tr><tr style='background:#1a3a1a;'><td>#27</td><td style='font-family:monospace;font-size:12px'>2-1-2-1-1-1-1-2-1-2</td><td>61</td><td style='font-weight:bold;color:#4ade80'>59.02%</td><td style='color:#4ade80'>100%</td><td>36W / 25L</td></tr><tr style='background:#1a3a1a;'><td>#28</td><td style='font-family:monospace;font-size:12px'>3-1-2-1-1-1-1-1-1-1</td><td>90</td><td style='font-weight:bold;color:#4ade80'>58.89%</td><td style='color:#4ade80'>90%</td><td>53W / 37L</td></tr><tr style='background:#1a3a1a;'><td>#29</td><td style='font-family:monospace;font-size:12px'>1-1-1-2-3-1-1-1-1-2</td><td>51</td><td style='font-weight:bold;color:#4ade80'>58.82%</td><td style='color:#4ade80'>90%</td><td>30W / 21L</td></tr><tr style='background:#1a3a1a;'><td>#30</td><td style='font-family:monospace;font-size:12px'>2-2-2-1-1-1-1-1-1-1</td><td>85</td><td style='font-weight:bold;color:#4ade80'>58.82%</td><td style='color:#4ade80'>100%</td><td>50W / 35L</td></tr></tbody>
+</table>
+
+<h3>Bottom 10 (最も勝率が低いパターン)</h3>
+<table>
+<thead><tr><th>パターン</th><th>サンプル</th><th>勝率</th><th>短列率</th></tr></thead>
+<tbody><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-1-2-2-2-1-1-1-1-1</td><td>57</td><td style='font-weight:bold;color:#f87171'>35.09%</td><td>100%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-1-2-1-2-1-2-1-2</td><td>77</td><td style='font-weight:bold;color:#f87171'>35.06%</td><td>100%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-2-1-2-1-1-3-1-1-1</td><td>63</td><td style='font-weight:bold;color:#f87171'>34.92%</td><td>90%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-3-1-3-1-2-1-1-1</td><td>50</td><td style='font-weight:bold;color:#f87171'>34.00%</td><td>80%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-1-2-3-1-2-1-1-1</td><td>59</td><td style='font-weight:bold;color:#f87171'>33.90%</td><td>90%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-1-3-2-1-2-1-1-1</td><td>57</td><td style='font-weight:bold;color:#f87171'>33.33%</td><td>90%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-1-1-1-1-1-1-1-2-4</td><td>51</td><td style='font-weight:bold;color:#f87171'>31.37%</td><td>90%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-2-3-1-1-1-2-2-1-1</td><td>50</td><td style='font-weight:bold;color:#f87171'>30.00%</td><td>90%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>4-1-1-1-1-1-2-1-2-1</td><td>50</td><td style='font-weight:bold;color:#f87171'>28.00%</td><td>90%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-1-3-2-2-1-1-1-2</td><td>52</td><td style='font-weight:bold;color:#f87171'>26.92%</td><td>90%</td></tr></tbody>
+</table>
+
+<h2>直近 12 列パターン</h2>
+<div class="summary">
+  <div class="card"><div class="label">パターン数</div><div class="value">45</div></div>
+  <div class="card profit"><div class="label">勝率53%+</div><div class="value">9</div></div>
+  <div class="card" style="border-left-color:#4ade80"><div class="label">勝率55%+</div><div class="value">2</div></div>
+  <div class="card bankrupt"><div class="label">勝率50%未満</div><div class="value">25</div></div>
+</div>
+<p class="note">勝率分布: <span style='color:#4ade80'>55%+: 2 (4%)</span> &nbsp; <span style='color:#4ade80'>53-55%: 7 (16%)</span> &nbsp; <span style='color:#4ade80'>51-53%: 7 (16%)</span> &nbsp; <span style='color:#fbbf24'>50-51%: 4 (9%)</span> &nbsp; <span style='color:#f87171'>50%未満: 25 (56%)</span> &nbsp; </p>
+
+<h3>Top 30 (勝率が高い大路パターン)</h3>
+<p class="note">パターン = 直近12列の列長。例: 1-2-1-1-2-1 = テレコ+ニコ混合。短列率 = 1落ち+2落ちの割合。</p>
+<table>
+<thead><tr><th>#</th><th>パターン (列長)</th><th>サンプル</th><th>逆張り勝率</th><th>短列率</th><th>勝敗</th></tr></thead>
+<tbody><tr style='background:#1a3a1a;'><td>#1</td><td style='font-family:monospace;font-size:12px'>1-1-2-1-1-1-1-1-1-1-1-2</td><td>51</td><td style='font-weight:bold;color:#4ade80'>60.78%</td><td style='color:#4ade80'>100%</td><td>31W / 20L</td></tr><tr style='background:#1a3a1a;'><td>#2</td><td style='font-family:monospace;font-size:12px'>1-2-1-1-1-2-1-1-1-1-1-1</td><td>56</td><td style='font-weight:bold;color:#4ade80'>55.36%</td><td style='color:#4ade80'>100%</td><td>31W / 25L</td></tr><tr style='background:#1a2a1a;'><td>#3</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-1-1-1-2-1-1</td><td>91</td><td style='font-weight:bold;color:#4ade80'>54.95%</td><td style='color:#4ade80'>100%</td><td>50W / 41L</td></tr><tr style='background:#1a2a1a;'><td>#4</td><td style='font-family:monospace;font-size:12px'>2-1-1-1-2-1-1-1-1-1-1-1</td><td>71</td><td style='font-weight:bold;color:#4ade80'>54.93%</td><td style='color:#4ade80'>100%</td><td>39W / 32L</td></tr><tr style='background:#1a2a1a;'><td>#5</td><td style='font-family:monospace;font-size:12px'>1-1-2-2-1-1-1-1-1-1-1-1</td><td>51</td><td style='font-weight:bold;color:#4ade80'>54.90%</td><td style='color:#4ade80'>100%</td><td>28W / 23L</td></tr><tr style='background:#1a2a1a;'><td>#6</td><td style='font-family:monospace;font-size:12px'>1-2-1-1-1-1-1-1-1-1-2-1</td><td>57</td><td style='font-weight:bold;color:#4ade80'>54.39%</td><td style='color:#4ade80'>100%</td><td>31W / 26L</td></tr><tr style='background:#1a2a1a;'><td>#7</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-1-3-1-1-1-1</td><td>59</td><td style='font-weight:bold;color:#4ade80'>54.24%</td><td style='color:#4ade80'>92%</td><td>32W / 27L</td></tr><tr style='background:#1a2a1a;'><td>#8</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-2-1-1-1-1-1</td><td>102</td><td style='font-weight:bold;color:#4ade80'>53.92%</td><td style='color:#4ade80'>100%</td><td>55W / 47L</td></tr><tr style='background:#1a2a1a;'><td>#9</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-1-1-1-2-1-2</td><td>65</td><td style='font-weight:bold;color:#4ade80'>53.85%</td><td style='color:#4ade80'>100%</td><td>35W / 30L</td></tr><tr style=''><td>#10</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-1-1-1-1-1-1</td><td>204</td><td style='font-weight:bold;color:#4ade80'>52.94%</td><td style='color:#4ade80'>100%</td><td>108W / 96L</td></tr><tr style=''><td>#11</td><td style='font-family:monospace;font-size:12px'>1-1-1-2-2-1-1-1-1-1-1-1</td><td>51</td><td style='font-weight:bold;color:#4ade80'>52.94%</td><td style='color:#4ade80'>100%</td><td>27W / 24L</td></tr><tr style=''><td>#12</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-1-1-2-1-1-1</td><td>106</td><td style='font-weight:bold;color:#4ade80'>52.83%</td><td style='color:#4ade80'>100%</td><td>56W / 50L</td></tr><tr style=''><td>#13</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-2-1-1-1-1-1-1</td><td>94</td><td style='font-weight:bold;color:#4ade80'>52.13%</td><td style='color:#4ade80'>100%</td><td>49W / 45L</td></tr><tr style=''><td>#14</td><td style='font-family:monospace;font-size:12px'>1-2-1-1-1-1-1-1-1-1-1-1</td><td>96</td><td style='font-weight:bold;color:#4ade80'>52.08%</td><td style='color:#4ade80'>100%</td><td>50W / 46L</td></tr><tr style=''><td>#15</td><td style='font-family:monospace;font-size:12px'>3-1-1-1-1-1-1-1-1-1-1-1</td><td>52</td><td style='font-weight:bold;color:#4ade80'>51.92%</td><td style='color:#4ade80'>92%</td><td>27W / 25L</td></tr><tr style=''><td>#16</td><td style='font-family:monospace;font-size:12px'>2-1-1-1-1-1-1-1-1-1-1-1</td><td>89</td><td style='font-weight:bold;color:#4ade80'>51.69%</td><td style='color:#4ade80'>100%</td><td>46W / 43L</td></tr><tr style=''><td>#17</td><td style='font-family:monospace;font-size:12px'>1-1-1-2-1-1-1-1-1-1-1-1</td><td>104</td><td style='font-weight:bold;color:#4ade80'>50.96%</td><td style='color:#4ade80'>100%</td><td>53W / 51L</td></tr><tr style=''><td>#18</td><td style='font-family:monospace;font-size:12px'>1-2-2-1-1-1-1-1-1-1-1-1</td><td>59</td><td style='font-weight:bold;color:#4ade80'>50.85%</td><td style='color:#4ade80'>100%</td><td>30W / 29L</td></tr><tr style=''><td>#19</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-1-1-1-1-1-2</td><td>113</td><td style='font-weight:bold;color:#4ade80'>50.44%</td><td style='color:#4ade80'>100%</td><td>57W / 56L</td></tr><tr style=''><td>#20</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-2-1-1-2-1-1-1</td><td>54</td><td style='font-weight:bold;color:#4ade80'>50.00%</td><td style='color:#4ade80'>100%</td><td>27W / 27L</td></tr><tr style=''><td>#21</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-1-1-1-1-2-1</td><td>136</td><td style='font-weight:bold;color:#4ade80'>49.26%</td><td style='color:#4ade80'>100%</td><td>67W / 69L</td></tr><tr style=''><td>#22</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-2-1-1-1-1-2</td><td>67</td><td style='font-weight:bold;color:#4ade80'>49.25%</td><td style='color:#4ade80'>100%</td><td>33W / 34L</td></tr><tr style=''><td>#23</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-1-1-1-1-3-1</td><td>57</td><td style='font-weight:bold;color:#4ade80'>49.12%</td><td style='color:#4ade80'>92%</td><td>28W / 29L</td></tr><tr style=''><td>#24</td><td style='font-family:monospace;font-size:12px'>1-1-1-2-1-2-1-1-1-1-1-1</td><td>56</td><td style='font-weight:bold;color:#4ade80'>48.21%</td><td style='color:#4ade80'>100%</td><td>27W / 29L</td></tr><tr style=''><td>#25</td><td style='font-family:monospace;font-size:12px'>1-2-1-1-2-1-1-1-1-1-1-1</td><td>52</td><td style='font-weight:bold;color:#4ade80'>48.08%</td><td style='color:#4ade80'>100%</td><td>25W / 27L</td></tr><tr style=''><td>#26</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-1-2-1-1-1-1</td><td>122</td><td style='font-weight:bold;color:#4ade80'>47.54%</td><td style='color:#4ade80'>100%</td><td>58W / 64L</td></tr><tr style=''><td>#27</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-1-2-1-1-1-2</td><td>59</td><td style='font-weight:bold;color:#4ade80'>47.46%</td><td style='color:#4ade80'>100%</td><td>28W / 31L</td></tr><tr style=''><td>#28</td><td style='font-family:monospace;font-size:12px'>1-1-2-1-1-1-1-1-1-1-1-1</td><td>100</td><td style='font-weight:bold;color:#4ade80'>46.00%</td><td style='color:#4ade80'>100%</td><td>46W / 54L</td></tr><tr style=''><td>#29</td><td style='font-family:monospace;font-size:12px'>1-2-1-2-1-1-1-1-1-1-1-1</td><td>53</td><td style='font-weight:bold;color:#4ade80'>45.28%</td><td style='color:#4ade80'>100%</td><td>24W / 29L</td></tr><tr style=''><td>#30</td><td style='font-family:monospace;font-size:12px'>1-1-1-1-1-1-1-2-1-2-1-1</td><td>58</td><td style='font-weight:bold;color:#4ade80'>43.10%</td><td style='color:#4ade80'>100%</td><td>25W / 33L</td></tr></tbody>
+</table>
+
+<h3>Bottom 10 (最も勝率が低いパターン)</h3>
+<table>
+<thead><tr><th>パターン</th><th>サンプル</th><th>勝率</th><th>短列率</th></tr></thead>
+<tbody><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-1-1-2-2-1-1-1-1-1-1</td><td>71</td><td style='font-weight:bold;color:#f87171'>40.85%</td><td>100%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-1-1-2-1-1-1-1-1-1-1</td><td>104</td><td style='font-weight:bold;color:#f87171'>40.38%</td><td>100%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-1-2-1-1-1-1-1-1-2-1</td><td>57</td><td style='font-weight:bold;color:#f87171'>40.35%</td><td>100%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-1-1-2-1-1-1-1-1-1-1-2</td><td>60</td><td style='font-weight:bold;color:#f87171'>40.00%</td><td>100%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-2-1-1-1-1-1-1-1-1-1-1</td><td>73</td><td style='font-weight:bold;color:#f87171'>39.73%</td><td>100%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-1-1-1-1-1-1-1-1-2-1-1</td><td>63</td><td style='font-weight:bold;color:#f87171'>39.68%</td><td>100%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-1-1-1-1-1-1-1-1-1-2-1</td><td>53</td><td style='font-weight:bold;color:#f87171'>39.62%</td><td>100%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>2-1-1-2-1-1-1-1-1-1-1-1</td><td>61</td><td style='font-weight:bold;color:#f87171'>39.34%</td><td>100%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-2-1-1-1-1-1-2-1-1-1-1</td><td>57</td><td style='font-weight:bold;color:#f87171'>38.60%</td><td>100%</td></tr><tr style='background:#2a1a1a'><td style='font-family:monospace;font-size:12px'>1-3-1-1-1-1-1-1-1-2-1-1</td><td>52</td><td style='font-weight:bold;color:#f87171'>30.77%</td><td>92%</td></tr></tbody>
+</table>
+
+
+<p class="note" style="margin-top:32px;">
+  生成元: <code>generate_pattern_winrate_db.py</code> /
+  ウィンドウサイズ: 6, 8, 10, 12 / 最低サンプル: 50
+</p>
+</div>
+</body>
+</html>

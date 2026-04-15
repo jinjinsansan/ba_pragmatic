@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>N. テレコ × 逆張り バックテスト</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  background: #0f1419; color: #e0e6ed; margin: 0; padding: 24px; line-height: 1.5;
+}
+.container { max-width: 1500px; margin: 0 auto; }
+h1 { color: #ffd700; font-size: 28px; border-bottom: 2px solid #ffd700; padding-bottom: 8px; }
+h2 { color: #c084fc; margin-top: 32px; font-size: 22px; }
+.nav { margin: 16px 0 24px 0; }
+.nav a {
+  display: inline-block; margin-right: 12px; padding: 8px 16px;
+  background: #1a2332; color: #6dd5ed; text-decoration: none;
+  border-radius: 4px; border: 1px solid #2a3441; font-size: 13px;
+}
+.nav a:hover { border-color: #c084fc; }
+.banner {
+  background: #1a2a1a; border-left: 5px solid #4ade80;
+  padding: 14px 18px; margin: 16px 0; font-size: 14px; border-radius: 4px; line-height: 1.8;
+}
+.banner strong { color: #4ade80; }
+.summary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px; margin: 20px 0;
+}
+.card {
+  background: #1a2332; padding: 14px; border-radius: 4px; border-left: 4px solid #6dd5ed;
+}
+.card .label { font-size: 11px; color: #8a96a8; text-transform: uppercase; }
+.card .value { font-size: 22px; font-weight: bold; color: #ffd700; }
+.card.green .value { color: #4ade80; }
+.card.red .value { color: #f87171; }
+
+table {
+  width: 100%; border-collapse: collapse; font-size: 13px; margin: 16px 0;
+}
+table th {
+  background: #0f1419; color: #c084fc; padding: 8px; text-align: left;
+  border-bottom: 2px solid #2a3441;
+}
+table td { padding: 6px 8px; border-bottom: 1px solid #1a2332; }
+table tr:hover { background: rgba(255,255,255,0.03); }
+td.tname { font-weight: bold; color: #ffd700; }
+td.ts { font-family: monospace; color: #8a96a8; font-size: 11px; }
+.note { color: #8a96a8; font-size: 13px; margin: 8px 0; }
+.highlight {
+  background: #11192a; border: 2px solid #4ade80; border-radius: 8px;
+  padding: 16px; margin: 16px 0;
+}
+.highlight h3 { margin-top: 0; color: #4ade80; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>N. テレコ × 逆張り バックテスト</h1>
+
+<div class="nav">
+<a href="index.html">← レポートTOP</a>
+<a href="dynamic_backtest.html">M. 動的再評価</a>
+</div>
+
+<div class="banner">
+<strong>📊 テレコ系パターン × 逆張り戦略のバックテスト。</strong><br>
+<strong>コンセプト:</strong> テレコ = 交互に出やすい → 前手の逆にBET (逆張り)。<br>
+<strong>資金管理:</strong> 〇✖ MaruBatsu ($50利確) / Banker BET時は unit×1.0526 で手数料相殺。<br>
+<strong>比較:</strong> 現行 Strategy A vs 逆張り vs 逆張り+Banker増額 vs 純粋テレコのみ<br>
+データ: 2026-04-06〜本日 / 17,240シュー
+</div>
+
+<h2>1. パターン分布 (序盤30ハンド判定)</h2>
+
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:180px">テレコ+ニコ混合</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:157.51740139211137px;height:100%;background:#4ade80;border-radius:4px"></div>
+  </div>
+  <div style="min-width:100px;text-align:right;color:#8a96a8">6,789 (39.4%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:180px">テレコ崩れ</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:119.18793503480278px;height:100%;background:#4ade80;border-radius:4px"></div>
+  </div>
+  <div style="min-width:100px;text-align:right;color:#8a96a8">5,137 (29.8%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:180px">不規則</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:90.37122969837587px;height:100%;background:#8a96a8;border-radius:4px"></div>
+  </div>
+  <div style="min-width:100px;text-align:right;color:#8a96a8">3,895 (22.6%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:180px">偏在</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:21.48491879350348px;height:100%;background:#8a96a8;border-radius:4px"></div>
+  </div>
+  <div style="min-width:100px;text-align:right;color:#8a96a8">926 (5.4%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:180px">縦流れ</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:10.556844547563806px;height:100%;background:#8a96a8;border-radius:4px"></div>
+  </div>
+  <div style="min-width:100px;text-align:right;color:#8a96a8">455 (2.6%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:180px">ブリッジ</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.8584686774941995px;height:100%;background:#8a96a8;border-radius:4px"></div>
+  </div>
+  <div style="min-width:100px;text-align:right;color:#8a96a8">37 (0.2%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:180px">純粋テレコ</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.02320185614849188px;height:100%;background:#4ade80;border-radius:4px"></div>
+  </div>
+  <div style="min-width:100px;text-align:right;color:#8a96a8">1 (0.0%)</div>
+</div>
+
+<h2>2. 4戦略 比較サマリー</h2>
+<table>
+<thead><tr>
+  <th>戦略</th><th>参加シュー</th><th>BET数</th><th>勝ち</th><th>負け</th>
+  <th>勝率</th><th>Flat PNL</th><th>MB完走</th><th>MB累計PNL</th><th>MB MaxDD</th>
+</tr></thead>
+<tbody><tr><td style='color:#fbbf24;font-weight:bold'>現行 Strategy A (BB→P)</td><td>6,790</td><td>52,572</td><td>30,053</td><td>22,519</td><td style='font-weight:bold'>57.17%</td><td style='color:#4ade80;font-weight:bold'>+7,534</td><td>312</td><td style='color:#4ade80;font-weight:bold'>$+16,845</td><td>$340</td></tr><tr><td style='color:#6dd5ed;font-weight:bold'>逆張り (テレコ混合)</td><td>6,790</td><td>409,888</td><td>219,276</td><td>190,612</td><td style='font-weight:bold'>53.50%</td><td style='color:#4ade80;font-weight:bold'>+28,664</td><td>1979</td><td style='color:#4ade80;font-weight:bold'>$+111,915</td><td>$1,716</td></tr><tr><td style='color:#4ade80;font-weight:bold'>逆張り + Banker増額</td><td>6,790</td><td>409,888</td><td>219,276</td><td>190,612</td><td style='font-weight:bold'>53.50%</td><td style='color:#4ade80;font-weight:bold'>+28,664</td><td>2023</td><td style='color:#4ade80;font-weight:bold'>$+114,671</td><td>$1,792</td></tr><tr><td style='color:#c084fc;font-weight:bold'>逆張り (純粋テレコのみ)</td><td>1</td><td>57</td><td>30</td><td>27</td><td style='font-weight:bold'>52.63%</td><td style='color:#4ade80;font-weight:bold'>+3</td><td>0</td><td style='color:#f87171;font-weight:bold'>$-6</td><td>$26</td></tr></tbody>
+</table>
+
+<div class="highlight">
+<h3>📌 戦略の違い</h3>
+<p class="note">
+<strong style="color:#fbbf24">Strategy A</strong>: テレコ混合シューで BB→P 狙い (現行)。BETは全てP。選択的にBET。<br>
+<strong style="color:#6dd5ed">逆張り</strong>: テレコ混合シューで毎ハンド逆張り。前手Pなら→B BET、前手Bなら→P BET。<br>
+<strong style="color:#4ade80">逆張り+増額</strong>: 逆張り + Banker BET時にunit×1.0526 で手数料5%を打ち消す。<br>
+<strong style="color:#c084fc">純粋テレコのみ</strong>: 1段列90%以上の「ガチテレコ」シューだけに参加する逆張り+増額。
+</p>
+</div>
+
+<h2>3. テーブル別 Flat PNL</h2>
+<p class="note">逆張り+増額PNL の降順。</p>
+<table>
+<thead><tr>
+  <th>テーブル</th><th>シュー</th>
+  <th style="color:#fbbf24">Strategy A</th>
+  <th style="color:#6dd5ed">逆張り</th>
+  <th style="color:#4ade80">逆張り+増額</th>
+  <th style="color:#c084fc">純粋テレコ</th>
+</tr></thead>
+<tbody><tr><td class='tname'>Super Speed Baccarat</td><td>395</td><td style='color:#4ade80'>+167</td><td style='color:#4ade80'>+716</td><td style='color:#4ade80'>+716</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat U</td><td>299</td><td style='color:#4ade80'>+144</td><td style='color:#4ade80'>+709</td><td style='color:#4ade80'>+709</td><td style='color:#4ade80'>+3</td></tr><tr><td class='tname'>Korean Speed Baccarat B</td><td>280</td><td style='color:#4ade80'>+161</td><td style='color:#4ade80'>+624</td><td style='color:#4ade80'>+624</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Thai Speed Baccarat A</td><td>269</td><td style='color:#4ade80'>+160</td><td style='color:#4ade80'>+587</td><td style='color:#4ade80'>+587</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat C</td><td>304</td><td style='color:#4ade80'>+106</td><td style='color:#4ade80'>+581</td><td style='color:#4ade80'>+581</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Korean Speed Baccarat H</td><td>275</td><td style='color:#4ade80'>+129</td><td style='color:#4ade80'>+563</td><td style='color:#4ade80'>+563</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Korean Speaking Speed Baccarat</td><td>278</td><td style='color:#4ade80'>+146</td><td style='color:#4ade80'>+562</td><td style='color:#4ade80'>+562</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat B</td><td>300</td><td style='color:#4ade80'>+138</td><td style='color:#4ade80'>+561</td><td style='color:#4ade80'>+561</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat E</td><td>302</td><td style='color:#4ade80'>+145</td><td style='color:#4ade80'>+557</td><td style='color:#4ade80'>+557</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat T</td><td>298</td><td style='color:#4ade80'>+195</td><td style='color:#4ade80'>+547</td><td style='color:#4ade80'>+547</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat W</td><td>301</td><td style='color:#4ade80'>+166</td><td style='color:#4ade80'>+543</td><td style='color:#4ade80'>+543</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Korean Super Speed Baccarat</td><td>363</td><td style='color:#4ade80'>+186</td><td style='color:#4ade80'>+540</td><td style='color:#4ade80'>+540</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Lotus Speed Baccarat C</td><td>295</td><td style='color:#4ade80'>+129</td><td style='color:#4ade80'>+539</td><td style='color:#4ade80'>+539</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 3</td><td>289</td><td style='color:#4ade80'>+149</td><td style='color:#4ade80'>+535</td><td style='color:#4ade80'>+535</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat A</td><td>277</td><td style='color:#4ade80'>+112</td><td style='color:#4ade80'>+530</td><td style='color:#4ade80'>+530</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 10</td><td>300</td><td style='color:#4ade80'>+170</td><td style='color:#4ade80'>+528</td><td style='color:#4ade80'>+528</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Emperor Speed Baccarat B</td><td>275</td><td style='color:#4ade80'>+146</td><td style='color:#4ade80'>+524</td><td style='color:#4ade80'>+524</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 4</td><td>290</td><td style='color:#4ade80'>+85</td><td style='color:#4ade80'>+521</td><td style='color:#4ade80'>+521</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Hindi Speed Baccarat A</td><td>294</td><td style='color:#4ade80'>+132</td><td style='color:#4ade80'>+519</td><td style='color:#4ade80'>+519</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Japanese Speed Baccarat A</td><td>265</td><td style='color:#4ade80'>+151</td><td style='color:#4ade80'>+516</td><td style='color:#4ade80'>+516</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat X</td><td>295</td><td style='color:#4ade80'>+89</td><td style='color:#4ade80'>+513</td><td style='color:#4ade80'>+513</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Korean Speed Baccarat D</td><td>278</td><td style='color:#4ade80'>+162</td><td style='color:#4ade80'>+511</td><td style='color:#4ade80'>+511</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Emperor Speed Baccarat A</td><td>275</td><td style='color:#4ade80'>+174</td><td style='color:#4ade80'>+510</td><td style='color:#4ade80'>+510</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Korean Speed Baccarat G</td><td>276</td><td style='color:#4ade80'>+106</td><td style='color:#4ade80'>+507</td><td style='color:#4ade80'>+507</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Korean Speed Baccarat C</td><td>275</td><td style='color:#4ade80'>+126</td><td style='color:#4ade80'>+503</td><td style='color:#4ade80'>+503</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat 1</td><td>254</td><td style='color:#4ade80'>+123</td><td style='color:#4ade80'>+496</td><td style='color:#4ade80'>+496</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat Z</td><td>252</td><td style='color:#4ade80'>+101</td><td style='color:#4ade80'>+495</td><td style='color:#4ade80'>+495</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Korean Speed Baccarat A</td><td>278</td><td style='color:#4ade80'>+169</td><td style='color:#4ade80'>+491</td><td style='color:#4ade80'>+491</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 7</td><td>274</td><td style='color:#4ade80'>+110</td><td style='color:#4ade80'>+486</td><td style='color:#4ade80'>+486</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Japanese Speed Baccarat D</td><td>267</td><td style='color:#4ade80'>+121</td><td style='color:#4ade80'>+464</td><td style='color:#4ade80'>+464</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Baccarat RÃ¡pido ao Vivo 1</td><td>254</td><td style='color:#4ade80'>+139</td><td style='color:#4ade80'>+461</td><td style='color:#4ade80'>+461</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Thai Speed Baccarat C</td><td>268</td><td style='color:#4ade80'>+150</td><td style='color:#4ade80'>+457</td><td style='color:#4ade80'>+457</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 9</td><td>305</td><td style='color:#4ade80'>+121</td><td style='color:#4ade80'>+454</td><td style='color:#4ade80'>+454</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 2</td><td>292</td><td style='color:#4ade80'>+137</td><td style='color:#4ade80'>+449</td><td style='color:#4ade80'>+449</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Emperor Speed Baccarat C</td><td>276</td><td style='color:#4ade80'>+97</td><td style='color:#4ade80'>+447</td><td style='color:#4ade80'>+447</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 5</td><td>271</td><td style='color:#4ade80'>+143</td><td style='color:#4ade80'>+439</td><td style='color:#4ade80'>+439</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 8</td><td>272</td><td style='color:#4ade80'>+115</td><td style='color:#4ade80'>+439</td><td style='color:#4ade80'>+439</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>BacarÃ¡ RÃ¡pido</td><td>254</td><td style='color:#4ade80'>+112</td><td style='color:#4ade80'>+438</td><td style='color:#4ade80'>+438</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 11</td><td>300</td><td style='color:#4ade80'>+159</td><td style='color:#4ade80'>+437</td><td style='color:#4ade80'>+437</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat V</td><td>297</td><td style='color:#4ade80'>+106</td><td style='color:#4ade80'>+433</td><td style='color:#4ade80'>+433</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Japanese Speed Baccarat E</td><td>266</td><td style='color:#4ade80'>+113</td><td style='color:#4ade80'>+429</td><td style='color:#4ade80'>+429</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Korean Speed Baccarat E</td><td>276</td><td style='color:#4ade80'>+118</td><td style='color:#4ade80'>+428</td><td style='color:#4ade80'>+428</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 6</td><td>273</td><td style='color:#4ade80'>+112</td><td style='color:#4ade80'>+423</td><td style='color:#4ade80'>+423</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Hindi Speed Baccarat B</td><td>287</td><td style='color:#4ade80'>+86</td><td style='color:#4ade80'>+422</td><td style='color:#4ade80'>+422</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Japanese Speed Baccarat C</td><td>289</td><td style='color:#4ade80'>+106</td><td style='color:#4ade80'>+416</td><td style='color:#4ade80'>+416</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Insurance Baccarat</td><td>280</td><td style='color:#4ade80'>+120</td><td style='color:#4ade80'>+410</td><td style='color:#4ade80'>+410</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Korean Speed Baccarat F</td><td>277</td><td style='color:#4ade80'>+136</td><td style='color:#4ade80'>+402</td><td style='color:#4ade80'>+402</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Stake Exclusive Speed Baccarat 1</td><td>287</td><td style='color:#4ade80'>+78</td><td style='color:#4ade80'>+397</td><td style='color:#4ade80'>+397</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Lotus Speed Baccarat B</td><td>293</td><td style='color:#4ade80'>+127</td><td style='color:#4ade80'>+396</td><td style='color:#4ade80'>+396</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Japanese Speed Baccarat B</td><td>286</td><td style='color:#4ade80'>+60</td><td style='color:#4ade80'>+393</td><td style='color:#4ade80'>+393</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat 2</td><td>257</td><td style='color:#4ade80'>+110</td><td style='color:#4ade80'>+381</td><td style='color:#4ade80'>+381</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Baccarat B</td><td>216</td><td style='color:#4ade80'>+56</td><td style='color:#4ade80'>+381</td><td style='color:#4ade80'>+381</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Lotus Speed Baccarat A</td><td>292</td><td style='color:#4ade80'>+130</td><td style='color:#4ade80'>+380</td><td style='color:#4ade80'>+380</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 1</td><td>287</td><td style='color:#4ade80'>+88</td><td style='color:#4ade80'>+379</td><td style='color:#4ade80'>+379</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Thai Speed Baccarat B</td><td>266</td><td style='color:#4ade80'>+149</td><td style='color:#4ade80'>+359</td><td style='color:#4ade80'>+359</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Emperor Speed Baccarat D</td><td>271</td><td style='color:#4ade80'>+104</td><td style='color:#4ade80'>+351</td><td style='color:#4ade80'>+351</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat D</td><td>302</td><td style='color:#4ade80'>+140</td><td style='color:#4ade80'>+347</td><td style='color:#4ade80'>+347</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Baccarat A</td><td>214</td><td style='color:#4ade80'>+47</td><td style='color:#4ade80'>+331</td><td style='color:#4ade80'>+331</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Speed Baccarat 3</td><td>248</td><td style='color:#4ade80'>+86</td><td style='color:#4ade80'>+329</td><td style='color:#4ade80'>+329</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Baccarat Squeeze</td><td>136</td><td style='color:#4ade80'>+78</td><td style='color:#4ade80'>+315</td><td style='color:#4ade80'>+315</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Korean Speaking Speed Baccarat 2</td><td>230</td><td style='color:#4ade80'>+95</td><td style='color:#4ade80'>+256</td><td style='color:#4ade80'>+256</td><td style='color:#555'>+0</td></tr><tr><td class='tname'>Always 9 Baccarat</td><td>245</td><td style='color:#f87171'>-82</td><td style='color:#4ade80'>+7</td><td style='color:#4ade80'>+7</td><td style='color:#555'>+0</td></tr></tbody>
+</table>
+
+<h2>4. ベストシュー Top 20 (逆張り+増額)</h2>
+<table>
+<thead><tr>
+  <th>日時</th><th>テーブル</th><th>パターン</th>
+  <th style="color:#fbbf24">A</th><th style="color:#6dd5ed">逆張り</th>
+  <th style="color:#4ade80">逆+増</th><th style="color:#c084fc">純テレコ</th>
+  <th>ハンド</th>
+</tr></thead>
+<tbody><tr><td class='ts'>2026-04-06 01:52</td><td class='tname'>Lotus Speed Baccarat C</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+5</td><td style='color:#4ade80'>+28</td><td style='color:#4ade80'>+28</td><td style='color:#555'>+0</td><td>55h</td></tr><tr><td class='ts'>2026-04-10 17:09</td><td class='tname'>Thai Speed Baccarat A</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+4</td><td style='color:#4ade80'>+28</td><td style='color:#4ade80'>+28</td><td style='color:#555'>+0</td><td>113h</td></tr><tr><td class='ts'>2026-04-11 08:54</td><td class='tname'>Speed Baccarat C</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+2</td><td style='color:#4ade80'>+26</td><td style='color:#4ade80'>+26</td><td style='color:#555'>+0</td><td>187h</td></tr><tr><td class='ts'>2026-04-11 11:08</td><td class='tname'>Dynasty Speed Baccarat 5</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+2</td><td style='color:#4ade80'>+26</td><td style='color:#4ade80'>+26</td><td style='color:#555'>+0</td><td>115h</td></tr><tr><td class='ts'>2026-04-11 18:17</td><td class='tname'>Korean Speed Baccarat E</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+1</td><td style='color:#4ade80'>+26</td><td style='color:#4ade80'>+26</td><td style='color:#555'>+0</td><td>55h</td></tr><tr><td class='ts'>2026-04-11 11:04</td><td class='tname'>Hindi Speed Baccarat A</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+7</td><td style='color:#4ade80'>+25</td><td style='color:#4ade80'>+25</td><td style='color:#555'>+0</td><td>118h</td></tr><tr><td class='ts'>2026-04-11 16:22</td><td class='tname'>Speed Baccarat U</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+3</td><td style='color:#4ade80'>+25</td><td style='color:#4ade80'>+25</td><td style='color:#555'>+0</td><td>60h</td></tr><tr><td class='ts'>2026-04-06 07:52</td><td class='tname'>Thai Speed Baccarat A</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+4</td><td style='color:#4ade80'>+24</td><td style='color:#4ade80'>+24</td><td style='color:#555'>+0</td><td>57h</td></tr><tr><td class='ts'>2026-04-06 23:36</td><td class='tname'>Korean Speed Baccarat G</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+4</td><td style='color:#4ade80'>+24</td><td style='color:#4ade80'>+24</td><td style='color:#555'>+0</td><td>61h</td></tr><tr><td class='ts'>2026-04-11 09:52</td><td class='tname'>Speed Baccarat A</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+5</td><td style='color:#4ade80'>+24</td><td style='color:#4ade80'>+24</td><td style='color:#555'>+0</td><td>119h</td></tr><tr><td class='ts'>2026-04-06 01:42</td><td class='tname'>Speed Baccarat W</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+2</td><td style='color:#4ade80'>+23</td><td style='color:#4ade80'>+23</td><td style='color:#555'>+0</td><td>106h</td></tr><tr><td class='ts'>2026-04-06 20:40</td><td class='tname'>Korean Speed Baccarat H</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+3</td><td style='color:#4ade80'>+23</td><td style='color:#4ade80'>+23</td><td style='color:#555'>+0</td><td>58h</td></tr><tr><td class='ts'>2026-04-06 21:00</td><td class='tname'>Speed Baccarat T</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+5</td><td style='color:#4ade80'>+23</td><td style='color:#4ade80'>+23</td><td style='color:#555'>+0</td><td>56h</td></tr><tr><td class='ts'>2026-04-07 08:58</td><td class='tname'>Dynasty Speed Baccarat 9</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+6</td><td style='color:#4ade80'>+23</td><td style='color:#4ade80'>+23</td><td style='color:#555'>+0</td><td>98h</td></tr><tr><td class='ts'>2026-04-08 06:37</td><td class='tname'>Speed Baccarat E</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+5</td><td style='color:#4ade80'>+23</td><td style='color:#4ade80'>+23</td><td style='color:#555'>+0</td><td>58h</td></tr><tr><td class='ts'>2026-04-09 17:22</td><td class='tname'>Speed Baccarat U</td><td>テレコ+ニコ混合</td><td style='color:#555'>+0</td><td style='color:#4ade80'>+23</td><td style='color:#4ade80'>+23</td><td style='color:#555'>+0</td><td>62h</td></tr><tr><td class='ts'>2026-04-09 23:46</td><td class='tname'>Korean Speed Baccarat A</td><td>テレコ+ニコ混合</td><td style='color:#f87171'>-2</td><td style='color:#4ade80'>+23</td><td style='color:#4ade80'>+23</td><td style='color:#555'>+0</td><td>62h</td></tr><tr><td class='ts'>2026-04-10 01:42</td><td class='tname'>Speed Baccarat E</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+6</td><td style='color:#4ade80'>+23</td><td style='color:#4ade80'>+23</td><td style='color:#555'>+0</td><td>60h</td></tr><tr><td class='ts'>2026-04-10 23:20</td><td class='tname'>Baccarat Squeeze</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+4</td><td style='color:#4ade80'>+23</td><td style='color:#4ade80'>+23</td><td style='color:#555'>+0</td><td>126h</td></tr><tr><td class='ts'>2026-04-11 18:11</td><td class='tname'>Korean Super Speed Baccarat</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+5</td><td style='color:#4ade80'>+23</td><td style='color:#4ade80'>+23</td><td style='color:#555'>+0</td><td>62h</td></tr></tbody>
+</table>
+
+<h2>5. ワーストシュー Bottom 20 (逆張り+増額)</h2>
+<table>
+<thead><tr>
+  <th>日時</th><th>テーブル</th><th>パターン</th>
+  <th style="color:#fbbf24">A</th><th style="color:#6dd5ed">逆張り</th>
+  <th style="color:#4ade80">逆+増</th><th style="color:#c084fc">純テレコ</th>
+  <th>ハンド</th>
+</tr></thead>
+<tbody><tr><td class='ts'>2026-04-06 15:23</td><td class='tname'>Speed Baccarat 2</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+4</td><td style='color:#f87171'>-16</td><td style='color:#f87171'>-16</td><td style='color:#555'>+0</td><td>63h</td></tr><tr><td class='ts'>2026-04-06 15:46</td><td class='tname'>Emperor Speed Baccarat A</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+2</td><td style='color:#f87171'>-16</td><td style='color:#f87171'>-16</td><td style='color:#555'>+0</td><td>61h</td></tr><tr><td class='ts'>2026-04-07 02:39</td><td class='tname'>Dynasty Speed Baccarat 10</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+1</td><td style='color:#f87171'>-16</td><td style='color:#f87171'>-16</td><td style='color:#555'>+0</td><td>61h</td></tr><tr><td class='ts'>2026-04-08 08:06</td><td class='tname'>Dynasty Speed Baccarat 9</td><td>テレコ+ニコ混合</td><td style='color:#f87171'>-4</td><td style='color:#f87171'>-16</td><td style='color:#f87171'>-16</td><td style='color:#555'>+0</td><td>57h</td></tr><tr><td class='ts'>2026-04-08 12:48</td><td class='tname'>Korean Speed Baccarat E</td><td>テレコ+ニコ混合</td><td style='color:#f87171'>-5</td><td style='color:#f87171'>-16</td><td style='color:#f87171'>-16</td><td style='color:#555'>+0</td><td>63h</td></tr><tr><td class='ts'>2026-04-12 07:07</td><td class='tname'>Baccarat A</td><td>テレコ+ニコ混合</td><td style='color:#555'>+0</td><td style='color:#f87171'>-16</td><td style='color:#f87171'>-16</td><td style='color:#555'>+0</td><td>59h</td></tr><tr><td class='ts'>2026-04-07 05:59</td><td class='tname'>Speed Baccarat C</td><td>テレコ+ニコ混合</td><td style='color:#f87171'>-4</td><td style='color:#f87171'>-17</td><td style='color:#f87171'>-17</td><td style='color:#555'>+0</td><td>64h</td></tr><tr><td class='ts'>2026-04-08 10:12</td><td class='tname'>Korean Speed Baccarat D</td><td>テレコ+ニコ混合</td><td style='color:#f87171'>-1</td><td style='color:#f87171'>-17</td><td style='color:#f87171'>-17</td><td style='color:#555'>+0</td><td>64h</td></tr><tr><td class='ts'>2026-04-09 17:28</td><td class='tname'>Dynasty Speed Baccarat 10</td><td>テレコ+ニコ混合</td><td style='color:#555'>+0</td><td style='color:#f87171'>-17</td><td style='color:#f87171'>-17</td><td style='color:#555'>+0</td><td>58h</td></tr><tr><td class='ts'>2026-04-10 00:49</td><td class='tname'>Korean Speaking Speed Baccarat 2</td><td>テレコ+ニコ混合</td><td style='color:#f87171'>-3</td><td style='color:#f87171'>-17</td><td style='color:#f87171'>-17</td><td style='color:#555'>+0</td><td>58h</td></tr><tr><td class='ts'>2026-04-10 18:23</td><td class='tname'>Always 9 Baccarat</td><td>テレコ+ニコ混合</td><td style='color:#f87171'>-2</td><td style='color:#f87171'>-17</td><td style='color:#f87171'>-17</td><td style='color:#555'>+0</td><td>68h</td></tr><tr><td class='ts'>2026-04-11 22:59</td><td class='tname'>Speed Baccarat 2</td><td>テレコ+ニコ混合</td><td style='color:#f87171'>-2</td><td style='color:#f87171'>-17</td><td style='color:#f87171'>-17</td><td style='color:#555'>+0</td><td>66h</td></tr><tr><td class='ts'>2026-04-12 00:18</td><td class='tname'>Always 9 Baccarat</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+1</td><td style='color:#f87171'>-17</td><td style='color:#f87171'>-17</td><td style='color:#555'>+0</td><td>74h</td></tr><tr><td class='ts'>2026-04-12 00:25</td><td class='tname'>Lotus Speed Baccarat B</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+5</td><td style='color:#f87171'>-17</td><td style='color:#f87171'>-17</td><td style='color:#555'>+0</td><td>60h</td></tr><tr><td class='ts'>2026-04-10 00:49</td><td class='tname'>Korean Speed Baccarat F</td><td>テレコ+ニコ混合</td><td style='color:#f87171'>-1</td><td style='color:#f87171'>-18</td><td style='color:#f87171'>-18</td><td style='color:#555'>+0</td><td>67h</td></tr><tr><td class='ts'>2026-04-11 18:31</td><td class='tname'>Thai Speed Baccarat B</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+1</td><td style='color:#f87171'>-18</td><td style='color:#f87171'>-18</td><td style='color:#555'>+0</td><td>63h</td></tr><tr><td class='ts'>2026-04-09 03:27</td><td class='tname'>Lotus Speed Baccarat C</td><td>テレコ+ニコ混合</td><td style='color:#f87171'>-2</td><td style='color:#f87171'>-19</td><td style='color:#f87171'>-19</td><td style='color:#555'>+0</td><td>56h</td></tr><tr><td class='ts'>2026-04-07 06:46</td><td class='tname'>Dynasty Speed Baccarat 6</td><td>テレコ+ニコ混合</td><td style='color:#f87171'>-1</td><td style='color:#f87171'>-20</td><td style='color:#f87171'>-20</td><td style='color:#555'>+0</td><td>61h</td></tr><tr><td class='ts'>2026-04-11 06:37</td><td class='tname'>Japanese Speed Baccarat E</td><td>テレコ+ニコ混合</td><td style='color:#f87171'>-3</td><td style='color:#f87171'>-20</td><td style='color:#f87171'>-20</td><td style='color:#555'>+0</td><td>57h</td></tr><tr><td class='ts'>2026-04-09 20:40</td><td class='tname'>Dynasty Speed Baccarat 2</td><td>テレコ+ニコ混合</td><td style='color:#4ade80'>+4</td><td style='color:#f87171'>-22</td><td style='color:#f87171'>-22</td><td style='color:#555'>+0</td><td>59h</td></tr></tbody>
+</table>
+
+<p class="note" style="margin-top:32px;">
+  生成元: <code>generate_counter_tereko_backtest.py</code> / 逆張り + 〇✖ MaruBatsu / Banker unit×1.0526
+</p>
+</div>
+</body>
+</html>

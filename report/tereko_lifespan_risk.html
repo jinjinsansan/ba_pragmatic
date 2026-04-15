@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>S. テレコ寿命リスク分析</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  background: #0f1419; color: #e0e6ed; margin: 0; padding: 24px; line-height: 1.5;
+}
+.container { max-width: 1400px; margin: 0 auto; }
+h1 { color: #ffd700; font-size: 28px; border-bottom: 2px solid #ffd700; padding-bottom: 8px; }
+h2 { color: #c084fc; margin-top: 32px; font-size: 22px; }
+.nav { margin: 16px 0 24px 0; }
+.nav a {
+  display: inline-block; margin-right: 12px; padding: 8px 16px;
+  background: #1a2332; color: #6dd5ed; text-decoration: none;
+  border-radius: 4px; border: 1px solid #2a3441; font-size: 13px;
+}
+.nav a:hover { border-color: #c084fc; }
+.banner {
+  background: #2a1a1a; border-left: 5px solid #f87171;
+  padding: 14px 18px; margin: 16px 0; font-size: 14px; border-radius: 4px; line-height: 1.8;
+}
+.banner strong { color: #f87171; }
+.summary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px; margin: 20px 0;
+}
+.card {
+  background: #1a2332; padding: 14px; border-radius: 4px; border-left: 4px solid #6dd5ed;
+}
+.card .label { font-size: 11px; color: #8a96a8; text-transform: uppercase; }
+.card .value { font-size: 22px; font-weight: bold; color: #ffd700; }
+.card.green .value { color: #4ade80; }
+.card.red .value { color: #f87171; }
+.card.yellow .value { color: #fbbf24; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 16px 0; }
+table th { background: #0f1419; color: #c084fc; padding: 8px; text-align: left; border-bottom: 2px solid #2a3441; }
+table td { padding: 6px 8px; border-bottom: 1px solid #1a2332; }
+table tr:hover { background: rgba(255,255,255,0.03); }
+.note { color: #8a96a8; font-size: 13px; margin: 8px 0; }
+.danger-box {
+  background: #2a1a1a; border: 2px solid #f87171; border-radius: 8px;
+  padding: 20px; margin: 20px 0;
+}
+.danger-box h3 { color: #f87171; margin: 0 0 12px 0; }
+.safe-box {
+  background: #1a2a1a; border: 2px solid #4ade80; border-radius: 8px;
+  padding: 20px; margin: 20px 0;
+}
+.safe-box h3 { color: #4ade80; margin: 0 0 12px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>S. テレコ寿命リスク分析</h1>
+
+<div class="nav">
+<a href="index.html">← レポートTOP</a>
+<a href="entry_exit_optimization.html">P. 入退室最適化</a>
+<a href="profit_target_optimization.html">R. 利確最適化</a>
+</div>
+
+<div class="banner">
+<strong>⚠️ テレコ逆張り戦略の最大の弱点: テレコの寿命。</strong><br>
+テレコ区間が短くなると、入室→即崩壊→損失 のループに陥る。<br>
+Evolution がパターンを変更してテレコの命が短くなった場合の影響をシミュレーション。<br>
+<strong>早期警戒指標: 日別テレコ平均寿命が低下したら危険信号。</strong>
+</div>
+
+<div class="summary">
+  <div class="card">
+    <div class="label">テレコ区間数</div>
+    <div class="value">18,161</div>
+  </div>
+  <div class="card green">
+    <div class="label">平均寿命</div>
+    <div class="value">8.6h</div>
+  </div>
+  <div class="card yellow">
+    <div class="label">短命区間 (≤5h)</div>
+    <div class="value">53%</div>
+  </div>
+  <div class="card red">
+    <div class="label">破綻ライン</div>
+    <div class="value">不明</div>
+  </div>
+</div>
+
+<h2>1. テレコ寿命の分布</h2>
+<p class="note">テレコ区間が何ハンド続くかの分布。短命が多いほどリスクが高い。</p>
+
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">1-3h</div>
+  <div style="flex:1;height:22px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:149.00060569351908px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">6,765 (37.3%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">4-5h</div>
+  <div style="flex:1;height:22px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:63.2123781730081px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">2,870 (15.8%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">6-10h</div>
+  <div style="flex:1;height:22px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:73.98271020318265px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">3,359 (18.5%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">11-15h</div>
+  <div style="flex:1;height:22px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:42.42057155442982px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">1,926 (10.6%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">16-20h</div>
+  <div style="flex:1;height:22px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:26.496338307361928px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">1,203 (6.6%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">21-30h</div>
+  <div style="flex:1;height:22px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:31.341886459996697px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">1,423 (7.8%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">31-50h</div>
+  <div style="flex:1;height:22px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:13.50145917075051px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">613 (3.4%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">51h+</div>
+  <div style="flex:1;height:22px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.044050437751225156px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">2 (0.0%)</div>
+</div>
+
+<h2>2. 寿命別の逆張り収益 (flat $1)</h2>
+<p class="note">短い区間 vs 長い区間で逆張りの勝率・収益は異なるか。</p>
+<table>
+<thead><tr><th>区間種別</th><th>区間数</th><th>逆張り勝率</th><th>Flat PNL</th><th>平均PNL/区間</th></tr></thead>
+<tbody><tr><td style='font-weight:bold'>短命 (1-5h)</td><td>9,635</td><td>62.4%</td><td style='color:#4ade80'>+7,081</td><td>+0.7</td></tr><tr><td style='font-weight:bold'>中間 (6-15h)</td><td>5,285</td><td>60.4%</td><td style='color:#4ade80'>+10,826</td><td>+2.0</td></tr><tr><td style='font-weight:bold'>長命 (16h+)</td><td>3,241</td><td>59.0%</td><td style='color:#4ade80'>+14,292</td><td>+4.4</td></tr></tbody>
+</table>
+
+<h2>3. テレコ寿命制限シミュレーション</h2>
+<p class="note">
+テレコ区間を「最大Nハンドで強制終了」した場合の〇✖ PNL。<br>
+Evolution がテレコの命を短くした場合のワーストケース分析。<br>
+<strong>「制限なし」が現在の結果。制限が厳しいほど寿命が短い世界を模擬。</strong>
+</p>
+
+<table>
+<thead><tr>
+  <th>最大寿命</th><th>BET数</th><th>勝率</th><th>PNL ($30利確)</th><th>現在比</th>
+  <th>完走</th><th>MaxDD</th><th>資金効率</th><th>判定</th>
+</tr></thead>
+<tbody><tr><td style='font-weight:bold'>3h</td><td>20,688</td><td>55.58%</td><td style='color:#4ade80;font-weight:bold'>$+5,453</td><td>5%</td><td>159</td><td>$219</td><td>24.95</td><td> ⚠️ 危険域</td></tr><tr><td style='font-weight:bold'>5h</td><td>34,817</td><td>56.30%</td><td style='color:#4ade80;font-weight:bold'>$+9,852</td><td>9%</td><td>286</td><td>$162</td><td>60.65</td><td> ⚠️ 危険域</td></tr><tr><td style='font-weight:bold'>7h</td><td>50,456</td><td>56.63%</td><td style='color:#4ade80;font-weight:bold'>$+14,390</td><td>13%</td><td>418</td><td>$209</td><td>68.82</td><td> ⚠️ 危険域</td></tr><tr><td style='font-weight:bold'>10h</td><td>71,088</td><td>56.74%</td><td style='color:#4ade80;font-weight:bold'>$+20,047</td><td>19%</td><td>588</td><td>$343</td><td>58.40</td><td> ⚠️ 危険域</td></tr><tr><td style='font-weight:bold'>15h</td><td>109,373</td><td>56.87%</td><td style='color:#4ade80;font-weight:bold'>$+31,460</td><td>29%</td><td>920</td><td>$324</td><td>97.17</td><td> ⚠️ 危険域</td></tr><tr><td style='font-weight:bold'>20h</td><td>150,446</td><td>56.66%</td><td style='color:#4ade80;font-weight:bold'>$+43,379</td><td>40%</td><td>1,275</td><td>$182</td><td>237.76</td><td></td></tr><tr><td style='font-weight:bold'>30h</td><td>233,263</td><td>56.14%</td><td style='color:#4ade80;font-weight:bold'>$+66,419</td><td>61%</td><td>1,963</td><td>$123</td><td>539.12</td><td></td></tr><tr><td style='font-weight:bold'>50h</td><td>363,924</td><td>53.91%</td><td style='color:#4ade80;font-weight:bold'>$+96,656</td><td>89%</td><td>2,712</td><td>$607</td><td>159.13</td><td></td></tr><tr><td style='font-weight:bold'>100h</td><td>413,355</td><td>53.47%</td><td style='color:#4ade80;font-weight:bold'>$+107,820</td><td>100%</td><td>2,982</td><td>$2,111</td><td>51.08</td><td></td></tr><tr><td style='font-weight:bold'>制限なし</td><td>413,691</td><td>53.46%</td><td style='color:#4ade80;font-weight:bold'>$+108,132</td><td>100%</td><td>2,986</td><td>$2,111</td><td>51.22</td><td></td></tr></tbody>
+</table>
+
+<div class="danger-box">
+<h3>💀 破綻ライン: テレコ寿命が 不明 になると利益が消える</h3>
+<p class="note">
+テレコ区間が極端に短くなると、〇✖ progression が利確に到達する前にテレコが崩壊する。<br>
+崩壊後の損失が積み重なり、利益を食い尽くす。<br>
+<strong>現在の平均寿命 8.6h が この閾値より十分に上にある限り安全。</strong>
+</p>
+</div>
+
+<div class="safe-box">
+<h3>✅ 早期警戒の基準値</h3>
+<p class="note">
+以下を日次で監視し、3日連続で閾値を下回ったら「環境変化」と判断して戦略を再評価:
+</p>
+<ul style="color:#e0e6ed;font-size:14px;margin:8px 0;">
+<li><strong>平均テレコ寿命</strong>: 現在 8.6h → <strong style="color:#fbbf24">10h 以下は警戒</strong> → <strong style="color:#f87171">7h 以下は危険</strong></li>
+<li><strong>短命区間率 (≤5h)</strong>: 現在 53% → <strong style="color:#fbbf24">50%以上は警戒</strong> → <strong style="color:#f87171">60%以上は危険</strong></li>
+<li><strong>逆張り勝率</strong>: 現在 53.5% → <strong style="color:#fbbf24">51%以下は警戒</strong> → <strong style="color:#f87171">50%以下は危険</strong></li>
+</ul>
+</div>
+
+<h2>4. 日別テレコ寿命推移</h2>
+<p class="note">日ごとのテレコ平均寿命。トレンドが下がっていたら Evolution が対策している可能性。</p>
+<table>
+<thead><tr>
+  <th>日付</th><th>テレコ区間数</th><th>平均寿命</th><th>中央値</th>
+  <th>短命率 (≤5h)</th><th>長命率 (≥20h)</th>
+</tr></thead>
+<tbody><tr><td>2026-04-06</td><td>2,825</td><td style='color:#f87171;font-weight:bold'>8.6h</td><td>5h</td><td style='color:#f87171'>54%</td><td style='color:#8a96a8'>12%</td></tr><tr><td>2026-04-07</td><td>2,828</td><td style='color:#f87171;font-weight:bold'>8.5h</td><td>5h</td><td style='color:#f87171'>53%</td><td style='color:#8a96a8'>11%</td></tr><tr><td>2026-04-08</td><td>2,860</td><td style='color:#f87171;font-weight:bold'>8.8h</td><td>5h</td><td style='color:#f87171'>52%</td><td style='color:#8a96a8'>13%</td></tr><tr><td>2026-04-09</td><td>2,748</td><td style='color:#f87171;font-weight:bold'>8.5h</td><td>5h</td><td style='color:#f87171'>54%</td><td style='color:#8a96a8'>12%</td></tr><tr><td>2026-04-10</td><td>2,814</td><td style='color:#f87171;font-weight:bold'>8.6h</td><td>5h</td><td style='color:#f87171'>53%</td><td style='color:#8a96a8'>12%</td></tr><tr><td>2026-04-11</td><td>2,863</td><td style='color:#f87171;font-weight:bold'>8.6h</td><td>5h</td><td style='color:#f87171'>53%</td><td style='color:#8a96a8'>12%</td></tr><tr><td>2026-04-12</td><td>1,223</td><td style='color:#f87171;font-weight:bold'>8.6h</td><td>5h</td><td style='color:#f87171'>53%</td><td style='color:#8a96a8'>12%</td></tr></tbody>
+</table>
+
+<p class="note" style="margin-top:32px;">
+  生成元: <code>generate_tereko_lifespan_risk.py</code> /
+  テレコ逆張り × $30利確 × 〇✖ MaruBatsu
+</p>
+</div>
+</body>
+</html>

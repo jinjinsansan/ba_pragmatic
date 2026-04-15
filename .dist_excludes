@@ -1,0 +1,135 @@
+# =============================================================================
+# LAPLACE Client Distribution — SERVER-ONLY files
+# =============================================================================
+#
+# This manifest lists files that MUST NOT be included in any client-facing
+# distribution (.exe installer, cloud desktop setup, ZIP bundle, etc.).
+#
+# These files contain the sensitive IP (scoring formulas, betting sequences,
+# threshold constants, regularity algorithms) that make the LAPLACE strategy
+# valuable. They must live only on the VPS, where the LAPLACE API serves
+# decisions to clients over HTTP.
+#
+# When building a client distribution, filter out every path listed below.
+# When running the client, these files are lazily imported only in
+# local-fallback mode (which should be disabled in shipped builds via
+# LAPLACE_USE_REMOTE=1).
+#
+# Format: one glob pattern per line. Lines starting with '#' are comments.
+# =============================================================================
+
+# --- Core strategy logic (highest sensitivity) ---
+marubatsu_strategy.py
+marubatsu_bet.py
+run_marubatsu_bet.py
+
+# --- Table selection and scoring ---
+table_selector.py
+
+# --- Regularity and shoe pattern analysis ---
+shoe.py
+strategy.py
+
+# --- Backtest / research / dev tooling ---
+backtest.py
+main.py
+main_lobby.py
+vision.py
+analyze_*.py
+verify_*.py
+investigate_*.py
+debug_*.py
+check_*.py
+report_*.py
+backtest_*.py
+fetch_*.py
+capture_*.py
+get_*.py
+export_*.py
+parse_*.py
+inspect_*.py
+test_*.py
+find_*.py
+generate_*.py
+_*.py
+
+# --- Auto update helper (contains server-only canary strings) ---
+auto_update_tables.py
+
+# --- Server-only entry points ---
+laplace_api.py
+laplace_bet_runner.py
+bot_manager.py
+
+# --- monitor/ is entirely VPS-side (data collector, promotional telegram) ---
+monitor/
+
+# --- DB schema (sensitive) ---
+db.py
+analytics_db.py
+
+# --- Data artefacts (never ship) ---
+analytics.sqlite3
+analytics.sqlite3-*
+data/
+api_state/
+bot_logs/
+bot_configs/
+auth_state/
+screenshots/
+*.log
+*.log.*
+ws_raw_log.jsonl
+tables_dump.json
+
+# --- Secrets & local config ---
+.env
+.env.*
+config.ini
+monitor/.env
+
+# --- Documentation (can be shipped but not required) ---
+*.md
+DESIGN_AUTO_BET.md
+AI_PREDICTION_PROJECT.md
+
+# --- Developer scripts ---
+scripts/
+tests/
+
+# --- Build artefacts and caches ---
+__pycache__/
+.git/
+.claude/
+.factory/
+.pytest_cache/
+.venv/
+venv/
+dist/
+dist_client/
+build/
+gui/node_modules/
+gui/dist/
+node_modules/
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+
+# --- Browser state (never ship — contains login cookies) ---
+browser_data/
+browser_profile/
+stake_profile/
+
+# --- Stale DOM dumps / debugging snapshots ---
+*_dumps/
+*_dump*/
+stderr.log
+state_*.json
+ws_raw_log.jsonl
+capture_ws_log.json
+tables_dump.json
+report_*.txt
+verify_*.txt
+TODO_NEXT.md
+PLAN_GUI_APP.md

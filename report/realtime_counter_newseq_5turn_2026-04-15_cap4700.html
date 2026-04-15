@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang='ja'>
+<head>
+  <meta charset='utf-8'/>
+  <meta name='viewport' content='width=device-width,initial-scale=1'/>
+  <title>Realtime Counter Backtest (NewSEQ×5turn)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b1020; color:#e5e7eb; margin:0; padding:24px; }
+    .card { background:#111827; border:1px solid #243042; border-radius:12px; padding:16px; margin-bottom:16px; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { border-bottom:1px solid #243042; padding:8px; font-size:13px; text-align:left; }
+    th { color:#93c5fd; }
+    code { background:#0b1224; padding:2px 6px; border-radius:6px; }
+  </style>
+</head>
+<body>
+  <h1>リアルタイム テレコ入退室 × 逆張り（新SEQ×5ターン）</h1>
+
+  <div class='card'>
+    <div><strong>DB:</strong> <code>analytics_today.sqlite3</code> / <strong>期間:</strong> 2026-04-15〜 / <strong>シュー数:</strong> 661</div>
+    <div><strong>入室条件:</strong> 直近15列で 1-2落ち率 ≥ 85%</div>
+    <div><strong>退室条件:</strong> 5落ち即 / 3落ち以上×2</div>
+    <div><strong>資金管理:</strong> 新SEQ(SEQ_COUNTER) + 5ターンset / $30利確（損切なし） / 初期資金 $4,700</div>
+  </div>
+
+  <div class='card'>
+    <h2>結果</h2>
+    <ul>
+      <li>入室: 175 / 退室: 174 / 平均テレコ候補数: 12.33</li>
+      <li>BET: 1,092 / 勝: 516 / 負: 576 / 勝率: 47.25%</li>
+      <li>累計損益(推定): <span style='color:#f87171;font-weight:bold'>$-4,742</span></li>
+      <li>最大DD(推定): <span style='color:#fbbf24;font-weight:bold'>$4,975</span></li>
+      <li>最低残高(推定): <span style='color:#fbbf24;font-weight:bold'>$-42</span></li>
+      <li>最大ユニット: <span style='color:#fbbf24;font-weight:bold'>$265</span></li>
+      <li>利確回数: 6（$30到達でセッションリセット）</li>
+      <li>破綻: <strong>YES</strong> (hand #1,092)</li>
+    </ul>
+  </div>
+
+  <div class='card'>
+    <h2>退室理由</h2>
+    <table>
+      <thead><tr><th>reason</th><th>count</th></tr></thead>
+      <tbody><tr><td>streak-5</td><td>99</td></tr><tr><td>streak-3x2</td><td>75</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class='card'>
+    <h2>テーブル別（BET数上位40）</h2>
+    <table>
+      <thead><tr><th>table</th><th>entries</th><th>bets</th><th>w</th><th>l</th><th>winrate</th></tr></thead>
+      <tbody><tr><td>Japanese Speed Baccarat D</td><td>32</td><td>195</td><td>93</td><td>102</td><td>47.69%</td></tr><tr><td>Dynasty Speed Baccarat 7</td><td>11</td><td>86</td><td>43</td><td>43</td><td>50.00%</td></tr><tr><td>Speed Baccarat X</td><td>12</td><td>74</td><td>36</td><td>38</td><td>48.65%</td></tr><tr><td>Korean Speaking Speed Baccarat 2</td><td>13</td><td>67</td><td>29</td><td>38</td><td>43.28%</td></tr><tr><td>Hindi Speed Baccarat B</td><td>8</td><td>59</td><td>33</td><td>26</td><td>55.93%</td></tr><tr><td>Dynasty Speed Baccarat 6</td><td>7</td><td>54</td><td>28</td><td>26</td><td>51.85%</td></tr><tr><td>Japanese Speed Baccarat C</td><td>5</td><td>47</td><td>25</td><td>22</td><td>53.19%</td></tr><tr><td>Korean Speaking Speed Baccarat</td><td>8</td><td>46</td><td>25</td><td>21</td><td>54.35%</td></tr><tr><td>Korean Speed Baccarat D</td><td>5</td><td>43</td><td>21</td><td>22</td><td>48.84%</td></tr><tr><td>Speed Baccarat Z</td><td>7</td><td>42</td><td>21</td><td>21</td><td>50.00%</td></tr><tr><td>Lotus Speed Baccarat A</td><td>7</td><td>41</td><td>16</td><td>25</td><td>39.02%</td></tr><tr><td>Dynasty Speed Baccarat 3</td><td>3</td><td>38</td><td>19</td><td>19</td><td>50.00%</td></tr><tr><td>Thai Speed Baccarat C</td><td>7</td><td>37</td><td>14</td><td>23</td><td>37.84%</td></tr><tr><td>Korean Speed Baccarat E</td><td>6</td><td>33</td><td>15</td><td>18</td><td>45.45%</td></tr><tr><td>Speed Baccarat V</td><td>3</td><td>33</td><td>19</td><td>14</td><td>57.58%</td></tr><tr><td>Super Speed Baccarat</td><td>11</td><td>32</td><td>12</td><td>20</td><td>37.50%</td></tr><tr><td>Speed Baccarat D</td><td>12</td><td>31</td><td>10</td><td>21</td><td>32.26%</td></tr><tr><td>Dynasty Speed Baccarat 9</td><td>3</td><td>28</td><td>14</td><td>14</td><td>50.00%</td></tr><tr><td>Speed Baccarat A</td><td>3</td><td>27</td><td>13</td><td>14</td><td>48.15%</td></tr><tr><td>Korean Super Speed Baccarat</td><td>2</td><td>18</td><td>6</td><td>12</td><td>33.33%</td></tr><tr><td>Emperor Speed Baccarat C</td><td>2</td><td>17</td><td>8</td><td>9</td><td>47.06%</td></tr><tr><td>Japanese Speed Baccarat B</td><td>1</td><td>15</td><td>7</td><td>8</td><td>46.67%</td></tr><tr><td>Korean Speed Baccarat B</td><td>5</td><td>15</td><td>5</td><td>10</td><td>33.33%</td></tr><tr><td>Korean Speed Baccarat C</td><td>2</td><td>14</td><td>4</td><td>10</td><td>28.57%</td></tr><tr><td>Baccarat B</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Speed Baccarat 2</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Korean Speed Baccarat A</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Dynasty Speed Baccarat 10</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Japanese Speed Baccarat E</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Emperor Speed Baccarat D</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Dynasty Speed Baccarat 1</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Emperor Speed Baccarat A</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Dynasty Speed Baccarat 4</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Speed Baccarat E</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Speed Baccarat C</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Insurance Baccarat</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Speed Baccarat T</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Dynasty Speed Baccarat 2</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>BacarÃ¡ RÃ¡pido</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr><tr><td>Dynasty Speed Baccarat 11</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0.00%</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class='card'>
+    <p>生成元: <code>generate_realtime_counter_backtest_newseq_5turn.py</code></p>
+  </div>
+</body>
+</html>

@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>LAPLACE 運用マニュアル</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap');
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Noto Sans JP', sans-serif;
+  background: #f5f5f7;
+  color: #1d1d1f;
+  line-height: 1.7;
+  padding: 40px 20px;
+}
+.container {
+  max-width: 850px;
+  margin: 0 auto;
+  background: white;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  padding: 50px;
+  border-radius: 8px;
+}
+.header {
+  background: linear-gradient(135deg, #28a745 0%, #6bcf8f 100%);
+  color: white;
+  padding: 50px;
+  text-align: center;
+  margin: -50px -50px 40px -50px;
+  border-radius: 8px 8px 0 0;
+}
+.header h1 { font-size: 36px; font-weight: 900; margin-bottom: 10px; }
+.header p { font-size: 16px; opacity: 0.95; }
+h2 {
+  font-size: 26px;
+  color: #28a745;
+  margin: 40px 0 20px;
+  padding-bottom: 12px;
+  border-bottom: 3px solid #28a745;
+}
+h3 {
+  font-size: 20px;
+  color: #1d1d1f;
+  margin: 25px 0 12px;
+  padding-left: 15px;
+  border-left: 5px solid #28a745;
+}
+.step {
+  background: #f0fff4;
+  border: 2px solid #28a745;
+  border-radius: 10px;
+  padding: 25px;
+  margin: 20px 0;
+  position: relative;
+}
+.step-number {
+  display: inline-block;
+  background: #28a745;
+  color: white;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  text-align: center;
+  line-height: 36px;
+  font-weight: 900;
+  margin-right: 15px;
+  font-size: 18px;
+}
+.step-title { display: inline-block; font-size: 20px; font-weight: 700; color: #1d1d1f; }
+.step-body { margin-top: 15px; margin-left: 51px; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 20px 0;
+  font-size: 15px;
+}
+th { background: #28a745; color: white; padding: 12px; text-align: left; }
+td { padding: 12px; border-bottom: 1px solid #e0e0e0; }
+tr:nth-child(even) { background: #f9f9fb; }
+code {
+  background: #f0f0f0;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: 'Consolas', monospace;
+  font-size: 14px;
+  color: #dc3545;
+}
+pre {
+  background: #1d1d1f;
+  color: #fff;
+  padding: 20px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 15px 0;
+  font-family: 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.warning {
+  background: #fff3cd;
+  border-left: 5px solid #ff9500;
+  padding: 18px 22px;
+  margin: 20px 0;
+  border-radius: 6px;
+}
+.success {
+  background: #d4edda;
+  border-left: 5px solid #28a745;
+  padding: 18px 22px;
+  margin: 20px 0;
+  border-radius: 6px;
+}
+ul, ol { padding-left: 30px; margin: 12px 0; }
+li { margin-bottom: 6px; }
+.log-sample {
+  background: #1d1d1f;
+  color: #a0e0ff;
+  padding: 18px;
+  border-radius: 8px;
+  font-family: 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 15px 0;
+}
+.log-sample .ok { color: #6bcf8f; }
+.log-sample .warn { color: #ffd93d; }
+.log-sample .err { color: #ff6b6b; }
+.footer {
+  margin-top: 50px;
+  padding-top: 25px;
+  border-top: 2px solid #e0e0e0;
+  text-align: center;
+  color: #6e6e73;
+  font-size: 13px;
+}
+@media print {
+  body { background: white; padding: 0; }
+  .container { box-shadow: none; padding: 30px; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="header">
+<h1>📘 LAPLACE 運用マニュアル</h1>
+<p>Sync Mode の使い方と動作の見方</p>
+</div>
+
+<h2>🚀 起動手順</h2>
+
+<div class="step">
+<span class="step-number">1</span>
+<span class="step-title">GUI を起動</span>
+<div class="step-body">
+<p>GUIアイコンをダブルクリック。Electronウィンドウが起動します。</p>
+</div>
+</div>
+
+<div class="step">
+<span class="step-number">2</span>
+<span class="step-title">Settings を開く</span>
+<div class="step-body">
+<p>右上の歯車アイコンをクリック。</p>
+</div>
+</div>
+
+<div class="step">
+<span class="step-number">3</span>
+<span class="step-title">BOT Tab で設定</span>
+<div class="step-body">
+<table>
+<tr><td>Chip Base</td><td>1</td></tr>
+<tr><td>Profit Target</td><td>30</td></tr>
+<tr><td>Loss Cut</td><td>3000</td></tr>
+<tr><td>BET Mode</td><td><strong>Sync (Top tables + regularity monitor)</strong></td></tr>
+<tr><td>Dry Run</td><td>オフ（本番）</td></tr>
+</table>
+<p>SAVE をクリック。</p>
+</div>
+</div>
+
+<div class="step">
+<span class="step-number">4</span>
+<span class="step-title">START ボタンをクリック</span>
+<div class="step-body">
+<p>resume か 新規かのダイアログが出たら、状況に応じて選択。初回は「新規」。</p>
+</div>
+</div>
+
+<h2>🔄 動作の流れ</h2>
+
+<div class="step">
+<span class="step-number">1</span>
+<span class="step-title">ロビーで推奨テーブル監視</span>
+<div class="step-body">
+<p>Sync Mode は4つの推奨テーブルを同時監視し、入場条件を満たすまで待機します。</p>
+<div class="log-sample">
+[16:05:11] <span class="ok">🔍 Syncモード: 推奨テーブルを監視中...</span><br>
+[16:05:11] [Sync] 推奨テーブル: Japanese Speed Baccarat A, Korean Speed Baccarat B, Korean Speed Baccarat H, Speed Baccarat E<br>
+[16:05:11] [Sync] 入場条件: ハンド数≥35, 規則性≥70<br>
+[16:05:15] [Sync] ⏳ Japanese Speed Baccarat A: 27ハンド（35まで待機）<br>
+[16:05:15] [Sync] ⏳ Korean Speed Baccarat B: 5ハンド（35まで待機）<br>
+[16:05:15] <span class="ok">✅ Korean Speed Baccarat H: 45ハンド reg=75 → 条件クリア!</span>
+</div>
+</div>
+</div>
+
+<div class="step">
+<span class="step-number">2</span>
+<span class="step-title">入場と再確認</span>
+<div class="step-body">
+<p>条件クリアしたテーブルに入場し、DOM読み取りで再確認します。</p>
+<div class="log-sample">
+[16:05:19] <span class="ok">🎯 Sync: Korean Speed Baccarat H に入場します (reg=75)</span><br>
+[16:05:19] [Sync] ★ 入場決定: Korean Speed Baccarat H 規則性=75<br>
+[16:05:19] BET session started [LIVE] table=Korean Speed Baccarat H chip=$1<br>
+[16:05:19] [Sync-Entry] ビーズロードから規則性を再計算<br>
+[16:05:19] [Sync-Entry] テーブル内: 62ハンド reg=75<br>
+[16:05:19] <span class="ok">✅ 入場後確認OK: 62ハンド reg=75 → BET開始</span>
+</div>
+</div>
+</div>
+
+<div class="step">
+<span class="step-number">3</span>
+<span class="step-title">〇✖ロジックでBET</span>
+<div class="step-body">
+<p>$1からスタート。7ハンド=1セットで管理。</p>
+<div class="log-sample">
+[16:05:21] BET: $1 PLAYER (Set#1 Turn1/7)<br>
+[16:05:25] 結果: PLAYER → 〇<br>
+[16:05:27] BET: $1 PLAYER (Set#1 Turn2/7)<br>
+[16:05:31] 結果: PLAYER → 〇<br>
+...<br>
+[16:08:07] <span class="ok">📋 Set #1 確定: OOOOOXO 6/1 P/L:+5</span>
+</div>
+</div>
+</div>
+
+<div class="step">
+<span class="step-number">4</span>
+<span class="step-title">動的規則性監視</span>
+<div class="step-body">
+<p>毎ハンドごとに規則性をチェック。崩壊したら即退避。</p>
+<div class="log-sample">
+[16:48:49] <span class="ok">✅ 規則性=75 ハンド=52 → 継続</span><br>
+[16:49:18] <span class="ok">✅ 規則性=75 ハンド=53 → 継続</span><br>
+[16:50:45] <span class="warn">⚠️ 規則性=62 ハンド=55 → 退避判定</span><br>
+[16:50:50] <span class="warn">次の推奨テーブルを探しています...</span>
+</div>
+</div>
+</div>
+
+<div class="step">
+<span class="step-number">5</span>
+<span class="step-title">利確</span>
+<div class="step-body">
+<p>累計$30達成で自動的に利確。新しいセッションを開始します。</p>
+<div class="log-sample">
+[16:55:00] <span class="ok">🎉 PROFIT TARGET HIT!  +$30</span><br>
+[16:55:00] Session P&L synced
+</div>
+</div>
+</div>
+
+<h2>📊 GUI画面の見方</h2>
+
+<h3>ステータスバー</h3>
+<table>
+<tr><td>Balance</td><td>現在のStake残高</td></tr>
+<tr><td>Session P&L</td><td>このセッションの累計損益</td></tr>
+<tr><td>Today P&L</td><td>今日の累計損益</td></tr>
+<tr><td>Bets</td><td>勝数/負数</td></tr>
+<tr><td>Win Rate</td><td>勝率</td></tr>
+</table>
+
+<h3>Developer Mode</h3>
+<p>詳細情報を見たい場合は Dev Mode を有効化（右下のリンク）：</p>
+<table>
+<tr><td>Current Unit</td><td>現在のBET単位</td></tr>
+<tr><td>Current Set</td><td>現在のセット番号</td></tr>
+<tr><td>Turn in Set</td><td>セット内のターン位置</td></tr>
+<tr><td>Overshoot</td><td>OS値（マルバツの調整値）</td></tr>
+</table>
+
+<h2>⚠️ トラブルシューティング</h2>
+
+<h3>Q1. ロビーで長時間待機している</h3>
+<div class="warning">
+<strong>A:</strong> 4テーブル全てが35ハンド未満の場合、入場条件を満たすまで待機します（正常動作）。通常10-20分程度。
+</div>
+
+<h3>Q2. SESSION EXPIRED が出た</h3>
+<div class="warning">
+<strong>A:</strong> 60秒ごとのハートビートで自動検出・自動復旧します。放置OK。3分以上経過してもBETしない場合は手動でSTOP→STARTを推奨。
+</div>
+
+<h3>Q3. ブラウザが固まった</h3>
+<div class="warning">
+<strong>A:</strong> full_recovery機能が発動し、page.gotoで完全リロードします。それでもダメならGUIを再起動してください。
+</div>
+
+<h3>Q4. テーブル変更が頻繁</h3>
+<div class="warning">
+<strong>A:</strong> シュー切替を即検出して退避しています（正常動作）。1-2分おきに変更される場合があります。
+</div>
+
+<h2>🔧 自動進化システム</h2>
+
+<p>毎日 <strong>AM 6:00</strong> にVPSで自動分析が走ります：</p>
+
+<ol>
+<li>VPS の analytics.sqlite3 を分析</li>
+<li>過去全データで100%勝率テーブルを抽出</li>
+<li>Supabaseに保存</li>
+<li>GUI起動時に最新リスト取得</li>
+</ol>
+
+<div class="success">
+<strong>✅ Evolutionが対策してきても翌日には新しいTop Nテーブルに自動切替されます。ユーザーは何もする必要なし。</strong>
+</div>
+
+<h3>推奨テーブルの確認方法</h3>
+<pre>curl "https://bafather.uk/api/recommended-tables?email=goldbenchan%40gmail.com&api_key=xxx"</pre>
+
+<h2>📈 想定運用例</h2>
+
+<h3>1日のサイクル</h3>
+<ul>
+<li><strong>AM 6:00</strong> - VPS自動分析 → 推奨テーブル更新</li>
+<li><strong>AM 8:00</strong> - GUI起動 → Sync Mode START</li>
+<li><strong>稼働中</strong> - 自動でBET、利確、テーブル切替</li>
+<li><strong>1日の目標</strong> - $1,000〜$2,000（37〜66セッション）</li>
+<li><strong>PM 9:00</strong> - STOP or 継続運用</li>
+</ul>
+
+<h3>週次作業</h3>
+<ul>
+<li>auto_update.log を確認（VPS側）</li>
+<li>推奨テーブルの変化を観察</li>
+<li>GUI の session P&L で日次実績を確認</li>
+</ul>
+
+<div class="footer">
+<p>LAPLACE 運用マニュアル | 2026-04-10</p>
+</div>
+
+</div>
+</body>
+</html>

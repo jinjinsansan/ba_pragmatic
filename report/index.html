@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>LAPLACE レポート 2026-04-10</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap');
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Noto Sans JP', sans-serif;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  color: white;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+}
+.container { max-width: 900px; width: 100%; }
+.header { text-align: center; margin-bottom: 50px; }
+.header h1 {
+  font-size: 56px;
+  font-weight: 900;
+  background: linear-gradient(135deg, #00c8ff 0%, #6bcf8f 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  margin-bottom: 15px;
+  letter-spacing: -2px;
+}
+.header p { font-size: 18px; color: #a0a0c0; }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 25px; }
+.card {
+  background: rgba(255,255,255,0.05);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 16px;
+  padding: 35px 25px;
+  text-align: center;
+  transition: all 0.3s;
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+.card:hover {
+  transform: translateY(-5px);
+  background: rgba(255,255,255,0.1);
+  border-color: #00c8ff;
+  box-shadow: 0 10px 40px rgba(0,200,255,0.2);
+}
+.card .icon { font-size: 64px; margin-bottom: 20px; display: block; }
+.card h2 { font-size: 22px; color: #00c8ff; margin-bottom: 12px; }
+.card p { font-size: 14px; color: #a0a0c0; line-height: 1.6; }
+.card .pages {
+  display: inline-block;
+  margin-top: 15px;
+  padding: 6px 15px;
+  background: rgba(0,200,255,0.1);
+  border: 1px solid #00c8ff;
+  border-radius: 20px;
+  font-size: 12px;
+  color: #00c8ff;
+  letter-spacing: 1px;
+}
+.note {
+  margin-top: 50px;
+  text-align: center;
+  padding: 25px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 12px;
+  color: #a0a0c0;
+  font-size: 14px;
+  line-height: 1.8;
+}
+.note strong { color: #6bcf8f; }
+@media (max-width: 700px) { .cards { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="header">
+<h1>🎯 LAPLACE Report</h1>
+<p>Evolution バカラ完全解析 | 2026年4月10日</p>
+</div>
+
+<div class="cards">
+
+<a href="gui_realistic_backtest.html" class="card" style="border-color:#f87171;background:rgba(248,113,113,0.08)">
+<span class="icon">🔴</span>
+<h2 style="color:#f87171">GUI再現 (退避あり)</h2>
+<p>リアルタイムtereko15列80% + 3落ち×2 or 5落ち退避。<br>単一$10,000財布。<strong style="color:#f87171">→ 破綻</strong></p>
+<span class="pages">2026-04-15 追加</span>
+</a>
+
+<a href="oldstyle_singlepool_backtest.html" class="card" style="border-color:#4ade80;background:rgba(74,222,128,0.08)">
+<span class="icon">🟢</span>
+<h2 style="color:#4ade80">旧条件 × 単一財布</h2>
+<p>shoe冒頭フィルタ + 退避なし。<br>単一$10,000財布。<strong style="color:#4ade80">+$240,629 (勝率53.47%)</strong></p>
+<span class="pages">2026-04-15 追加</span>
+</a>
+
+<a href="laplace_executive.html" class="card">
+<span class="icon">⚡</span>
+<h2>Executive Summary</h2>
+<p>1枚で理解する要約。<br>3つの決定的発見と推奨戦略。</p>
+<span class="pages">1ページ</span>
+</a>
+
+<a href="laplace_report.html" class="card">
+<span class="icon">📊</span>
+<h2>詳細レポート</h2>
+<p>全ストーリーと統計データ。<br>12,350シューの検証結果。</p>
+<span class="pages">10ページ</span>
+</a>
+
+<a href="laplace_manual.html" class="card">
+<span class="icon">📘</span>
+<h2>運用マニュアル</h2>
+<p>Sync Mode の使い方。<br>起動手順とトラブル対応。</p>
+<span class="pages">3ページ</span>
+</a>
+
+<a href="equity_ledger_all.html" class="card">
+<span class="icon">⚠️</span>
+<h2>A. 全テーブル運用</h2>
+<p>選別なしで全テーブルにBETした場合。<br>負けセッションあり、リアルなリスク。</p>
+<span class="pages">時系列</span>
+</a>
+
+<a href="equity_ledger_top.html" class="card">
+<span class="icon">✅</span>
+<h2>B. 推奨Top運用</h2>
+<p>Sync Mode の推奨テーブルだけで運用。<br>選別による勝率改善が見える。</p>
+<span class="pages">時系列</span>
+</a>
+
+<a href="equity_per_table.html" class="card">
+<span class="icon">📊</span>
+<h2>C. 〇✖プレイヤー固定</h2>
+<p>各テーブル独立でシミュレーション。<br>常時 Player BET、〇✖ロジック。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_per_table_trend.html" class="card">
+<span class="icon">📈</span>
+<h2>D. 順張り (Trend)</h2>
+<p>直前と同じ側に BET。<br>連勝の流れに乗る戦略。<br>Banker 5% 手数料込み。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_per_table_counter.html" class="card">
+<span class="icon">📉</span>
+<h2>E. 逆張り (Counter)</h2>
+<p>直前の反対側に BET。<br>テレコ (交互) 狙いの戦略。<br>Banker 5% 手数料込み。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_per_table_trend_skip3.html" class="card">
+<span class="icon">🛡️</span>
+<h2>F. 順張り + 3連スキップ</h2>
+<p>順張りに防御追加。<br>3連続が出たら切れるまで LOOK。<br>長いドラゴン回避。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_per_table_counter_skip3.html" class="card">
+<span class="icon">🛡️</span>
+<h2>G. 逆張り + 3連スキップ</h2>
+<p>逆張りに防御追加。<br>3連続が出たら切れるまで LOOK。<br>テレコ崩壊の損失回避。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_per_table_trend_comp.html" class="card">
+<span class="icon">⚖️</span>
+<h2>H. 順張り Banker 増額 比較</h2>
+<p>順張りで Banker BET 時に unit ×1.0526 で<br>手数料を打ち消す版。<br>通常版と並べて差分が見える。</p>
+<span class="pages">比較</span>
+</a>
+
+<a href="equity_per_table_counter_comp.html" class="card">
+<span class="icon">⚖️</span>
+<h2>I. 逆張り Banker 増額 比較</h2>
+<p>逆張りで Banker BET 時に unit ×1.0526 で<br>手数料を打ち消す版。<br>通常版と並べて差分が見える。</p>
+<span class="pages">比較</span>
+</a>
+
+<a href="japanese_a_dd.html" class="card">
+<span class="icon">🎯</span>
+<h2>J. Japanese A 損切なし DD分析</h2>
+<p>Japanese Speed Baccarat A 単独。<br>〇✖ Player のみ、損切なしで<br>最大ドローダウンを観測。</p>
+<span class="pages">単一テーブル</span>
+</a>
+
+<a href="equity_per_table_banker.html" class="card">
+<span class="icon">🏦</span>
+<h2>K. Banker専用 元本$10k</h2>
+<p>常に Banker BET、unit ×1.0526 で<br>手数料5%を相殺。$1スタート・損切なし。<br>破綻24 / 生存38。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_per_table_banker_30k.html" class="card">
+<span class="icon">🏦</span>
+<h2>K. Banker専用 元本$30k</h2>
+<p>同じ Banker増額ロジックで元本$30k版。<br>$1スタート・損切なし。<br>破綻7 / 生存53。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_per_table_banker_50k.html" class="card">
+<span class="icon">🏦</span>
+<h2>K. Banker専用 元本$50k</h2>
+<p>同じ Banker増額ロジックで元本$50k版。<br>$1スタート・損切なし。<br>破綻3 / 生存56。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_per_table_banker_100k.html" class="card">
+<span class="icon">💰</span>
+<h2>K. Banker専用 元本$100k</h2>
+<p>Banker増額ロジックで元本$100k版。<br>$1スタート・損切なし。<br>破綻0 / 生存59 / 通算+$86,055。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="pattern_shift.html" class="card">
+<span class="icon">🔄</span>
+<h2>L. シュー内パターン変化</h2>
+<p>各シューを1/2/4分割して<br>区間ごとにパターン遷移を分析。<br>安定テーブル vs 変化テーブル。</p>
+<span class="pages">遷移分析</span>
+</a>
+
+<a href="dynamic_backtest.html" class="card">
+<span class="icon">⚡</span>
+<h2>M. 動的再評価バックテスト</h2>
+<p>Static(固定判定) vs Dynamic(動的再評価)<br>3戦略の勝率・PNLを17,240シューで比較。<br>テレコ混合区間のみBET。</p>
+<span class="pages">バックテスト</span>
+</a>
+
+<a href="counter_tereko_backtest.html" class="card">
+<span class="icon">🔥</span>
+<h2>N. テレコ×逆張りバックテスト</h2>
+<p>テレコ混合 × 逆張り + 〇✖ロジック。<br>勝率53.5%・MB PNL +$114k。<br>Strategy Aの7倍の利益。</p>
+<span class="pages">バックテスト</span>
+</a>
+
+<a href="realtime_counter_backtest.html" class="card">
+<span class="icon">🎯</span>
+<h2>O. リアルタイム入退室バックテスト</h2>
+<p>テレコ状態に動的入退室。<br>3落ち×2 or 4落ち×1で即退室。<br>退室条件の効果を検証。</p>
+<span class="pages">実運用シミュレーション</span>
+</a>
+
+<a href="realtime_counter_newseq_5turn_2026-04-15_cap4700.html" class="card">
+<span class="icon">🧨</span>
+<h2>O2. リアルタイム入退室（新SEQ×5T / $4.7k）</h2>
+<p>2026-04-15 の実データで推定。<br>新SEQ×5ターン + $30利確。<br>元本$4,700想定のリスク確認。</p>
+<span class="pages">当日データ</span>
+</a>
+
+<a href="realtime_counter_newseq_5turn_2026-04-06_latest_cap10000_reset.html" class="card">
+<span class="icon">🧪</span>
+<h2>O3. 実運用寄せバックテスト（4/6〜最新 / $10k / 破綻=補充）</h2>
+<p>入退室＋乗換＋SEQ継続＋$30利確。<br>2026-04-06〜最新の全期間で検証。<br>破綻は1回として資金補充して継続（破綻率を見る）。</p>
+<span class="pages">全期間</span>
+</a>
+
+<a href="entry_exit_optimization.html" class="card">
+<span class="icon">🏆</span>
+<h2>P. 入退室条件の最適化</h2>
+<p>入室5×5 × 退室8 = 200パターン総当たり。<br>最適: Window=15, Thresh=85%,<br>退室=3落ち×2 or 5落ち。</p>
+<span class="pages">パラメータ最適化</span>
+</a>
+
+<a href="profit_target_optimization.html" class="card">
+<span class="icon">💎</span>
+<h2>R. 利確ターゲット最適化</h2>
+<p>$20〜$100の7パターンで比較。<br>最適: $30利確 (資金効率115.9)。<br>MaxDD $910・破綻0・+$105k。</p>
+<span class="pages">利確最適化</span>
+</a>
+
+<a href="tereko_lifespan_risk.html" class="card">
+<span class="icon">⚠️</span>
+<h2>S. テレコ寿命リスク分析</h2>
+<p>テレコの命が短くなったら？<br>寿命3h〜制限なしでシミュレーション。<br>早期警戒指標と破綻ライン。</p>
+<span class="pages">リスク分析</span>
+</a>
+
+<a href="equity_per_table_counter.html" class="card">
+<span class="icon">🔥</span>
+<h2>Q. テレコ逆張り破綻テスト</h2>
+<p>テレコ混合×逆張り×〇✖。<br>$10k元本: 破綻0 / 全62テーブル黒字。<br>通算+$112,855 / ROI +18%。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_counter_5turn_10k.html" class="card">
+<span class="icon">⚡</span>
+<h2>T. 5ターン制 $10k元本</h2>
+<p>〇✖を5ターンに短縮。<br>$10k元本: 破綻0 / 全62黒字。<br>通算+$125,473。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_counter_5turn_1k.html" class="card">
+<span class="icon">⚡</span>
+<h2>T. 5ターン制 $1k元本</h2>
+<p>〇✖を5ターンに短縮。<br>$1k元本: 破綻1 / 生存61。<br>通算+$123,447 / ROI +199%。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_counter_5turn_30k.html" class="card">
+<span class="icon">⚡</span>
+<h2>T. 5ターン制 $30k元本</h2>
+<p>5ターン制×$30k元本。<br>破綻0 / 全62テーブル黒字。<br>通算+$125,473。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_counter_5turn_50k.html" class="card">
+<span class="icon">⚡</span>
+<h2>T. 5ターン制 $50k元本</h2>
+<p>5ターン制×$50k元本。<br>破綻0 / 全62テーブル黒字。<br>通算+$125,473。</p>
+<span class="pages">テーブル別</span>
+</a>
+
+<a href="equity_counter_newseq_1k.html" class="card">
+<span class="icon">🔀</span>
+<h2>U. 新SEQ $1k元本</h2>
+<p>チップ progression を変更。<br>1→3→5→7→10→13...<br>破綻1 / 通算+$149k。</p>
+<span class="pages">SEQ比較</span>
+</a>
+
+<a href="equity_counter_newseq_10k.html" class="card">
+<span class="icon">🔀</span>
+<h2>U. 新SEQ $10k元本</h2>
+<p>新SEQ×$10k元本。<br>破綻0 / 通算+$151k。<br>現行比 +$44k 改善。</p>
+<span class="pages">SEQ比較</span>
+</a>
+
+<a href="equity_counter_newseq_30k.html" class="card">
+<span class="icon">🔀</span>
+<h2>U. 新SEQ $30k元本</h2>
+<p>新SEQ×$30k元本。<br>破綻0 / 通算+$151k。</p>
+<span class="pages">SEQ比較</span>
+</a>
+
+<a href="equity_counter_newseq_50k.html" class="card">
+<span class="icon">🔀</span>
+<h2>U. 新SEQ $50k元本</h2>
+<p>新SEQ×$50k元本。<br>破綻0 / 通算+$151k。</p>
+<span class="pages">SEQ比較</span>
+</a>
+
+<a href="equity_counter_newseq_5turn_10k.html" class="card">
+<span class="icon">🔥</span>
+<h2>X. 新SEQ×5ターン $10k</h2>
+<p>新SEQ + 5ターン制の最強構成。<br>破綻0 / 全62黒字。<br>通算+$178,880。</p>
+<span class="pages">4パターン比較</span>
+</a>
+
+<a href="pattern_winrate_db.html" class="card">
+<span class="icon">🧬</span>
+<h2>V. 大路パターン×勝率DB</h2>
+<p>大路の形と逆張り勝率の関係を<br>104万ハンドでデータベース化。<br>Evolution対策の基盤データ。</p>
+<span class="pages">パターン分析</span>
+</a>
+
+<a href="hourly_analysis.html" class="card">
+<span class="icon">🕐</span>
+<h2>W. 時間帯別パフォーマンス</h2>
+<p>JST時間帯ごとの逆張り勝率と<br>OS進行速度を分析。<br>最高: 18時台 54.15%。</p>
+<span class="pages">時間帯分析</span>
+</a>
+
+<a href="equity_trend_newseq_5turn_10k.html" class="card">
+<span class="icon">⚡</span>
+<h2>Z. 順張り (Trend) 検証</h2>
+<p>縦流れ環境のみを狙う順張り戦略。<br>破綻0 / 全62黒字。<br>最良 T=0.30 で通算+$55,926。</p>
+<span class="pages">戦略検証</span>
+</a>
+
+<a href="strategy_hybrid_10k.html" class="card">
+<span class="icon">🔀</span>
+<h2>AA. ハイブリッド (Counter+Trend)</h2>
+<p>テーブル毎に最適戦略を選ぶ。<br>Counter/Trend の得意分野を併用。<br>理論上限 +$148k。</p>
+<span class="pages">併用戦略</span>
+</a>
+
+<a href="environment_classification.html" class="card">
+<span class="icon">🌡️</span>
+<h2>AB. 環境識別レポート</h2>
+<p>テーブル毎にテレコ支配 / 縦流れ支配 / 混在を分類。<br>戦略切替の根拠データ。</p>
+<span class="pages">環境分析</span>
+</a>
+
+</div>
+
+<div class="note">
+<strong>📄 PDF化方法:</strong> 各ページを開いて <code>Ctrl+P</code> → 「PDFに保存」を選択<br>
+<strong>印刷推奨設定:</strong> A4 / 余白: デフォルト / 背景グラフィックを有効
+</div>
+
+</div>
+</body>
+</html>

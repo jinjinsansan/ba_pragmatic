@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8">
+<title>友人戦略バックテスト — Player-only / 7ターンSEQ / look-aheadなし</title>
+<style>
+* { box-sizing: border-box; }
+body { font-family: -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif;
+       background: #0f1419; color: #e0e6ed; margin: 0; padding: 24px; line-height: 1.5; }
+.container { max-width: 1400px; margin: 0 auto; }
+h1 { color: #ffd700; font-size: 26px; border-bottom: 2px solid #ffd700; padding-bottom: 8px; }
+h2 { color: #c084fc; margin-top: 32px; font-size: 20px; }
+.nav a { display: inline-block; margin-right: 12px; padding: 8px 16px;
+         background: #1a2332; color: #6dd5ed; text-decoration: none;
+         border-radius: 4px; border: 1px solid #2a3441; font-size: 13px; }
+.banner { background: #1a2a1a; border-left: 5px solid #f87171;
+          padding: 14px 18px; margin: 16px 0; font-size: 14px;
+          border-radius: 4px; line-height: 1.8; }
+.banner strong { color: #f87171; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+           gap: 12px; margin: 20px 0; }
+.card { background: #1a2332; padding: 14px; border-radius: 4px; border-left: 4px solid #6dd5ed; }
+.card .label { font-size: 11px; color: #8a96a8; text-transform: uppercase; }
+.card .value { font-size: 22px; font-weight: bold; color: #ffd700; }
+.card.g .value { color: #4ade80; }
+.card.r .value { color: #f87171; }
+.card.y .value { color: #fbbf24; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 16px 0; }
+table th { background: #0f1419; color: #c084fc; padding: 8px; text-align: left;
+           border-bottom: 2px solid #2a3441; }
+table td { padding: 6px 8px; border-bottom: 1px solid #1a2332; }
+td.tname { font-weight: bold; color: #ffd700; }
+td.ts { font-family: monospace; color: #8a96a8; font-size: 11px; }
+#chart { width: 100%; height: 400px; }
+</style>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head><body><div class="container">
+<h1>友人戦略バックテスト — Player-only / 7ターンSEQ / look-aheadなし</h1>
+<div class="nav"><a href="index.html">← レポートTOP</a></div>
+
+<div class="banner">
+<strong>🎯 戦略仕様（Phase 1実装）</strong><br>
+<strong>エントリー:</strong> 大路5-10列で「カオス→1落ちP+1落ちB転換」検出時<br>
+<strong>シグナル1 (珠盤路):</strong> 6行グリッド水平読み（|P-B|≥3 / T対称 / 3連続）<br>
+<strong>シグナル2 (大路):</strong> ニコニコ継続予測 / ニコイチPポジション予測<br>
+<strong>BET:</strong> 両シグナルが Player一致時のみ / Banker予測はLOOK<br>
+<strong>資金:</strong> $10,000 / 旧SEQ [1,2,3,5,7,9,11,...] × 7ターン / $30利確<br>
+<strong>データ:</strong> 2026-04-06〜 / 23,255シュー / look-aheadなし
+</div>
+
+<div class="summary">
+  <div class="card r"><div class="label">結果</div><div class="value">破綻</div></div>
+  <div class="card"><div class="label">最終残高</div><div class="value">$1,674</div></div>
+  <div class="card r"><div class="label">通算損益</div><div class="value">$-8,326</div></div>
+  <div class="card y"><div class="label">最大DD</div><div class="value">$9,035</div></div>
+  <div class="card"><div class="label">残高ピーク</div><div class="value">$10,709</div></div>
+  <div class="card"><div class="label">入室回数</div><div class="value">9,706</div></div>
+  <div class="card"><div class="label">BET数</div><div class="value">4,172</div></div>
+  <div class="card r"><div class="label">勝率</div><div class="value">48.56%</div></div>
+  <div class="card"><div class="label">利確回数</div><div class="value">17</div></div>
+  <div class="card"><div class="label">最大SEQ</div><div class="value">[47]=$250</div></div>
+</div>
+
+<h2>💹 残高推移</h2>
+<div id="chart"></div>
+
+<h2>📅 日次パフォーマンス</h2>
+<table>
+<thead><tr><th>日付</th><th>BET数</th><th>勝率</th><th>利確</th><th>日次PNL</th><th>累計PNL</th></tr></thead>
+<tbody><tr><td class='ts'>2026-04-06</td><td>659</td><td>50.4%</td><td>3</td><td style='color:#4ade80;font-weight:bold'>$+168</td><td style='color:#4ade80'>$+168</td></tr><tr><td class='ts'>2026-04-07</td><td>591</td><td>51.3%</td><td>4</td><td style='color:#4ade80;font-weight:bold'>$+144</td><td style='color:#4ade80'>$+312</td></tr><tr><td class='ts'>2026-04-08</td><td>711</td><td>47.0%</td><td>2</td><td style='color:#4ade80;font-weight:bold'>$+68</td><td style='color:#4ade80'>$+380</td></tr><tr><td class='ts'>2026-04-09</td><td>576</td><td>50.7%</td><td>4</td><td style='color:#4ade80;font-weight:bold'>$+155</td><td style='color:#4ade80'>$+535</td></tr><tr><td class='ts'>2026-04-10</td><td>666</td><td>49.5%</td><td>4</td><td style='color:#4ade80;font-weight:bold'>$+149</td><td style='color:#4ade80'>$+684</td></tr><tr><td class='ts'>2026-04-11</td><td>655</td><td>44.4%</td><td>0</td><td style='color:#8a96a8;font-weight:bold'>$+0</td><td style='color:#4ade80'>$+684</td></tr><tr><td class='ts'>2026-04-12</td><td>314</td><td>45.9%</td><td>0</td><td style='color:#8a96a8;font-weight:bold'>$+0</td><td style='color:#4ade80'>$+684</td></tr></tbody></table>
+
+<h2>🏆 テーブル別 勝率 TOP30（BET10回以上）</h2>
+<table>
+<thead><tr><th>テーブル</th><th>シュー</th><th>入室</th><th>BET数</th><th>勝率</th></tr></thead>
+<tbody><tr><td class='tname'>Dynasty Speed Baccarat 5</td><td>275</td><td>151</td><td>49</td><td style='color:#4ade80;font-weight:bold'>67.35%</td></tr><tr><td class='tname'>Baccarat RÃ¡pido ao Vivo 1</td><td>258</td><td>123</td><td>59</td><td style='color:#4ade80;font-weight:bold'>64.41%</td></tr><tr><td class='tname'>Korean Speed Baccarat D</td><td>282</td><td>163</td><td>64</td><td style='color:#4ade80;font-weight:bold'>64.06%</td></tr><tr><td class='tname'>Korean Speed Baccarat C</td><td>279</td><td>153</td><td>45</td><td style='color:#4ade80;font-weight:bold'>62.22%</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 1</td><td>291</td><td>162</td><td>69</td><td style='color:#4ade80;font-weight:bold'>59.42%</td></tr><tr><td class='tname'>Speed Baccarat 2</td><td>261</td><td>141</td><td>54</td><td style='color:#4ade80;font-weight:bold'>59.26%</td></tr><tr><td class='tname'>Speed Baccarat A</td><td>282</td><td>157</td><td>61</td><td style='color:#4ade80;font-weight:bold'>59.02%</td></tr><tr><td class='tname'>Super Speed Baccarat</td><td>401</td><td>217</td><td>100</td><td style='color:#4ade80;font-weight:bold'>57.00%</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 10</td><td>304</td><td>171</td><td>93</td><td style='color:#4ade80;font-weight:bold'>56.99%</td></tr><tr><td class='tname'>Stake Exclusive Speed Baccarat 1</td><td>291</td><td>160</td><td>58</td><td style='color:#4ade80;font-weight:bold'>56.90%</td></tr><tr><td class='tname'>Korean Speaking Speed Baccarat</td><td>282</td><td>167</td><td>90</td><td style='color:#4ade80;font-weight:bold'>56.67%</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 11</td><td>304</td><td>180</td><td>64</td><td style='color:#4ade80;font-weight:bold'>56.25%</td></tr><tr><td class='tname'>Japanese Speed Baccarat A</td><td>269</td><td>147</td><td>68</td><td style='color:#4ade80;font-weight:bold'>55.88%</td></tr><tr><td class='tname'>Speed Baccarat V</td><td>301</td><td>165</td><td>60</td><td style='color:#4ade80;font-weight:bold'>55.00%</td></tr><tr><td class='tname'>Emperor Speed Baccarat D</td><td>275</td><td>144</td><td>62</td><td style='color:#4ade80;font-weight:bold'>54.84%</td></tr><tr><td class='tname'>Baccarat B</td><td>220</td><td>122</td><td>31</td><td style='color:#4ade80;font-weight:bold'>54.84%</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 3</td><td>294</td><td>173</td><td>71</td><td style='color:#4ade80;font-weight:bold'>53.52%</td></tr><tr><td class='tname'>Lotus Speed Baccarat A</td><td>296</td><td>176</td><td>86</td><td style='color:#4ade80;font-weight:bold'>53.49%</td></tr><tr><td class='tname'>Korean Speed Baccarat E</td><td>280</td><td>149</td><td>58</td><td style='color:#4ade80;font-weight:bold'>53.45%</td></tr><tr><td class='tname'>Lotus Speed Baccarat C</td><td>300</td><td>172</td><td>62</td><td style='color:#4ade80;font-weight:bold'>53.23%</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 6</td><td>277</td><td>158</td><td>64</td><td style='color:#4ade80;font-weight:bold'>53.12%</td></tr><tr><td class='tname'>Baccarat A</td><td>217</td><td>128</td><td>57</td><td style='color:#4ade80;font-weight:bold'>52.63%</td></tr><tr><td class='tname'>Korean Speed Baccarat A</td><td>283</td><td>150</td><td>63</td><td style='color:#4ade80;font-weight:bold'>52.38%</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 7</td><td>279</td><td>147</td><td>64</td><td style='color:#fbbf24;font-weight:bold'>51.56%</td></tr><tr><td class='tname'>Emperor Speed Baccarat A</td><td>279</td><td>142</td><td>65</td><td style='color:#fbbf24;font-weight:bold'>50.77%</td></tr><tr><td class='tname'>Japanese Speed Baccarat B</td><td>290</td><td>156</td><td>66</td><td style='color:#fbbf24;font-weight:bold'>50.00%</td></tr><tr><td class='tname'>Hindi Speed Baccarat B</td><td>292</td><td>162</td><td>66</td><td style='color:#fbbf24;font-weight:bold'>50.00%</td></tr><tr><td class='tname'>Thai Speed Baccarat C</td><td>272</td><td>150</td><td>99</td><td style='color:#f87171;font-weight:bold'>49.49%</td></tr><tr><td class='tname'>Korean Speed Baccarat B</td><td>284</td><td>167</td><td>103</td><td style='color:#f87171;font-weight:bold'>48.54%</td></tr><tr><td class='tname'>Speed Baccarat X</td><td>300</td><td>169</td><td>99</td><td style='color:#f87171;font-weight:bold'>48.48%</td></tr></tbody></table>
+
+<p style="color:#8a96a8;font-size:11px;margin-top:32px;">
+生成元: <code>generate_friend_strategy_backtest.py</code> / データ: analytics_vps.sqlite3
+</p>
+</div>
+<script>
+const labels = ["2026-04-06T17:29", "2026-04-07T14:42", "2026-04-08T07:50", "2026-04-09T01:21", "2026-04-09T22:03", "2026-04-10T15:36", "2026-04-11T10:03", "2026-04-12T05:31", "END"];
+const values = [10144.0, 10281.0, 10369.0, 10235.0, 10519.0, 10656.0, 9071.0, 6004.0, 1674.0];
+Plotly.newPlot('chart', [{
+  x: labels, y: values, type: 'scatter', mode: 'lines',
+  line: {color: '#f87171', width: 2}, fill: 'tozeroy',
+  fillcolor: 'rgba(74, 222, 128, 0.08)',
+  hovertemplate: '%{x}<br>$%{y:,.0f}<extra></extra>'
+}], {
+  paper_bgcolor: '#0f1419', plot_bgcolor: '#11192a',
+  font: {color: '#e0e6ed'},
+  xaxis: {gridcolor: '#2a3441', showticklabels: false},
+  yaxis: {gridcolor: '#2a3441', title: 'Balance ($)', tickformat: ',.0f'},
+  margin: {l: 80, r: 20, t: 20, b: 20},
+  shapes: [{type: 'line', x0: 0, x1: 1, xref: 'paper',
+    y0: 10000.0, y1: 10000.0,
+    line: {color: '#8a96a8', width: 1, dash: 'dash'} }]
+}, {displayModeBar: false, responsive: true});
+</script>
+</body></html>

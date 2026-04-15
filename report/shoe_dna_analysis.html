@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8">
+<title>Shoe DNA 分析 — 1/2/4分割構造の検出</title>
+<style>
+* { box-sizing: border-box; }
+body { font-family: -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif;
+       background: #0f1419; color: #e0e6ed; margin: 0; padding: 24px; line-height: 1.5; }
+.container { max-width: 1400px; margin: 0 auto; }
+h1 { color: #ffd700; font-size: 26px; border-bottom: 2px solid #ffd700; padding-bottom: 8px; }
+h2 { color: #c084fc; margin-top: 32px; font-size: 20px; }
+.nav { margin: 16px 0 24px; }
+.nav a { display: inline-block; margin-right: 12px; padding: 8px 16px;
+         background: #1a2332; color: #6dd5ed; text-decoration: none;
+         border-radius: 4px; border: 1px solid #2a3441; font-size: 13px; }
+.banner { background: #1a2a1a; border-left: 5px solid #4ade80;
+          padding: 14px 18px; margin: 16px 0; font-size: 14px; border-radius: 4px; line-height: 1.8; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+           gap: 12px; margin: 20px 0; }
+.card { background: #1a2332; padding: 14px; border-radius: 4px; border-left: 4px solid #6dd5ed; }
+.card .label { font-size: 11px; color: #8a96a8; text-transform: uppercase; }
+.card .value { font-size: 22px; font-weight: bold; color: #ffd700; }
+.card.g .value { color: #4ade80; }
+.card.y .value { color: #fbbf24; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 16px 0; }
+table th { background: #0f1419; color: #c084fc; padding: 8px; text-align: left;
+           border-bottom: 2px solid #2a3441; }
+table td { padding: 6px 8px; border-bottom: 1px solid #1a2332; }
+td.tname { font-weight: bold; color: #ffd700; }
+.accent { background: #11192a; border-left: 4px solid #fbbf24;
+          padding: 12px 16px; border-radius: 4px; margin: 16px 0; }
+</style></head><body><div class="container">
+<h1>Shoe DNA 分析 — 1/2/4分割構造の検出</h1>
+<div class="nav"><a href="index.html">← レポートTOP</a></div>
+
+<div class="banner">
+<strong>🧬 友人の理論: 1シュー全体で同じDNAが 1分割/2分割/4分割のいずれかの構造で現れる。</strong><br>
+Q1-Q4 を Short-dominant (S) / Long-dominant (L) / Mixed (M) にラベル付けし、4文字パターンで DNA分類。<br>
+Q1の特徴量だけから DNAタイプを予測する精度を測定。
+</div>
+
+<div class="summary">
+  <div class="card g"><div class="label">総シュー数</div><div class="value">14,803</div></div>
+  <div class="card g"><div class="label">1分割率</div><div class="value">26.3%</div></div>
+  <div class="card y"><div class="label">2分割率</div><div class="value">4.3%</div></div>
+  <div class="card"><div class="label">4分割率</div><div class="value">2.7%</div></div>
+  <div class="card"><div class="label">Q1単独予測精度</div><div class="value">66.3%</div></div>
+</div>
+
+<h2>🧬 DNAタイプ分布</h2>
+<table style="max-width:500px">
+<thead><tr><th>DNAタイプ</th><th>シュー数</th><th>比率</th></tr></thead>
+<tbody><tr><td style='color:#4ade80;font-weight:bold'>1分割</td><td>3,892</td><td>26.29%</td></tr><tr><td style='color:#fbbf24;font-weight:bold'>2分割</td><td>639</td><td>4.32%</td></tr><tr><td style='color:#f87171;font-weight:bold'>4分割</td><td>407</td><td>2.75%</td></tr><tr><td style='color:#8a96a8;font-weight:bold'>混合</td><td>9,821</td><td>66.34%</td></tr><tr><td style='color:#555;font-weight:bold'>不明</td><td>44</td><td>0.30%</td></tr></tbody>
+</table>
+
+<div class="accent">
+<strong>読み方:</strong>
+<p>・<strong>1分割</strong>: Q1=Q2=Q3=Q4 (シュー全体同じキャラ) — 最も打ちやすい</p>
+<p>・<strong>2分割</strong>: Q1=Q2, Q3=Q4 (前半後半で違う) — 半分で切り替え必要</p>
+<p>・<strong>4分割</strong>: Q1≠Q2≠Q3≠Q4 (全部違う) — 予測困難、避けたい</p>
+<p>・<strong>混合</strong>: 上記どれでもない (3+1, 1+2+1 など)</p>
+</div>
+
+<h2>📊 テーブル別 1分割率 TOP30</h2>
+<p style="color:#8a96a8;font-size:13px">1分割率が高いテーブル = DNA予測しやすい「安全テーブル」候補</p>
+<table>
+<thead><tr><th>テーブル</th><th>シュー数</th><th>1分割率</th><th>1分割</th><th>2分割</th><th>4分割</th><th>混合</th></tr></thead>
+<tbody><tr><td class='tname'>Speed Baccarat 3</td><td>200</td><td style='color:#4ade80;font-weight:bold'>34.0%</td><td>68</td><td>4</td><td>4</td><td>123</td></tr><tr><td class='tname'>Hindi Speed Baccarat B</td><td>272</td><td style='color:#4ade80;font-weight:bold'>32.7%</td><td>89</td><td>13</td><td>3</td><td>167</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 3</td><td>159</td><td style='color:#4ade80;font-weight:bold'>32.1%</td><td>51</td><td>8</td><td>1</td><td>98</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 8</td><td>138</td><td style='color:#4ade80;font-weight:bold'>31.9%</td><td>44</td><td>5</td><td>5</td><td>84</td></tr><tr><td class='tname'>Korean Speed Baccarat C</td><td>265</td><td style='color:#4ade80;font-weight:bold'>31.7%</td><td>84</td><td>11</td><td>7</td><td>162</td></tr><tr><td class='tname'>Speed Baccarat T</td><td>281</td><td style='color:#4ade80;font-weight:bold'>31.7%</td><td>89</td><td>10</td><td>4</td><td>177</td></tr><tr><td class='tname'>Baccarat RÃ¡pido ao Vivo 1</td><td>211</td><td style='color:#4ade80;font-weight:bold'>30.8%</td><td>65</td><td>10</td><td>8</td><td>128</td></tr><tr><td class='tname'>Emperor Speed Baccarat B</td><td>259</td><td style='color:#4ade80;font-weight:bold'>30.1%</td><td>78</td><td>9</td><td>8</td><td>162</td></tr><tr><td class='tname'>Korean Speed Baccarat B</td><td>264</td><td style='color:#4ade80;font-weight:bold'>29.9%</td><td>79</td><td>9</td><td>8</td><td>168</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 7</td><td>141</td><td style='color:#4ade80;font-weight:bold'>29.8%</td><td>42</td><td>6</td><td>4</td><td>89</td></tr><tr><td class='tname'>Japanese Speed Baccarat A</td><td>252</td><td style='color:#4ade80;font-weight:bold'>29.4%</td><td>74</td><td>11</td><td>5</td><td>162</td></tr><tr><td class='tname'>Speed Baccarat U</td><td>291</td><td style='color:#4ade80;font-weight:bold'>29.2%</td><td>85</td><td>12</td><td>6</td><td>188</td></tr><tr><td class='tname'>Korean Speed Baccarat D</td><td>268</td><td style='color:#4ade80;font-weight:bold'>29.1%</td><td>78</td><td>14</td><td>7</td><td>167</td></tr><tr><td class='tname'>Thai Speed Baccarat A</td><td>255</td><td style='color:#4ade80;font-weight:bold'>29.0%</td><td>74</td><td>8</td><td>9</td><td>161</td></tr><tr><td class='tname'>Lotus Speed Baccarat A</td><td>267</td><td style='color:#4ade80;font-weight:bold'>28.8%</td><td>77</td><td>10</td><td>7</td><td>173</td></tr><tr><td class='tname'>Super Speed Baccarat</td><td>368</td><td style='color:#4ade80;font-weight:bold'>28.8%</td><td>106</td><td>13</td><td>10</td><td>239</td></tr><tr><td class='tname'>Speed Baccarat C</td><td>278</td><td style='color:#4ade80;font-weight:bold'>28.8%</td><td>80</td><td>10</td><td>6</td><td>181</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 5</td><td>133</td><td style='color:#4ade80;font-weight:bold'>28.6%</td><td>38</td><td>7</td><td>6</td><td>82</td></tr><tr><td class='tname'>Speed Baccarat B</td><td>278</td><td style='color:#4ade80;font-weight:bold'>28.4%</td><td>79</td><td>15</td><td>10</td><td>173</td></tr><tr><td class='tname'>Korean Speed Baccarat G</td><td>274</td><td style='color:#4ade80;font-weight:bold'>28.1%</td><td>77</td><td>10</td><td>7</td><td>180</td></tr><tr><td class='tname'>Japanese Speed Baccarat E</td><td>253</td><td style='color:#4ade80;font-weight:bold'>28.1%</td><td>71</td><td>12</td><td>2</td><td>167</td></tr><tr><td class='tname'>Emperor Speed Baccarat A</td><td>264</td><td style='color:#4ade80;font-weight:bold'>28.0%</td><td>74</td><td>5</td><td>10</td><td>174</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 4</td><td>158</td><td style='color:#4ade80;font-weight:bold'>27.8%</td><td>44</td><td>9</td><td>5</td><td>100</td></tr><tr><td class='tname'>Lotus Speed Baccarat C</td><td>260</td><td style='color:#4ade80;font-weight:bold'>27.7%</td><td>72</td><td>16</td><td>8</td><td>164</td></tr><tr><td class='tname'>Korean Speed Baccarat A</td><td>276</td><td style='color:#4ade80;font-weight:bold'>27.5%</td><td>76</td><td>13</td><td>6</td><td>181</td></tr><tr><td class='tname'>Korean Speaking Speed Baccarat</td><td>271</td><td style='color:#4ade80;font-weight:bold'>27.3%</td><td>74</td><td>10</td><td>6</td><td>179</td></tr><tr><td class='tname'>Baccarat B</td><td>197</td><td style='color:#4ade80;font-weight:bold'>26.9%</td><td>53</td><td>7</td><td>8</td><td>129</td></tr><tr><td class='tname'>Speed Baccarat E</td><td>271</td><td style='color:#4ade80;font-weight:bold'>26.6%</td><td>72</td><td>12</td><td>6</td><td>179</td></tr><tr><td class='tname'>Dynasty Speed Baccarat 11</td><td>155</td><td style='color:#4ade80;font-weight:bold'>26.5%</td><td>41</td><td>4</td><td>6</td><td>103</td></tr><tr><td class='tname'>Speed Baccarat W</td><td>270</td><td style='color:#4ade80;font-weight:bold'>26.3%</td><td>71</td><td>14</td><td>8</td><td>177</td></tr></tbody>
+</table>
+
+<h2>🎯 Q1特徴量 × DNAタイプ クロス集計</h2>
+<p style="color:#8a96a8;font-size:13px">Q1の short比率 × 内部自己相似性 の組合せで、各DNAタイプの条件確率を算出</p>
+<table>
+<thead><tr>
+  <th>Q1 short比率</th><th>Q1 内部自己相似性</th><th>シュー数</th>
+  <th>1分割%</th><th>2分割%</th><th>4分割%</th><th>混合%</th><th>最頻DNA</th>
+</tr></thead>
+<tbody><tr><td>0.5-0.7</td><td>0.7-0.85</td><td>917</td><td>0.2%</td><td>7.3%</td><td>3.4%</td><td>89.0%</td><td style='color:#4ade80;font-weight:bold'>混合 (89%)</td></tr><tr><td>0.5-0.7</td><td><0.7</td><td>1,502</td><td>0.1%</td><td>7.7%</td><td>2.7%</td><td>89.1%</td><td style='color:#4ade80;font-weight:bold'>混合 (89%)</td></tr><tr><td>0.5-0.7</td><td>>=0.85</td><td>1,026</td><td>0.5%</td><td>8.7%</td><td>2.1%</td><td>88.5%</td><td style='color:#4ade80;font-weight:bold'>混合 (88%)</td></tr><tr><td>0.7-0.85</td><td>0.7-0.85</td><td>1,054</td><td>37.2%</td><td>3.0%</td><td>3.0%</td><td>56.4%</td><td style='color:#4ade80;font-weight:bold'>混合 (56%)</td></tr><tr><td>0.7-0.85</td><td><0.7</td><td>1,350</td><td>37.0%</td><td>3.0%</td><td>2.4%</td><td>57.4%</td><td style='color:#4ade80;font-weight:bold'>混合 (57%)</td></tr><tr><td>0.7-0.85</td><td>>=0.85</td><td>3,106</td><td>34.6%</td><td>2.7%</td><td>3.0%</td><td>59.6%</td><td style='color:#4ade80;font-weight:bold'>混合 (60%)</td></tr><tr><td><0.5</td><td>0.7-0.85</td><td>188</td><td>0.0%</td><td>8.0%</td><td>2.1%</td><td>89.4%</td><td style='color:#4ade80;font-weight:bold'>混合 (89%)</td></tr><tr><td><0.5</td><td><0.7</td><td>421</td><td>0.7%</td><td>7.8%</td><td>3.8%</td><td>86.9%</td><td style='color:#4ade80;font-weight:bold'>混合 (87%)</td></tr><tr><td><0.5</td><td>>=0.85</td><td>148</td><td>1.4%</td><td>6.1%</td><td>2.7%</td><td>86.5%</td><td style='color:#4ade80;font-weight:bold'>混合 (86%)</td></tr><tr><td>>=0.85</td><td>0.7-0.85</td><td>2,787</td><td>38.2%</td><td>2.7%</td><td>2.5%</td><td>56.2%</td><td style='color:#4ade80;font-weight:bold'>混合 (56%)</td></tr><tr><td>>=0.85</td><td><0.7</td><td>973</td><td>36.7%</td><td>4.1%</td><td>2.9%</td><td>56.2%</td><td style='color:#4ade80;font-weight:bold'>混合 (56%)</td></tr><tr><td>>=0.85</td><td>>=0.85</td><td>1,331</td><td>36.9%</td><td>2.9%</td><td>2.7%</td><td>57.4%</td><td style='color:#4ade80;font-weight:bold'>混合 (57%)</td></tr></tbody>
+</table>
+
+<div class="accent">
+<strong>戦略への示唆:</strong>
+<p>Q1の特徴が <code>(short高) × (自己相似性高)</code> の時、1分割シューである確率が高い → 入室判定に活用可能。</p>
+<p>単純ビン分類の予測精度: <strong>66.3%</strong>。これが60%以上なら実用ライン、70%以上なら強力なエッジ。</p>
+</div>
+
+<p style="color:#8a96a8;font-size:11px;margin-top:32px;">
+生成元: <code>analyze_shoe_dna.py</code> / データ: analytics_vps.sqlite3 / 2026-04-06〜 / 対象: hand_count >= 60
+</p>
+
+</div></body></html>

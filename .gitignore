@@ -1,0 +1,84 @@
+.env
+monitor/.env
+data/
+*.log
+*.log.*
+__pycache__/
+*.pyc
+auth_state/
+auth_state_*/
+screenshots/
+dist/
+dist_client/
+dist_client_test/
+build/
+builds/
+scripts/.build_registry.json
+*.spec
+config.ini
+*_dumps/
+*_dumps*/
+inspect_*.py
+analyze_*.py
+parse_*.py
+browser_data/
+state_valhalla.json
+state_marubatsu_bet.json
+state_marubatsu_bet_dry.json
+gui/node_modules/
+gui/dist/
+# User-specific support tunnel keys (never commit — contains private keys)
+gui/user_build/
+gui/build_staging/
+gui/dist_user/
+scripts/user_ports.csv
+
+# Local DB and artifacts
+*.sqlite3
+*.db
+tables_dump.json
+capture_ws_log.json
+ws_raw_log.jsonl
+report_*.txt
+verify_*.txt
+
+# Throwaway/debug scripts
+_*.py
+check_*.py
+debug_*.py
+test_*.py
+verify_*.py
+capture_*.py
+find_*.py
+fetch_*.py
+get_*.py
+export_*.py
+backtest_*.py
+report_*.py
+investigate_*.py
+debug_*.py
+
+# Claude Code cache
+.claude/
+
+# Build artifacts / release archives
+LAPLACE_dist_final/
+LAPLACE_dist_tmp/
+LAPLACE_dist_tmp2/
+LAPLACE_prod_tmp/
+LAPLACE_v*/
+LAPLACE_v*.zip
+
+# GUI build variants
+gui/dist_prod/
+gui/src_prod/
+gui/assets/
+
+# Browser profile
+browser_profile/
+
+# Misc
+=
+*.jpg
+*.bak
+www/

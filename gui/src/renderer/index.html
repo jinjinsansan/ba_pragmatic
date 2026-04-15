@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LAPLACE</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Flash overlay for win/lose -->
+  <div class="flash-overlay" id="flashOverlay"></div>
+
+  <!-- Neon perimeter (animated only when window is focused) -->
+  <div class="neon-frame" id="neonFrame" aria-hidden="true"></div>
+
+  <!-- Update Banner -->
+  <div id="updateBanner" style="display:none;background:#1a2a1a;border-bottom:1px solid #2a4a2a;padding:6px 16px;font-size:11px;color:#6fbf6f;align-items:center;gap:10px;-webkit-app-region:no-drag;">
+    <span id="updateText"></span>
+    <button id="btnInstallUpdate" style="display:none;padding:2px 10px;background:#2a5a2a;color:#9fdf9f;border:1px solid #3a7a3a;border-radius:3px;cursor:pointer;font-size:11px;">DOWNLOAD &amp; INSTALL</button>
+  </div>
+
+  <!-- Title Bar -->
+  <div class="title-bar">
+    <div class="title-bar-left">
+      <span class="title-bar-logo">&#8747;</span>
+      <span class="title-bar-text">LAPLACE</span>
+      <div class="update-indicator" id="updateIndicator" style="display:none;">
+        <span class="update-dot"></span>
+        <span class="update-label">UPDATE AVAILABLE</span>
+      </div>
+    </div>
+    <div class="title-bar-controls">
+      <button class="title-btn" id="btnMinimize">&#x2500;</button>
+      <button class="title-btn" id="btnMaximize">&#x25A1;</button>
+      <button class="title-btn title-btn-close" id="btnClose">&times;</button>
+    </div>
+  </div>
+
+  <!-- Setup Screen (初回 / 認証失敗時) -->
+  <div id="setupScreen" style="display:none;position:fixed;inset:0;background:#0f1117;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px;">
+    <div style="width:100%;max-width:360px;">
+      <div style="font-size:22px;font-weight:800;letter-spacing:0.1em;color:#fff;margin-bottom:4px;">LAPLACE</div>
+      <div style="font-size:11px;color:#666;margin-bottom:28px;letter-spacing:0.05em;">ACTIVATE YOUR LICENSE</div>
+
+      <div id="setupError" style="display:none;background:#2a1a1a;border:1px solid #5a2a2a;border-radius:6px;padding:10px 14px;font-size:11px;color:#ff7070;margin-bottom:16px;"></div>
+
+      <div style="margin-bottom:14px;">
+        <div style="font-size:10px;color:#888;margin-bottom:5px;letter-spacing:0.08em;text-transform:uppercase;">bafather.uk Account Email</div>
+        <input id="setupEmail" type="email" placeholder="your@email.com"
+          style="width:100%;box-sizing:border-box;background:#1a1d27;border:1px solid #2a2d3a;border-radius:6px;padding:9px 12px;color:#fff;font-size:13px;outline:none;">
+      </div>
+
+      <div style="margin-bottom:14px;">
+        <div style="font-size:10px;color:#888;margin-bottom:5px;letter-spacing:0.08em;text-transform:uppercase;">Stake.com Email</div>
+        <input id="setupStakeUser" type="email" placeholder="stake@email.com"
+          style="width:100%;box-sizing:border-box;background:#1a1d27;border:1px solid #2a2d3a;border-radius:6px;padding:9px 12px;color:#fff;font-size:13px;outline:none;">
+      </div>
+
+      <div style="margin-bottom:22px;">
+        <div style="font-size:10px;color:#888;margin-bottom:5px;letter-spacing:0.08em;text-transform:uppercase;">Stake.com Password</div>
+        <input id="setupStakePass" type="password" placeholder="••••••••"
+          style="width:100%;box-sizing:border-box;background:#1a1d27;border:1px solid #2a2d3a;border-radius:6px;padding:9px 12px;color:#fff;font-size:13px;outline:none;">
+      </div>
+
+      <button id="btnActivate"
+        style="width:100%;padding:11px;background:#1e3a5f;color:#7ab3e0;border:1px solid #2a5a8a;border-radius:6px;font-size:13px;font-weight:700;letter-spacing:0.1em;cursor:pointer;text-transform:uppercase;">
+        ACTIVATE
+      </button>
+      <div id="setupLoading" style="display:none;text-align:center;margin-top:12px;font-size:11px;color:#555;">Verifying license...</div>
+
+      <div style="margin-top:20px;text-align:center;font-size:10px;color:#444;">
+        No account? Visit <span style="color:#7ab3e0;cursor:pointer;" id="linkBafather">bafather.uk</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main-content" id="mainContent" style="display:none;">
+
+    <!-- Live Action Feed -->
+    <div class="action-bar" id="actionBar">
+      <span class="action-dot"></span>
+      <span class="action-text" id="actionText">Initializing...</span>
+      <span class="phase-badge phase-idle" id="phaseBadge" title="Bot phase">
+        <span class="phase-badge-dot"></span>
+        <span class="phase-badge-text" id="phaseBadgeText">IDLE</span>
+      </span>
+    </div>
+
+    <!-- Stats Row -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">BALANCE</div>
+        <div class="stat-value" id="balance">$0.00</div>
+      </div>
+      <div class="stat-card accent">
+        <div class="stat-label">SESSION (TO RESET)</div>
+        <div class="stat-value" id="sessionPnl">$0.00</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">BETS</div>
+        <div class="stat-value" id="betCount">0W / 0L</div>
+        <div id="testCounter" style="display:none; font-size:11px; color:#ffaa00; margin-top:6px; letter-spacing:1px;">🧪 TEST: 0W 0L 0T</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">WIN RATE</div>
+        <div class="stat-value" id="winRate">-</div>
+      </div>
+    </div>
+
+    <!-- Signal Panel (hidden unless dev mode unlocked) -->
+    <div class="section glass dev-panel hidden" id="devPanel">
+      <div class="section-header dev-header">SIGNAL PANEL</div>
+      <div class="signal-grid">
+        <div class="signal-cell">
+          <div class="signal-value" id="sigCycle">--</div>
+          <div class="signal-label">CYCLE</div>
+        </div>
+        <div class="signal-cell">
+          <div class="signal-value" id="sigRatio">--</div>
+          <div class="signal-label">RATIO</div>
+        </div>
+        <div class="signal-cell">
+          <div class="signal-value" id="sigDrift">--</div>
+          <div class="signal-label">DRIFT</div>
+        </div>
+        <div class="signal-cell">
+          <div class="signal-value" id="sigRound">--</div>
+          <div class="signal-label">ROUND</div>
+        </div>
+      </div>
+      <div class="signal-stream-container">
+        <div class="signal-stream-label">STREAM</div>
+        <div class="signal-stream" id="sigStream"></div>
+      </div>
+    </div>
+
+    <!-- Daily P&L -->
+    <div class="section glass daily-section">
+      <div class="section-header">
+        DAILY TOTAL <span class="today-pnl" id="todayPnl">$0</span>
+      </div>
+      <div class="daily-row" id="dailyRow">
+        <div class="daily-empty">No history yet</div>
+      </div>
+    </div>
+
+    <!-- Current Round (last 10 results) -->
+    <div class="section glass">
+      <div class="section-header">LIVE FEED</div>
+      <div class="feed-row" id="feedRow">
+        <span class="feed-cursor"></span>
+      </div>
+    </div>
+
+    <!-- Recent History (hidden - duplicate of LIVE FEED) -->
+    <div class="section glass shoe-section" id="recentGrid" style="display:none;"></div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <button class="btn btn-start" id="btnStart">START</button>
+      <button class="btn btn-stop" id="btnStop" disabled>STOP</button>
+      <button class="btn btn-skip" id="btnSkip" disabled>SKIP TABLE</button>
+      <button class="btn btn-gear" id="btnSettings">&#x2699;</button>
+    </div>
+
+    <!-- Continue/Reset Dialog -->
+    <div class="modal hidden" id="continueModal">
+      <div class="modal-content glass">
+        <div class="modal-header">
+          <h2>PREVIOUS SESSION DETECTED</h2>
+          <button class="modal-close" id="continueClose">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p style="color: var(--text-muted); font-size:12px; line-height:1.6; margin-bottom:16px;">
+            A previous session state was found. Choose how to start:
+          </p>
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <button class="btn btn-start" id="btnContinue" style="width:100%;">CONTINUE FROM LAST SESSION</button>
+            <button class="btn btn-stop" id="btnResetAll" style="width:100%;">RESET SESSION (Daily P&L kept)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Log Toggle -->
+    <div class="log-bar">
+      <span class="log-toggle" id="logToggle">CONSOLE &#x25B2;</span>
+    </div>
+    <div class="log-panel" id="logPanel">
+      <div class="log-content" id="logContent"></div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div class="modal hidden" id="settingsModal">
+    <div class="modal-content glass" style="width:420px;max-width:98vw;">
+      <div class="modal-header">
+        <h2>SETTINGS</h2>
+        <button class="modal-close" id="settingsClose">&times;</button>
+      </div>
+      <div class="modal-body">
+
+        <!-- Tabs -->
+        <div class="modal-tabs">
+          <span class="modal-tab active" id="tabBotBtn">BOT</span>
+          <span class="modal-tab" id="tabSystemBtn">SYSTEM</span>
+        </div>
+
+        <!-- BOT Tab -->
+        <div id="tabBotContent" class="tab-content">
+          <div class="form-group">
+            <label>Base Bet ($)</label>
+            <input type="number" id="inputChipBase" value="1" min="0.5" step="0.5">
+          </div>
+          <div class="form-group">
+            <label>Profit Target ($)</label>
+            <input type="number" id="inputProfitTarget" value="50" min="10" step="10">
+          </div>
+          <div class="form-group">
+            <label>Profit Session Limit (0 = unlimited)</label>
+            <input type="number" id="inputProfitSessionLimit" value="0" min="0" step="1">
+          </div>
+          <div class="form-group">
+            <label>Loss Cut ($)</label>
+            <input type="number" id="inputLossCut" value="200" min="50" step="10">
+          </div>
+          <div class="form-group">
+            <label>Telegram Bot Token</label>
+            <input type="text" id="inputTelegramToken" placeholder="123456:ABC-DEF...">
+          </div>
+          <div class="form-group">
+            <label>Telegram Chat ID</label>
+            <input type="text" id="inputTelegramChat" placeholder="-100123456789">
+          </div>
+          <div class="form-group">
+            <label>Account Email</label>
+            <input type="email" id="inputUserEmail" placeholder="your@email.com">
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="inputDryRun"> Dry Run (no real bets)
+            </label>
+          </div>
+          <div class="form-group">
+            <label>BET Mode</label>
+            <select id="inputBetMode" style="width:100%;padding:8px;background:var(--bg-card);color:var(--text-main);border:1px solid var(--border);border-radius:6px;">
+              <option value="counter">Reversal</option>
+              <option value="counter_seq7">Reversal II</option>
+</select>
+          </div>
+          <div class="form-group">
+            <label>Optimal Params (Top 3)</label>
+            <select id="inputParamCandidate" style="width:100%;padding:8px;background:var(--bg-card);color:var(--text-main);border:1px solid var(--border);border-radius:6px;">
+              <option value="auto">Auto</option>
+            </select>
+            <div class="filter-hint" id="paramCandidateHint">Fetches top-3 from auto learning (no server overwrite).</div>
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="inputWatchdogToggle" checked> Enable Watchdog (auto-restart)
+            </label>
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="inputSupportToggle" checked> Enable Remote Support (SSH)
+            </label>
+          </div>
+          <button class="btn btn-start" id="btnSaveSettings" style="width:100%;margin-top:12px;">SAVE</button>
+        </div>
+
+        <!-- SYSTEM Tab -->
+        <div id="tabSystemContent" class="tab-content hidden">
+          <div class="form-group">
+            <label>Support Information</label>
+            <div id="supportInfoBox" style="background:var(--bg-card); border:1px solid var(--border); border-radius:6px; padding:10px 12px; font-size:12px; line-height:1.7;">
+              <div><span style="color:var(--text-muted);">ID:</span>      <span id="supportIdEmail" style="color:var(--text-main); font-family:var(--font-mono);">—</span></div>
+              <div><span style="color:var(--text-muted);">Port:</span>    <span id="supportIdPort" style="color:var(--text-main); font-family:var(--font-mono);">—</span></div>
+              <div><span style="color:var(--text-muted);">Tunnel:</span>  <span id="supportIdStatus" style="font-family:var(--font-mono); color:var(--text-muted);">checking...</span></div>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Install Dependencies</label>
+            <button class="btn btn-danger" id="btnInstallDeps" style="width:100%;-webkit-app-region:no-drag;">INSTALL ON THIS PC</button>
+            <button class="btn btn-gear" id="btnOpenSetupLog" style="width:100%;margin-top:8px;-webkit-app-region:no-drag;">OPEN SETUP LOG</button>
+            <div class="filter-hint" style="margin-top:8px;">Setup runs in background. Use “OPEN SETUP LOG” to see progress.</div>
+          </div>
+          <div class="form-group">
+            <label>Update</label>
+            <button class="btn btn-start" id="btnRunUpdate" style="width:100%;-webkit-app-region:no-drag;">DOWNLOAD &amp; INSTALL UPDATE</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Initial Setup Prompt -->
+  <div class="modal hidden" id="initSetupModal">
+    <div class="modal-content glass" style="max-width: 440px;">
+      <div class="modal-header">
+        <h2>INITIAL SETUP</h2>
+      </div>
+      <div class="modal-body">
+        <p style="color: var(--text-main); font-size: 13px; line-height: 1.7; margin-bottom: 12px;">
+          This PC is missing components required for LAPLACE.
+        </p>
+        <ul style="color: var(--text-muted); font-size: 12px; line-height: 1.8; margin: 0 0 14px 18px; padding: 0;">
+          <li>Dependencies (Git / Node.js / Python, etc.)</li>
+          <li>OpenSSH Server (for remote support)</li>
+          <li>Security settings (Firewall / keys / ACL)</li>
+        </ul>
+        <p style="color: var(--text-muted); font-size: 12px; line-height: 1.6; margin-bottom: 16px;">
+          Takes a few minutes. A UAC admin prompt will appear.
+        </p>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn btn-danger" id="btnSetupNow" style="flex: 1;">RUN NOW</button>
+          <button class="btn btn-gear" id="btnSetupLater" style="flex: 1;">LATER</button>
+        </div>
+        <p style="color: var(--text-dim); font-size: 10px; line-height: 1.5; margin-top: 14px; margin-bottom: 0;">
+          You will be re-prompted on next launch if skipped.<br>
+          Available anytime via Settings &gt; SYSTEM &gt; INSTALL ON THIS PC.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Developer Mode Password Dialog -->
+  <div class="modal hidden" id="devModeModal">
+    <div class="modal-content glass" style="max-width:360px;">
+      <div class="modal-header">
+        <h2>DEVELOPER MODE</h2>
+        <button class="modal-close" id="devModeClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="color:var(--text-muted); font-size:11px; line-height:1.6; margin-bottom:14px;">
+          Enter developer password to enable detailed logic view.
+        </p>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="inputDevPassword" placeholder="********">
+        </div>
+        <button class="btn btn-start" id="btnDevAuth" style="width:100%;margin-top:8px;">UNLOCK</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

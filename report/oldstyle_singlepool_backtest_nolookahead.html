@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8">
+<title>旧レポート同条件 × 単一財布 バックテスト（漏洩なし: 30手観測後に入室）</title>
+<style>
+* { box-sizing: border-box; }
+body { font-family: -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif;
+       background: #0f1419; color: #e0e6ed; margin: 0; padding: 24px; line-height: 1.5; }
+.container { max-width: 1400px; margin: 0 auto; }
+h1 { color: #ffd700; font-size: 26px; border-bottom: 2px solid #ffd700; padding-bottom: 8px; }
+h2 { color: #c084fc; margin-top: 32px; font-size: 20px; }
+.nav { margin: 16px 0 24px; }
+.nav a { display: inline-block; margin-right: 12px; padding: 8px 16px;
+         background: #1a2332; color: #6dd5ed; text-decoration: none;
+         border-radius: 4px; border: 1px solid #2a3441; font-size: 13px; }
+.banner { background: #1a2a1a; border-left: 5px solid #f87171;
+          padding: 14px 18px; margin: 16px 0; font-size: 14px; border-radius: 4px; line-height: 1.8; }
+.banner strong { color: #f87171; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+           gap: 12px; margin: 20px 0; }
+.card { background: #1a2332; padding: 14px; border-radius: 4px; border-left: 4px solid #6dd5ed; }
+.card .label { font-size: 11px; color: #8a96a8; text-transform: uppercase; }
+.card .value { font-size: 22px; font-weight: bold; color: #ffd700; }
+.card.g .value { color: #4ade80; }
+.card.r .value { color: #f87171; }
+.card.y .value { color: #fbbf24; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 16px 0; }
+table th { background: #0f1419; color: #c084fc; padding: 8px; text-align: left;
+           border-bottom: 2px solid #2a3441; }
+table td { padding: 6px 8px; border-bottom: 1px solid #1a2332; }
+td.ts { font-family: monospace; color: #8a96a8; font-size: 11px; }
+#chart { width: 100%; height: 400px; }
+.critical { background: #2a1818; border: 2px solid #f87171; padding: 14px 18px;
+            border-radius: 6px; margin: 16px 0; }
+.critical strong { color: #f87171; }
+</style>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head><body><div class="container">
+<h1>旧レポート同条件 × 単一財布 バックテスト（漏洩なし: 30手観測後に入室）</h1>
+<div class="nav"><a href="index.html">← レポートTOP</a><a href="gui_realistic_backtest.html">GUI再現版</a><a href="equity_counter_newseq_5turn_10k.html">旧レポート (62財布)</a></div>
+
+<div class="banner">
+<strong>🔬 旧レポートと全く同じエントリー条件 + 退避なし。違いは「財布が1つ」だけ。</strong><br>
+<strong>エントリー:</strong> shoe冒頭30ハンド観測→ classify_pattern → テレコ+ニコ混合 → 31手目からBET<br>
+<strong>退避:</strong> なし (shoe終わりまで全ハンド逆張り)<br>
+<strong>資金:</strong> 元本 $10,000 (単一財布) / $1 base / $30利確 / 新SEQ × 5ターン<br>
+データ: 2026-04-06〜 / 23,255シュー時系列ソート / 入室376シュー
+</div>
+
+<div class="summary">
+  <div class="card r"><div class="label">結果</div><div class="value">破綻</div></div>
+  <div class="card"><div class="label">最終残高</div><div class="value">$2,308</div></div>
+  <div class="card r"><div class="label">通算損益</div><div class="value">$-7,692</div></div>
+  <div class="card y"><div class="label">最大DD</div><div class="value">$11,400</div></div>
+  <div class="card"><div class="label">残高ピーク</div><div class="value">$13,709</div></div>
+  <div class="card"><div class="label">最大到達SEQ</div><div class="value">[42]=$500</div></div>
+  <div class="card"><div class="label">BET数</div><div class="value">12,385</div></div>
+  <div class="card"><div class="label">勝率</div><div class="value">49.50%</div></div>
+  <div class="card"><div class="label">利確回数</div><div class="value">76</div></div>
+  <div class="card"><div class="label">入室シュー</div><div class="value">376</div></div>
+</div>
+
+<div class="critical">
+<strong>⚠️ 破綻: 2026-04-06T08:25:50.051408+09:00</strong><br>
+SEQ[42]=$500 × 5turn = $2500 を残高$2,308で賄えなくなった。
+</div>
+
+<h2>💹 残高推移</h2>
+<div id="chart"></div>
+
+<h2>📅 日次パフォーマンス</h2>
+<table>
+<thead><tr><th>日付</th><th>BET数</th><th>勝率</th><th>利確回数</th><th>日次PNL</th><th>累計PNL</th></tr></thead>
+<tbody><tr><td class='ts'>2026-04-06</td><td>12,385</td><td>49.5%</td><td>76</td><td style='color:#f87171;font-weight:bold'>$-7,692</td><td style='color:#f87171'>$-7,692</td></tr></tbody></table>
+
+<h2>🔬 この実験の意味</h2>
+<div style="background:#11192a;border-left:4px solid #fbbf24;padding:14px 18px;border-radius:4px;">
+<p>旧レポート <code>equity_counter_newseq_5turn_10k.html</code> は「破綻 0/62」を報告したが、
+それは各テーブルに独立$10,000 (計$620,000) を配った結果。</p>
+<p><strong>同じ戦略・同じエントリー・同じ退避なし</strong>を、単一$10,000 1財布に変えて時系列で回したのがこのレポート。</p>
+<p>結果が <strong>破綻</strong> なら、真因は「1財布 vs 62財布」のスケール差だと結論できる。</p>
+</div>
+
+<p class="ts" style="margin-top:32px;">
+生成元: <code>generate_oldstyle_singlepool_backtest.py</code> / データ: analytics_vps.sqlite3 / mode: NO_LOOKAHEAD
+</p>
+</div>
+<script>
+const labels = ["2026-04-06T00:22", "2026-04-06T00:42", "2026-04-06T01:05", "2026-04-06T01:25", "2026-04-06T01:35", "2026-04-06T01:38", "2026-04-06T01:55", "2026-04-06T02:35", "2026-04-06T02:51", "2026-04-06T03:18", "2026-04-06T03:41", "2026-04-06T03:54", "2026-04-06T04:27", "2026-04-06T04:50", "2026-04-06T05:03", "2026-04-06T05:26", "2026-04-06T05:53", "2026-04-06T06:09", "2026-04-06T06:32", "2026-04-06T06:49", "2026-04-06T07:06", "2026-04-06T07:32", "2026-04-06T07:52", "2026-04-06T08:15", "END"];
+const values = [10160.6, 10047.95, 10083.55, 9846.55, 10749.25, 9478.5, 10940.95, 11048.9, 11222.8, 11312.55, 11553.65, 11857.8, 12010.6, 12280.4, 12400.95, 12625.95, 12605.9, 9198.75, 10652.75, 12736.0, 13160.25, 13391.25, 13572.25, 11472.5, 2308.25];
+Plotly.newPlot('chart', [{
+  x: labels, y: values, type: 'scatter', mode: 'lines',
+  line: {color: '#f87171', width: 2}, fill: 'tozeroy',
+  fillcolor: 'rgba(74, 222, 128, 0.08)',
+  hovertemplate: '%{x}<br>$%{y:,.0f}<extra></extra>'
+}], {
+  paper_bgcolor: '#0f1419', plot_bgcolor: '#11192a',
+  font: {color: '#e0e6ed'},
+  xaxis: {gridcolor: '#2a3441', showticklabels: false},
+  yaxis: {gridcolor: '#2a3441', title: 'Balance ($)', tickformat: ',.0f'},
+  margin: {l: 80, r: 20, t: 20, b: 20},
+  shapes: [{
+    type: 'line', x0: 0, x1: 1, xref: 'paper',
+    y0: 10000.0, y1: 10000.0,
+    line: {color: '#8a96a8', width: 1, dash: 'dash'}
+  }]
+}, {displayModeBar: false, responsive: true});
+</script>
+</body></html>

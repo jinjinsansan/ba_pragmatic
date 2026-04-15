@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>P. 入退室条件の最適化</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  background: #0f1419; color: #e0e6ed; margin: 0; padding: 24px; line-height: 1.5;
+}
+.container { max-width: 1400px; margin: 0 auto; }
+h1 { color: #ffd700; font-size: 28px; border-bottom: 2px solid #ffd700; padding-bottom: 8px; }
+h2 { color: #c084fc; margin-top: 32px; font-size: 22px; }
+h3 { color: #6dd5ed; margin-top: 24px; }
+.nav { margin: 16px 0 24px 0; }
+.nav a {
+  display: inline-block; margin-right: 12px; padding: 8px 16px;
+  background: #1a2332; color: #6dd5ed; text-decoration: none;
+  border-radius: 4px; border: 1px solid #2a3441; font-size: 13px;
+}
+.nav a:hover { border-color: #c084fc; }
+.banner {
+  background: #1a2a1a; border-left: 5px solid #4ade80;
+  padding: 14px 18px; margin: 16px 0; font-size: 14px; border-radius: 4px; line-height: 1.8;
+}
+.banner strong { color: #4ade80; }
+.summary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px; margin: 20px 0;
+}
+.card {
+  background: #1a2332; padding: 14px; border-radius: 4px; border-left: 4px solid #6dd5ed;
+}
+.card .label { font-size: 11px; color: #8a96a8; text-transform: uppercase; }
+.card .value { font-size: 22px; font-weight: bold; color: #ffd700; }
+.card.green .value { color: #4ade80; }
+.card.red .value { color: #f87171; }
+
+table {
+  width: 100%; border-collapse: collapse; font-size: 13px; margin: 16px 0;
+}
+table th {
+  background: #0f1419; color: #c084fc; padding: 8px; text-align: left;
+  border-bottom: 2px solid #2a3441; position: sticky; top: 0;
+}
+table td { padding: 6px 8px; border-bottom: 1px solid #1a2332; }
+table tr:hover { background: rgba(255,255,255,0.03); }
+.note { color: #8a96a8; font-size: 13px; margin: 8px 0; }
+.highlight {
+  background: #11192a; border: 2px solid #4ade80; border-radius: 8px;
+  padding: 16px; margin: 16px 0;
+}
+.highlight h3 { margin-top: 0; color: #4ade80; }
+.best { background: #1a3a1a; border: 2px solid #4ade80; border-radius: 8px; padding: 20px; margin: 20px 0; }
+.best h3 { color: #4ade80; margin: 0 0 12px 0; }
+.best .param { font-size: 18px; color: #ffd700; margin: 4px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>P. 入退室条件の最適化</h1>
+
+<div class="nav">
+<a href="index.html">← レポートTOP</a>
+<a href="realtime_counter_backtest.html">O. リアルタイム入退室</a>
+</div>
+
+<div class="banner">
+<strong>📊 入室条件 25通り × 退室条件 8通り = 200パターンを総当たり検証。</strong><br>
+全パラメータ組み合わせで最適な入退室条件をデータから導出。<br>
+データ: 2026-04-06〜本日 / 17,240シュー / 62テーブル
+</div>
+
+<div class="best">
+<h3>🏆 最適パラメータ (MB PNL 最大)</h3>
+<div class="param">入室: 直近 <strong>15列</strong>で 1落ち+2落ち <strong>85%</strong>以上</div>
+<div class="param">退室: <strong>3落ち×2 or 5落ち</strong></div>
+<div class="param">結果: 勝率 <strong>52.72%</strong> / BET <strong>20,789</strong>回 / 入室 <strong>3,095</strong>回</div>
+<div class="param">Flat PNL: <strong style="color:#4ade80">+1,131</strong></div>
+<div class="param">MB PNL: <strong style="color:#4ade80">$+5,381</strong> / 93セッション完走 / MaxDD $1,497</div>
+</div>
+
+<h2>1. テレコ区間の持続時間</h2>
+<p class="note">テレコ状態が何ハンド続くか。短いほど頻繁に出入りが必要。</p>
+<div class="summary">
+  <div class="card">
+    <div class="label">テレコ区間数</div>
+    <div class="value">37,910</div>
+  </div>
+  <div class="card green">
+    <div class="label">平均持続</div>
+    <div class="value">15.1h</div>
+  </div>
+  <div class="card yellow">
+    <div class="label">中央値</div>
+    <div class="value">11h</div>
+  </div>
+</div>
+
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">1-5h</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:114.02796096016883px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">10,807 (28.5%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">6-10h</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:83.32366130308625px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">7,897 (20.8%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">11-20h</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:91.09997362173569px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">8,634 (22.8%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">21-30h</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:61.904510683197046px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">5,867 (15.5%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">31-50h</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:39.72566605117383px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">3,765 (9.9%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">51-100h</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:9.90767607491427px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">939 (2.5%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">100h+</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.010551305724083354px;height:100%;background:#6dd5ed;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">1 (0.0%)</div>
+</div>
+
+<h2>2. テレコ崩壊時の列長 (何落ちで崩れるか)</h2>
+<p class="note">テレコ区間が終わる直前の列長。「何落ちが出たらテレコが崩壊したか」。</p>
+
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">3落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:153.64811395410183px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">14,562 (38.4%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">4落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:76.20152993932999px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">7,222 (19.1%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">5落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:37.583750989184914px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">3,562 (9.4%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">6落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:18.412028488525458px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">1,745 (4.6%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">7落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:9.095225534159852px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">862 (2.3%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">8落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:4.62147190714851px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">438 (1.2%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">9落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:2.226325507781588px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">211 (0.6%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">10落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.9285149037193352px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">88 (0.2%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">11落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.5486678976523345px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">52 (0.1%)</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:80px">12落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:0.33764178317066734px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#8a96a8">32 (0.1%)</div>
+</div>
+
+<h2>3. 入室条件の効果 (退室条件の全平均)</h2>
+<p class="note">各入室条件パラメータの平均MB PNL。どのWindow/Thresholdが最も利益を生むか。</p>
+
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=12, Thresh=85%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:10.67638157894749px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-1,068</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=12, Thresh=90%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:10.67638157894749px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-1,068</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=10, Thresh=75%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:34.86894736842121px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-3,487</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=10, Thresh=80%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:34.86894736842121px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-3,487</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=10, Thresh=70%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:38.54493421052653px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-3,854</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=8, Thresh=70%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:49.80434210526327px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-4,980</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=8, Thresh=75%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:49.80434210526327px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-4,980</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=8, Thresh=90%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:54.64506578947274px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-5,465</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=6, Thresh=70%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:62.74249999999971px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-6,274</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=6, Thresh=75%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:62.74249999999971px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-6,274</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=6, Thresh=80%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:62.74249999999971px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-6,274</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=12, Thresh=80%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:76.3605921052631px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-7,636</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=15, Thresh=85%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:77.82815789473639px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-7,783</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=8, Thresh=80%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:79.54881578947315px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-7,955</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:150px">Window=8, Thresh=85%</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:79.54881578947315px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-7,955</div>
+</div>
+
+<h2>4. 退室条件の効果 (入室条件の全平均)</h2>
+<p class="note">各退室条件の平均MB PNL。退室なし vs 各退室条件の比較。</p>
+
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:200px">3落ち×3 or 5落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:40.82191578947367px;height:100%;background:#4ade80;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#4ade80">$+4,082</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:200px">3落ち×3 or 4落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:36.35372631578947px;height:100%;background:#4ade80;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#4ade80">$+3,635</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:200px">3落ち×2 or 5落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:28.938673684210514px;height:100%;background:#4ade80;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#4ade80">$+2,894</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:200px">3落ち×2 or 4落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:23.16294736842104px;height:100%;background:#4ade80;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#4ade80">$+2,316</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:200px">4落ちのみ</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:11.595368421052553px;height:100%;background:#4ade80;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#4ade80">$+1,160</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:200px">5落ちのみ</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:3.0304842105263736px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-303</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:200px">退室なし</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:140.26696842105292px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-14,027</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin:4px 0;font-size:14px">
+  <div style="min-width:200px">3落ち×1 or 4落ち</div>
+  <div style="flex:1;height:20px;background:#1a2332;border-radius:4px;overflow:hidden">
+    <div style="width:623.3042736842068px;height:100%;background:#f87171;border-radius:4px"></div>
+  </div>
+  <div style="min-width:120px;text-align:right;color:#f87171">$-62,330</div>
+</div>
+
+<h2>5. 全パラメータ組み合わせ Top 40</h2>
+<p class="note">MB PNL の降順。</p>
+<table>
+<thead><tr>
+  <th>#</th><th>Window</th><th>Threshold</th><th>退室条件</th>
+  <th>入室</th><th>BET数</th><th>勝率</th><th>Flat PNL</th>
+  <th>MB完走</th><th>MB PNL</th><th>MB MaxDD</th>
+</tr></thead>
+<tbody><tr style='background:#1a3a1a;'><td style='font-weight:bold'>#1</td><td>15</td><td>85%</td><td>3落ち×2 or 5落ち</td><td>3,095</td><td>20,789</td><td style='font-weight:bold'>52.72%</td><td style='color:#4ade80'>+1,131</td><td>93</td><td style='color:#4ade80;font-weight:bold'>$+5,381</td><td>$1,497</td></tr><tr style='background:#1a3a1a;'><td style='font-weight:bold'>#2</td><td>8</td><td>90%</td><td>3落ち×2 or 5落ち</td><td>2,229</td><td>17,980</td><td style='font-weight:bold'>55.20%</td><td style='color:#4ade80'>+1,870</td><td>93</td><td style='color:#4ade80;font-weight:bold'>$+5,035</td><td>$386</td></tr><tr style='background:#1a3a1a;'><td style='font-weight:bold'>#3</td><td>15</td><td>85%</td><td>3落ち×3 or 5落ち</td><td>2,182</td><td>19,452</td><td style='font-weight:bold'>51.37%</td><td style='color:#4ade80'>+532</td><td>82</td><td style='color:#4ade80;font-weight:bold'>$+4,996</td><td>$2,387</td></tr><tr style=''><td style='font-weight:bold'>#4</td><td>6</td><td>85%</td><td>3落ち×2 or 5落ち</td><td>2,272</td><td>18,575</td><td style='font-weight:bold'>55.19%</td><td style='color:#4ade80'>+1,927</td><td>91</td><td style='color:#4ade80;font-weight:bold'>$+4,964</td><td>$178</td></tr><tr style=''><td style='font-weight:bold'>#5</td><td>6</td><td>90%</td><td>3落ち×2 or 5落ち</td><td>2,272</td><td>18,575</td><td style='font-weight:bold'>55.19%</td><td style='color:#4ade80'>+1,927</td><td>91</td><td style='color:#4ade80;font-weight:bold'>$+4,964</td><td>$178</td></tr><tr style=''><td style='font-weight:bold'>#6</td><td>15</td><td>85%</td><td>4落ちのみ</td><td>3,347</td><td>21,802</td><td style='font-weight:bold'>51.33%</td><td style='color:#4ade80'>+582</td><td>79</td><td style='color:#4ade80;font-weight:bold'>$+4,907</td><td>$908</td></tr><tr style=''><td style='font-weight:bold'>#7</td><td>8</td><td>80%</td><td>3落ち×3 or 4落ち</td><td>3,446</td><td>19,913</td><td style='font-weight:bold'>51.97%</td><td style='color:#4ade80'>+785</td><td>81</td><td style='color:#4ade80;font-weight:bold'>$+4,889</td><td>$1,235</td></tr><tr style=''><td style='font-weight:bold'>#8</td><td>8</td><td>85%</td><td>3落ち×3 or 4落ち</td><td>3,446</td><td>19,913</td><td style='font-weight:bold'>51.97%</td><td style='color:#4ade80'>+785</td><td>81</td><td style='color:#4ade80;font-weight:bold'>$+4,889</td><td>$1,235</td></tr><tr style=''><td style='font-weight:bold'>#9</td><td>8</td><td>90%</td><td>3落ち×2 or 4落ち</td><td>3,341</td><td>18,270</td><td style='font-weight:bold'>53.60%</td><td style='color:#4ade80'>+1,316</td><td>86</td><td style='color:#4ade80;font-weight:bold'>$+4,882</td><td>$1,142</td></tr><tr style=''><td style='font-weight:bold'>#10</td><td>6</td><td>85%</td><td>3落ち×3 or 5落ち</td><td>1,743</td><td>19,029</td><td style='font-weight:bold'>53.39%</td><td style='color:#4ade80'>+1,289</td><td>88</td><td style='color:#4ade80;font-weight:bold'>$+4,857</td><td>$286</td></tr><tr style=''><td style='font-weight:bold'>#11</td><td>6</td><td>90%</td><td>3落ち×3 or 5落ち</td><td>1,743</td><td>19,029</td><td style='font-weight:bold'>53.39%</td><td style='color:#4ade80'>+1,289</td><td>88</td><td style='color:#4ade80;font-weight:bold'>$+4,857</td><td>$286</td></tr><tr style=''><td style='font-weight:bold'>#12</td><td>15</td><td>85%</td><td>3落ち×2 or 4落ち</td><td>4,276</td><td>20,463</td><td style='font-weight:bold'>51.99%</td><td style='color:#4ade80'>+813</td><td>82</td><td style='color:#4ade80;font-weight:bold'>$+4,827</td><td>$1,755</td></tr><tr style=''><td style='font-weight:bold'>#13</td><td>15</td><td>90%</td><td>3落ち×3 or 5落ち</td><td>1,702</td><td>18,018</td><td style='font-weight:bold'>53.62%</td><td style='color:#4ade80'>+1,304</td><td>86</td><td style='color:#4ade80;font-weight:bold'>$+4,745</td><td>$217</td></tr><tr style=''><td style='font-weight:bold'>#14</td><td>8</td><td>90%</td><td>3落ち×3 or 5落ち</td><td>1,484</td><td>17,779</td><td style='font-weight:bold'>53.98%</td><td style='color:#4ade80'>+1,415</td><td>84</td><td style='color:#4ade80;font-weight:bold'>$+4,703</td><td>$209</td></tr><tr style=''><td style='font-weight:bold'>#15</td><td>15</td><td>85%</td><td>3落ち×3 or 4落ち</td><td>3,627</td><td>20,874</td><td style='font-weight:bold'>51.59%</td><td style='color:#4ade80'>+662</td><td>77</td><td style='color:#4ade80;font-weight:bold'>$+4,670</td><td>$3,055</td></tr><tr style=''><td style='font-weight:bold'>#16</td><td>8</td><td>80%</td><td>3落ち×3 or 5落ち</td><td>2,008</td><td>18,904</td><td style='font-weight:bold'>52.22%</td><td style='color:#4ade80'>+838</td><td>83</td><td style='color:#4ade80;font-weight:bold'>$+4,647</td><td>$1,820</td></tr><tr style=''><td style='font-weight:bold'>#17</td><td>8</td><td>85%</td><td>3落ち×3 or 5落ち</td><td>2,008</td><td>18,904</td><td style='font-weight:bold'>52.22%</td><td style='color:#4ade80'>+838</td><td>83</td><td style='color:#4ade80;font-weight:bold'>$+4,647</td><td>$1,820</td></tr><tr style=''><td style='font-weight:bold'>#18</td><td>12</td><td>80%</td><td>3落ち×3 or 5落ち</td><td>2,251</td><td>19,138</td><td style='font-weight:bold'>51.35%</td><td style='color:#4ade80'>+518</td><td>80</td><td style='color:#4ade80;font-weight:bold'>$+4,641</td><td>$2,032</td></tr><tr style=''><td style='font-weight:bold'>#19</td><td>10</td><td>85%</td><td>4落ちのみ</td><td>2,941</td><td>19,598</td><td style='font-weight:bold'>51.83%</td><td style='color:#4ade80'>+716</td><td>79</td><td style='color:#4ade80;font-weight:bold'>$+4,632</td><td>$700</td></tr><tr style=''><td style='font-weight:bold'>#20</td><td>10</td><td>90%</td><td>4落ちのみ</td><td>2,941</td><td>19,598</td><td style='font-weight:bold'>51.83%</td><td style='color:#4ade80'>+716</td><td>79</td><td style='color:#4ade80;font-weight:bold'>$+4,632</td><td>$700</td></tr><tr style=''><td style='font-weight:bold'>#21</td><td>12</td><td>85%</td><td>3落ち×3 or 5落ち</td><td>1,728</td><td>18,403</td><td style='font-weight:bold'>52.96%</td><td style='color:#4ade80'>+1,091</td><td>80</td><td style='color:#4ade80;font-weight:bold'>$+4,572</td><td>$476</td></tr><tr style=''><td style='font-weight:bold'>#22</td><td>12</td><td>90%</td><td>3落ち×3 or 5落ち</td><td>1,728</td><td>18,403</td><td style='font-weight:bold'>52.96%</td><td style='color:#4ade80'>+1,091</td><td>80</td><td style='color:#4ade80;font-weight:bold'>$+4,572</td><td>$476</td></tr><tr style=''><td style='font-weight:bold'>#23</td><td>8</td><td>80%</td><td>3落ち×2 or 5落ち</td><td>2,671</td><td>17,982</td><td style='font-weight:bold'>52.77%</td><td style='color:#4ade80'>+998</td><td>81</td><td style='color:#4ade80;font-weight:bold'>$+4,571</td><td>$614</td></tr><tr style=''><td style='font-weight:bold'>#24</td><td>8</td><td>85%</td><td>3落ち×2 or 5落ち</td><td>2,671</td><td>17,982</td><td style='font-weight:bold'>52.77%</td><td style='color:#4ade80'>+998</td><td>81</td><td style='color:#4ade80;font-weight:bold'>$+4,571</td><td>$614</td></tr><tr style=''><td style='font-weight:bold'>#25</td><td>10</td><td>85%</td><td>3落ち×3 or 5落ち</td><td>1,923</td><td>18,266</td><td style='font-weight:bold'>52.21%</td><td style='color:#4ade80'>+806</td><td>78</td><td style='color:#4ade80;font-weight:bold'>$+4,559</td><td>$634</td></tr><tr style=''><td style='font-weight:bold'>#26</td><td>10</td><td>90%</td><td>3落ち×3 or 5落ち</td><td>1,923</td><td>18,266</td><td style='font-weight:bold'>52.21%</td><td style='color:#4ade80'>+806</td><td>78</td><td style='color:#4ade80;font-weight:bold'>$+4,559</td><td>$634</td></tr><tr style=''><td style='font-weight:bold'>#27</td><td>6</td><td>85%</td><td>3落ち×2 or 4落ち</td><td>3,092</td><td>17,178</td><td style='font-weight:bold'>53.90%</td><td style='color:#4ade80'>+1,340</td><td>82</td><td style='color:#4ade80;font-weight:bold'>$+4,553</td><td>$206</td></tr><tr style=''><td style='font-weight:bold'>#28</td><td>6</td><td>90%</td><td>3落ち×2 or 4落ち</td><td>3,092</td><td>17,178</td><td style='font-weight:bold'>53.90%</td><td style='color:#4ade80'>+1,340</td><td>82</td><td style='color:#4ade80;font-weight:bold'>$+4,553</td><td>$206</td></tr><tr style=''><td style='font-weight:bold'>#29</td><td>12</td><td>85%</td><td>3落ち×3 or 4落ち</td><td>3,267</td><td>19,098</td><td style='font-weight:bold'>51.98%</td><td style='color:#4ade80'>+758</td><td>79</td><td style='color:#4ade80;font-weight:bold'>$+4,552</td><td>$1,129</td></tr><tr style=''><td style='font-weight:bold'>#30</td><td>12</td><td>90%</td><td>3落ち×3 or 4落ち</td><td>3,267</td><td>19,098</td><td style='font-weight:bold'>51.98%</td><td style='color:#4ade80'>+758</td><td>79</td><td style='color:#4ade80;font-weight:bold'>$+4,552</td><td>$1,129</td></tr><tr style=''><td style='font-weight:bold'>#31</td><td>6</td><td>85%</td><td>3落ち×3 or 4落ち</td><td>2,799</td><td>18,122</td><td style='font-weight:bold'>52.63%</td><td style='color:#4ade80'>+952</td><td>79</td><td style='color:#4ade80;font-weight:bold'>$+4,515</td><td>$265</td></tr><tr style=''><td style='font-weight:bold'>#32</td><td>6</td><td>90%</td><td>3落ち×3 or 4落ち</td><td>2,799</td><td>18,122</td><td style='font-weight:bold'>52.63%</td><td style='color:#4ade80'>+952</td><td>79</td><td style='color:#4ade80;font-weight:bold'>$+4,515</td><td>$265</td></tr><tr style=''><td style='font-weight:bold'>#33</td><td>15</td><td>90%</td><td>4落ちのみ</td><td>2,840</td><td>18,926</td><td style='font-weight:bold'>51.71%</td><td style='color:#4ade80'>+648</td><td>79</td><td style='color:#4ade80;font-weight:bold'>$+4,483</td><td>$1,386</td></tr><tr style=''><td style='font-weight:bold'>#34</td><td>12</td><td>80%</td><td>3落ち×2 or 5落ち</td><td>2,898</td><td>17,821</td><td style='font-weight:bold'>51.64%</td><td style='color:#4ade80'>+583</td><td>77</td><td style='color:#4ade80;font-weight:bold'>$+4,479</td><td>$458</td></tr><tr style=''><td style='font-weight:bold'>#35</td><td>10</td><td>85%</td><td>3落ち×2 or 4落ち</td><td>3,466</td><td>17,237</td><td style='font-weight:bold'>52.80%</td><td style='color:#4ade80'>+965</td><td>78</td><td style='color:#4ade80;font-weight:bold'>$+4,452</td><td>$363</td></tr><tr style=''><td style='font-weight:bold'>#36</td><td>10</td><td>90%</td><td>3落ち×2 or 4落ち</td><td>3,466</td><td>17,237</td><td style='font-weight:bold'>52.80%</td><td style='color:#4ade80'>+965</td><td>78</td><td style='color:#4ade80;font-weight:bold'>$+4,452</td><td>$363</td></tr><tr style=''><td style='font-weight:bold'>#37</td><td>15</td><td>75%</td><td>3落ち×2 or 5落ち</td><td>3,212</td><td>19,365</td><td style='font-weight:bold'>51.32%</td><td style='color:#4ade80'>+513</td><td>75</td><td style='color:#4ade80;font-weight:bold'>$+4,444</td><td>$897</td></tr><tr style=''><td style='font-weight:bold'>#38</td><td>15</td><td>80%</td><td>3落ち×2 or 5落ち</td><td>3,212</td><td>19,365</td><td style='font-weight:bold'>51.32%</td><td style='color:#4ade80'>+513</td><td>75</td><td style='color:#4ade80;font-weight:bold'>$+4,444</td><td>$897</td></tr><tr style=''><td style='font-weight:bold'>#39</td><td>10</td><td>85%</td><td>3落ち×2 or 5落ち</td><td>2,400</td><td>17,049</td><td style='font-weight:bold'>53.26%</td><td style='color:#4ade80'>+1,113</td><td>77</td><td style='color:#4ade80;font-weight:bold'>$+4,405</td><td>$1,318</td></tr><tr style=''><td style='font-weight:bold'>#40</td><td>10</td><td>90%</td><td>3落ち×2 or 5落ち</td><td>2,400</td><td>17,049</td><td style='font-weight:bold'>53.26%</td><td style='color:#4ade80'>+1,113</td><td>77</td><td style='color:#4ade80;font-weight:bold'>$+4,405</td><td>$1,318</td></tr></tbody>
+</table>
+
+<p class="note" style="margin-top:32px;">
+  生成元: <code>generate_entry_exit_optimization.py</code> /
+  逆張り + Banker増額 (×1.0526) + 〇✖ MaruBatsu ($50利確)
+</p>
+</div>
+</body>
+</html>
