@@ -39,13 +39,55 @@ _WS_BRIDGE_INIT = r"""
     if (window.__bacopy_ws_bridge_installed) return;
     window.__bacopy_ws_bridge_installed = true;
     window.__bacopy_sockets = [];
+    window.__bacopy_ws_events = window.__bacopy_ws_events || [];
+
+    const pushEvent = (ev) => {
+      try {
+        window.__bacopy_ws_events.push(ev);
+        if (window.__bacopy_ws_events.length > 2000) {
+          window.__bacopy_ws_events.splice(0, window.__bacopy_ws_events.length - 1000);
+        }
+      } catch (e) {}
+    };
+
+    window.__bacopy_ws_drain = (maxItems) => {
+      try {
+        const n = (typeof maxItems === 'number' && maxItems > 0) ? maxItems : 300;
+        const out = window.__bacopy_ws_events.slice(0, n);
+        window.__bacopy_ws_events.splice(0, out.length);
+        return out;
+      } catch (e) {
+        return [];
+      }
+    };
 
     const OrigWS = window.WebSocket;
+
+    const attachSpy = (ws) => {
+      try {
+        if (ws.__bacopy_spy_attached) return;
+        ws.__bacopy_spy_attached = true;
+        const u = ws.__bacopy_url || ws.url || "";
+        ws.addEventListener('message', (evt) => {
+          try {
+            const data = (evt && evt.data !== undefined) ? evt.data : "";
+            pushEvent({ts: Date.now(), dir: "recv", url: u, data});
+          } catch (e) {}
+        });
+        const origSend = ws.send;
+        ws.send = function(payload) {
+          try { pushEvent({ts: Date.now(), dir: "send", url: u, data: payload}); } catch (e) {}
+          return origSend.call(ws, payload);
+        };
+      } catch (e) {}
+    };
+
     function WrappedWebSocket(url, protocols) {
       const ws = protocols ? new OrigWS(url, protocols) : new OrigWS(url);
       try {
         ws.__bacopy_url = url;
         window.__bacopy_sockets.push(ws);
+        attachSpy(ws);
       } catch (e) {}
       return ws;
     }
@@ -194,6 +236,8 @@ class _PragmaticState:
     bets_open_game_id: str = ""  # from {"betsopen":{"game":...}}
     bets_closed_game_id: str = ""  # from {"betsclosed":{"game":...}}
     last_timer: str = ""  # seconds string
+    last_bets_open_at: float = 0.0
+    last_bets_closed_at: float = 0.0
 
     # ws urls
     game_ws_url: str = ""  # gsXX.../game?JSESSIONID=...&tableId=...&type=json
@@ -250,6 +294,7 @@ def _maybe_json(payload: Any) -> Optional[dict[str, Any]]:
             payload = payload.decode("utf-8", errors="replace")
         if not isinstance(payload, str):
             return None
+        payload = payload.lstrip()
         if not payload.startswith("{"):
             return None
         obj = json.loads(payload)
@@ -289,11 +334,13 @@ def _update_from_game_msg(state: _PragmaticState, msg: dict[str, Any]) -> None:
         g = str(msg["betsopen"].get("game") or "")
         if g:
             state.bets_open_game_id = g
+            state.last_bets_open_at = time.time()
         return
     if "betsclosed" in msg and isinstance(msg["betsclosed"], dict):
         g = str(msg["betsclosed"].get("game") or "")
         if g:
             state.bets_closed_game_id = g
+            state.last_bets_closed_at = time.time()
         return
     if "bet" in msg and isinstance(msg["bet"], dict):
         # This appears after betsclosed in sniff logs and likely confirms our bet.
@@ -333,6 +380,37 @@ def _wait_for(predicate, *, timeout_sec: float, tick_ms: int, page=None) -> bool
         else:
             time.sleep(tick_ms / 1000.0)
     return False
+
+
+def _drain_ws_events(page_or_frame, *, max_items: int = 300) -> list[dict[str, Any]]:
+    try:
+        evs = page_or_frame.evaluate("(n) => (window.__bacopy_ws_drain ? window.__bacopy_ws_drain(n) : [])", int(max_items))
+        return evs if isinstance(evs, list) else []
+    except Exception:
+        return []
+
+
+def _pump_ws_events(page, game_frame, state: _PragmaticState) -> None:
+    frames = []
+    if game_frame:
+        frames.append(game_frame)
+    frames.append(page)
+
+    for fr in frames:
+        for ev in _drain_ws_events(fr, max_items=400):
+            if not isinstance(ev, dict):
+                continue
+            url = str(ev.get("url") or "")
+            obj = _maybe_json(ev.get("data"))
+            if not obj:
+                continue
+            if "chat.pragmaticplaylive.net" in url:
+                if str(ev.get("dir") or "") == "send":
+                    _update_from_chat_msg(state, obj)
+            if "pragmaticplaylive.net/game" in url:
+                _update_from_game_msg(state, obj)
+            if "dga.pragmaticplaylive.net/ws" in url:
+                _update_from_lobby_msg(state, obj)
 
 
 def _dismiss_stake_loader(page) -> None:
@@ -635,6 +713,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         fr.evaluate(_WS_BRIDGE_INIT)
                     except Exception:
                         pass
+                    # Keep state fresh even if Playwright websocket events miss cross-origin frames.
+                    _pump_ws_events(page, game_frame, state)
                     res = fr.evaluate(
                         "(args) => window.__bacopy_ws_send(args.match, args.payload)",
                         {"match": match, "payload": xml_payload},
@@ -647,12 +727,34 @@ def main(argv: Optional[list[str]] = None) -> int:
             return last_err or {"ok": False, "error": "evaluate_failed"}
 
         def wait_bets_open(timeout_sec: float) -> Optional[str]:
-            ok = _wait_for(lambda: bool(state.bets_open_game_id), timeout_sec=timeout_sec, tick_ms=200, page=page)
+            start = time.time()
+            prev_id = state.bets_open_game_id
+            prev_at = state.last_bets_open_at
+
+            def _pred() -> bool:
+                _pump_ws_events(page, game_frame, state)
+                if not state.bets_open_game_id:
+                    return False
+                if state.bets_closed_game_id == state.bets_open_game_id:
+                    return False
+                if state.bets_open_game_id != prev_id:
+                    return True
+                if state.last_bets_open_at > max(prev_at, start - 0.5):
+                    return True
+                # If betsopen arrived slightly earlier but is likely still open, accept it.
+                return (time.time() - state.last_bets_open_at) < 20.0
+
+            ok = _wait_for(_pred, timeout_sec=timeout_sec, tick_ms=200, page=page)
             return state.bets_open_game_id if ok else None
 
         def wait_bet_confirm(timeout_sec: float) -> Optional[dict[str, Any]]:
             state.last_bet_confirm = None
-            _wait_for(lambda: state.last_bet_confirm is not None, timeout_sec=timeout_sec, tick_ms=200, page=page)
+            _wait_for(
+                lambda: (_pump_ws_events(page, game_frame, state) or True) and state.last_bet_confirm is not None,
+                timeout_sec=timeout_sec,
+                tick_ms=200,
+                page=page,
+            )
             return state.last_bet_confirm
 
         def wait_result(game_id: str, operator_table_id: str, timeout_sec: float) -> Optional[str]:
@@ -669,11 +771,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                     return "tie"
                 return None
 
-            ok = _wait_for(lambda: _winner() is not None, timeout_sec=timeout_sec, tick_ms=250, page=page)
+            ok = _wait_for(
+                lambda: (_pump_ws_events(page, game_frame, state) or True) and _winner() is not None,
+                timeout_sec=timeout_sec,
+                tick_ms=250,
+                page=page,
+            )
             return _winner() if ok else None
 
         while True:
             heartbeat("running")
+            try:
+                _pump_ws_events(page, game_frame, state)
+            except Exception:
+                pass
 
             # Resume processing first, then pending (crash-safe).
             items = _fetch_decisions("processing", limit=int(args.limit))
@@ -813,9 +924,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     continue
 
                 # Wait for betting open & current game id
-                state.bets_open_game_id = ""
-                state.current_game_id = ""
-                state.last_timer = ""
+                # Do not reset existing state here; betsopen/timer may have already arrived.
                 game_id = wait_bets_open(timeout_sec=float(args.bet_timeout_sec))
                 if not game_id:
                     _post_result(
