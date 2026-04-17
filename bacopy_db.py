@@ -39,6 +39,21 @@ def init_db() -> None:
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_decisions_received_at ON decisions(received_at)")
+
+        # Prevent duplicate BET per (provider, table_id, game_id) across retries/restarts.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bet_guard (
+              provider TEXT NOT NULL,
+              table_id TEXT NOT NULL,
+              game_id TEXT NOT NULL,
+              decision_id TEXT,
+              created_at TEXT NOT NULL,
+              PRIMARY KEY (provider, table_id, game_id)
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_bet_guard_created_at ON bet_guard(created_at)")
         conn.commit()
     finally:
         conn.close()
@@ -147,5 +162,31 @@ def get_stats() -> dict[str, Any]:
         cur.execute("SELECT MAX(received_at) FROM decisions")
         last_at = cur.fetchone()[0]
         return {"counts": counts, "last_received_at": last_at}
+    finally:
+        conn.close()
+
+
+def try_lock_bet(*, provider: str, table_id: str, game_id: str, decision_id: str = "") -> bool:
+    """Acquire a durable lock for a BET for this (provider, table_id, game_id).
+
+    Returns True if lock acquired, False if already locked.
+    """
+    if not provider or not table_id or not game_id:
+        return False
+    conn = sqlite3.connect(_db_path())
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                INSERT INTO bet_guard(provider, table_id, game_id, decision_id, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (provider, table_id, game_id, decision_id, _utc_now_iso()),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
     finally:
         conn.close()

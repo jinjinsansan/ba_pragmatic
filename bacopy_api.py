@@ -20,12 +20,45 @@ import json
 import os
 import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 from bacopy_db import get_by_status, get_pending, get_stats, init_db, insert_decision, mark_ack, mark_result
 from decision_logger import append_decision_event
 from snapshot_store import get_snapshot, load_snapshots
+
+
+def _resolve_table_id_from_snapshots(provider: str, table_name: str) -> str:
+    if not provider or not table_name:
+        return ""
+    data = load_snapshots()
+    snaps = (data.get("snapshots") or {}).get(provider) or {}
+    if not isinstance(snaps, dict):
+        return ""
+    tn = str(table_name).strip().lower()
+    # exact match
+    for tid, s in snaps.items():
+        name = (s or {}).get("table_name") or ""
+        if str(name).strip().lower() == tn:
+            return str(tid)
+    # contains match
+    for tid, s in snaps.items():
+        name = (s or {}).get("table_name") or ""
+        if tn and tn in str(name).strip().lower():
+            return str(tid)
+    return ""
+
+
+def _fill_snapshot(provider: str, table_id: str, payload: dict[str, Any]) -> None:
+    snap = payload.get("snapshot")
+    if isinstance(snap, dict) and snap:
+        return
+    if not provider or not table_id:
+        return
+    s = get_snapshot(provider, table_id)
+    if isinstance(s, dict) and s:
+        payload["snapshot"] = s
 
 
 def _expected_api_key() -> str:
@@ -79,7 +112,18 @@ class _Handler(BaseHTTPRequestHandler):
         if not _auth_ok(self.headers):
             return _send_json(self, 401, {"ok": False, "error": "unauthorized"})
         if u.path == "/api/status":
-            return _send_json(self, 200, {"ok": True, "db": get_stats()})
+            snaps = load_snapshots()
+            providers = list((snaps.get("snapshots") or {}).keys()) if isinstance(snaps, dict) else []
+            return _send_json(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "db": get_stats(),
+                    "snapshots_updated_at": (snaps.get("updated_at") if isinstance(snaps, dict) else None),
+                    "snapshot_providers": providers,
+                },
+            )
         if u.path == "/api/snapshots":
             qs = parse_qs(u.query or "")
             provider = (qs.get("provider") or [""])[0]
@@ -120,6 +164,19 @@ class _Handler(BaseHTTPRequestHandler):
             fa = payload.get("friend_action") or {}
             if not isinstance(fa, dict) or not fa.get("action"):
                 return _send_json(self, 400, {"ok": False, "error": "friend_action.action required"})
+
+            # Ensure decision-time metadata exists (no look-ahead; snapshot is taken "now" at API receive time).
+            payload.setdefault("schema_version", 1)
+            if not str(payload.get("captured_at") or ""):
+                payload["captured_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+            table_id = str(payload.get("table_id") or "")
+            table_name = str(payload.get("table_name") or "")
+            if not table_id and table_name:
+                table_id = _resolve_table_id_from_snapshots(provider, table_name)
+                if table_id:
+                    payload["table_id"] = table_id
+            _fill_snapshot(provider, table_id, payload)
 
             append_decision_event(payload)
             insert_decision(decision_id, payload)

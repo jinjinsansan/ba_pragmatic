@@ -25,6 +25,7 @@ from typing import Any, Optional
 import requests
 
 from decision_logger import append_decision_event
+from bacopy_db import init_db, try_lock_bet
 
 BA_ROOT = Path(__file__).parent.parent / "ba"
 sys.path.insert(0, str(BA_ROOT))
@@ -191,6 +192,16 @@ def _side_to_bc(side: str) -> Optional[str]:
     return None
 
 
+def _parse_timer_sec(v: str) -> Optional[float]:
+    try:
+        s = str(v or "").strip()
+        if not s:
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
 def _build_lpbet_xml(*, table_id: str, game_id: str, user_id: str, bc: str, amount: float) -> str:
     ck = str(_epoch_ms())
     # keep format close to observed payload
@@ -353,6 +364,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--flat-amount", type=float, default=1.0)
     ap.add_argument("--only-table-id", default=os.getenv("BACOPY_ONLY_TABLE_ID", ""), help="operator tableId (numeric) to accept")
     ap.add_argument("--bet-timeout-sec", type=int, default=20)
+    ap.add_argument("--min-timer-sec", type=float, default=2.0, help="Refuse bets if timer is below this (when available)")
     ap.add_argument("--result-timeout-sec", type=int, default=90)
     ap.add_argument("--once", action="store_true")
     args = ap.parse_args(argv)
@@ -372,6 +384,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("[executor-live] DO NOT run pragmatic watcher concurrently on same account.", flush=True)
 
     state = _PragmaticState()
+    init_db()
+    processed_keys: set[tuple[str, str]] = set()  # (operator_table_id, game_id)
+    consecutive_hard_errors = 0
 
     def on_ws(ws):
         url = str(ws.url or "")
@@ -518,7 +533,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return _winner() if ok else None
 
         while True:
-            items = _fetch_decisions("pending", limit=int(args.limit))
+            # Resume processing first, then pending (crash-safe).
+            items = _fetch_decisions("processing", limit=int(args.limit))
+            if not items:
+                items = _fetch_decisions("pending", limit=int(args.limit))
             if not items:
                 if args.once:
                     break
@@ -536,6 +554,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 side = str((fa.get("side") or "")).upper()
                 decision_table_id = str(d.get("table_id") or "")
                 decision_table_name = str(d.get("table_name") or "")
+                decision_snapshot = d.get("snapshot") if isinstance(d.get("snapshot"), dict) else {}
 
                 if args.only_table_id and decision_table_id and str(args.only_table_id) != decision_table_id:
                     # refuse silently to avoid acting on wrong table if multiple masters exist
@@ -554,6 +573,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         "game_ws": _redact_jsession(state.game_ws_url),
                     },
                     "friend_action": fa,
+                    "snapshot_before": decision_snapshot,
                 }
                 _post_ack(did, ack, status="processing")
 
@@ -590,6 +610,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 # Wait for betting open & current game id
                 state.bets_open_game_id = ""
                 state.current_game_id = ""
+                state.last_timer = ""
                 game_id = wait_bets_open(timeout_sec=float(args.bet_timeout_sec))
                 if not game_id:
                     _post_result(
@@ -597,7 +618,36 @@ def main(argv: Optional[list[str]] = None) -> int:
                         {"error": "betsopen timeout", "timeout_sec": args.bet_timeout_sec},
                         status="error",
                     )
+                    consecutive_hard_errors += 1
                     continue
+
+                op_tid = state.operator_table_id or decision_table_id or str(args.only_table_id or "")
+                if not op_tid:
+                    _post_result(did, {"error": "operator_table_id unknown (set --only-table-id or ensure chat mapping)"}, status="error")
+                    consecutive_hard_errors += 1
+                    continue
+
+                # Timer gating (best-effort)
+                tsec = _parse_timer_sec(state.last_timer)
+                if tsec is not None and tsec < float(args.min_timer_sec):
+                    _post_result(
+                        did,
+                        {"error": "bet_window_too_late", "timer_sec": tsec, "min_timer_sec": args.min_timer_sec, "game_id": game_id},
+                        status="error",
+                    )
+                    consecutive_hard_errors += 1
+                    continue
+
+                # Idempotency guard: at most 1 bet per (table, game) across restarts.
+                key = (str(op_tid), str(game_id))
+                if key in processed_keys or not try_lock_bet(provider=provider, table_id=str(op_tid), game_id=str(game_id), decision_id=did):
+                    _post_result(
+                        did,
+                        {"error": "duplicate_bet_guard", "operator_table_id": op_tid, "game_id": game_id},
+                        status="error",
+                    )
+                    continue
+                processed_keys.add(key)
 
                 amt = float(args.flat_amount or 1.0)
                 xml = _build_lpbet_xml(table_id=state.table_id, game_id=game_id, user_id=state.user_id, bc=bc, amount=amt)
@@ -610,12 +660,25 @@ def main(argv: Optional[list[str]] = None) -> int:
                         {"error": "ws_send failed", "detail": send_res, "match": match},
                         status="error",
                     )
+                    consecutive_hard_errors += 1
                     continue
 
                 confirm = wait_bet_confirm(timeout_sec=5.0)
+                if confirm is None:
+                    # At this point we might have placed a bet but lost confirmation.
+                    # Stop to avoid accidental duplicate bets.
+                    _post_result(
+                        did,
+                        {"error": "bet_confirm_timeout", "game_id": game_id, "operator_table_id": op_tid},
+                        status="error",
+                    )
+                    consecutive_hard_errors += 1
+                    if consecutive_hard_errors >= 3:
+                        raise SystemExit("panic_stop: repeated critical errors (missing bet confirmation)")
+                    continue
+                consecutive_hard_errors = 0
 
                 # Resolve by dga feed winner
-                op_tid = state.operator_table_id or decision_table_id or str(args.only_table_id or "")
                 outcome = wait_result(game_id, operator_table_id=op_tid, timeout_sec=float(args.result_timeout_sec))
                 if outcome is None:
                     _post_result(
@@ -623,6 +686,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         {"error": "result timeout", "game_id": game_id, "operator_table_id": op_tid, "timeout_sec": args.result_timeout_sec},
                         status="error",
                     )
+                    consecutive_hard_errors += 1
                     continue
 
                 result_payload = {
@@ -650,7 +714,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                             "provider": provider,
                             "table_id": decision_table_id,
                             "table_name": decision_table_name,
-                            "snapshot": {},
+                            "snapshot": decision_snapshot,
                             "friend_action": fa,
                             "ack": ack,
                             "result": outcome,
