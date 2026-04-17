@@ -103,21 +103,31 @@ def _redact_jsession(url: str) -> str:
 
 
 def _post_ack(decision_id: str, ack: dict[str, Any], status: str = "processing") -> None:
-    requests.post(
-        f"{_api_url()}/api/decisions/{decision_id}/ack",
-        headers=_headers(),
-        json={"ack": ack, "status": status},
-        timeout=10,
-    ).raise_for_status()
+    try:
+        requests.post(
+            f"{_api_url()}/api/decisions/{decision_id}/ack",
+            headers=_headers(),
+            json={"ack": ack, "status": status},
+            timeout=10,
+        ).raise_for_status()
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+        print(f"[WARN] post_ack timeout: {e}", flush=True)
+    except Exception as e:
+        print(f"[WARN] post_ack error: {e}", flush=True)
 
 
 def _post_result(decision_id: str, result: dict[str, Any], status: str = "done") -> None:
-    requests.post(
-        f"{_api_url()}/api/decisions/{decision_id}/result",
-        headers=_headers(),
-        json={"result": result, "status": status},
-        timeout=10,
-    ).raise_for_status()
+    try:
+        requests.post(
+            f"{_api_url()}/api/decisions/{decision_id}/result",
+            headers=_headers(),
+            json={"result": result, "status": status},
+            timeout=10,
+        ).raise_for_status()
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+        print(f"[WARN] post_result timeout: {e}", flush=True)
+    except Exception as e:
+        print(f"[WARN] post_result error: {e}", flush=True)
 
 
 def _post_heartbeat(payload: dict[str, Any]) -> None:
@@ -134,14 +144,21 @@ def _post_heartbeat(payload: dict[str, Any]) -> None:
 
 
 def _fetch_decisions(status: str, limit: int) -> list[dict[str, Any]]:
-    r = requests.get(
-        f"{_api_url()}/api/decisions",
-        params={"status": status, "limit": int(limit)},
-        headers=_headers(),
-        timeout=10,
-    )
-    r.raise_for_status()
-    items = r.json().get("decisions") or []
+    try:
+        r = requests.get(
+            f"{_api_url()}/api/decisions",
+            params={"status": status, "limit": int(limit)},
+            headers=_headers(),
+            timeout=10,
+        )
+        r.raise_for_status()
+        items = r.json().get("decisions") or []
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+        print(f"[WARN] fetch_decisions timeout/connection error: {e}", flush=True)
+        return []
+    except Exception as e:
+        print(f"[WARN] fetch_decisions error: {e}", flush=True)
+        return []
     return items if isinstance(items, list) else []
 
 
@@ -154,7 +171,7 @@ def find_game_frame(page, attempts: int = 30):
     return None
 
 
-def find_shell_app_frame(page, attempts: int = 30):
+def find_shell_app_frame(page, attempts: int = 60):
     for _ in range(attempts):
         for f in page.frames:
             if "apps/lobby" in f.url or f.name == "shell-app":
@@ -318,15 +335,38 @@ def _wait_for(predicate, *, timeout_sec: float, tick_ms: int, page=None) -> bool
     return False
 
 
+def _dismiss_stake_loader(page) -> None:
+    """Stake.com の siteLoader オーバーレイを強制除去。
+    このオーバーレイが pointer events を遮断してクリックを妨げる。"""
+    try:
+        page.evaluate("""() => {
+            // siteLoader overlay
+            const loader = document.getElementById('siteLoader');
+            if (loader) { loader.style.display = 'none'; loader.style.pointerEvents = 'none'; }
+            // Any other blocking overlays
+            document.querySelectorAll('[class*="loading"][data-nosnippet]').forEach(el => {
+                el.style.display = 'none'; el.style.pointerEvents = 'none';
+            });
+        }""")
+    except Exception:
+        pass
+
+
 def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
     print("[Stage 1] goto stake pragmatic lobby ...", flush=True)
     page.goto(LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(10_000)
 
+    # Stake loader overlay を除去 (クリック遮断防止)
+    _dismiss_stake_loader(page)
+
     print("[Stage 2] wait pragmatic shell ...", flush=True)
     gf = find_game_frame(page)
     if not gf:
         raise RuntimeError("pragmatic shell not found")
+
+    page.wait_for_timeout(5_000)
+    _dismiss_stake_loader(page)
 
     print("[Stage 3] find internal lobby (shell-app) ...", flush=True)
     shell = find_shell_app_frame(page)
@@ -340,28 +380,63 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
         print(f"[Stage 4] wait (<= {auto_click_wait_sec}s) for '{table_substr}' then click ...", flush=True)
         deadline = time.time() + float(max(auto_click_wait_sec, 1))
         while time.time() < deadline and not clicked:
+            # 毎回ローダー除去を試みる (再出現するため)
+            _dismiss_stake_loader(page)
             try:
                 locator = shell.get_by_text(re.compile(re.escape(table_substr), re.I))
                 if locator.count() > 0:
                     first = locator.first
                     first.scroll_into_view_if_needed(timeout=3000)
-                    first.click(timeout=3000)
+                    # The matched node may be a <span>. Try to click a nearby clickable element first.
+                    try:
+                        shell.locator(f"[role='button']:has-text('{table_substr}')").first.click(timeout=3000, force=True)
+                    except Exception:
+                        try:
+                            shell.locator(f"button:has-text('{table_substr}')").first.click(timeout=3000, force=True)
+                        except Exception:
+                            try:
+                                shell.locator(f"a:has-text('{table_substr}')").first.click(timeout=3000, force=True)
+                            except Exception:
+                                first.click(timeout=3000, force=True)
                     clicked = True
+                    print(f"[Stage 4] clicked '{table_substr}' via text match", flush=True)
                     break
             except Exception:
+                pass
+
+            # Fallback: only click elements that *contain the target text* (never click a random first button)
+            if not clicked:
+                for sel in [
+                    f"[role='button']:has-text('{table_substr}')",
+                    f"button:has-text('{table_substr}')",
+                    f"a:has-text('{table_substr}')",
+                    f"div:has-text('{table_substr}')",
+                ]:
+                    try:
+                        loc = shell.locator(sel)
+                        cnt = loc.count()
+                        if cnt > 0:
+                            loc.first.scroll_into_view_if_needed(timeout=3000)
+                            loc.first.click(timeout=3000, force=True)
+                            clicked = True
+                            print(f"[Stage 4] clicked via filtered fallback '{sel}' (count={cnt})", flush=True)
+                            break
+                    except Exception:
+                        continue
+
+            if not clicked:
+                # shell frame の再取得を試みる (DOM 更新時)
                 new_shell = find_shell_app_frame(page, attempts=2)
                 if new_shell:
                     shell = new_shell
-
-            if not clicked:
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(2000)
 
     if not clicked:
         print("[WARN] auto-click did not succeed. Please click the table manually.", flush=True)
         print("       After entry, wait for betting phase then you can start sending decisions.", flush=True)
     else:
         page.wait_for_timeout(12_000)
-        print("[Stage 4] table clicked; waiting...", flush=True)
+        print("[Stage 4] table entry waiting...", flush=True)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -649,12 +724,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                                 game_frame.evaluate(_WS_BRIDGE_INIT)
                             except Exception:
                                 pass
-                        _wait_for(
+                        ok = _wait_for(
                             lambda: bool(state.game_ws_url and state.table_id and state.user_id and state.jsession_id),
                             timeout_sec=180,
                             tick_ms=500,
                             page=page,
                         )
+                        if not ok:
+                            raise RuntimeError("session identifiers not populated (table/user/ws missing)")
                         # If numeric table_id provided, wait for operator table id match too (best-effort).
                         if decision_table_id:
                             _wait_for(
