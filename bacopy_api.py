@@ -39,7 +39,7 @@ from bacopy_db import (
 )
 
 from decision_logger import append_decision_event
-from snapshot_store import get_snapshot, load_snapshots
+from snapshot_store import get_snapshot, load_snapshots, update_snapshot
 
 
 def _resolve_table_id_from_snapshots(provider: str, table_name: str) -> str:
@@ -651,6 +651,28 @@ class _Handler(BaseHTTPRequestHandler):
             append_decision_event(payload)
             insert_decision(decision_id, payload)
             return _send_json(self, 200, {"accepted": True, "decision_id": decision_id})
+
+        if u.path == "/api/snapshots/update":
+            body = _read_json(self)
+            provider = str(body.get("provider") or "")
+            table_id = str(body.get("table_id") or "")
+            snapshot = body.get("snapshot")
+            if provider and table_id and isinstance(snapshot, dict):
+                update_snapshot(provider, table_id, snapshot)
+                return _send_json(self, 200, {"ok": True})
+            # bulk form: {snapshots:{provider:{table_id:snapshot}}}
+            snaps = body.get("snapshots")
+            if isinstance(snaps, dict):
+                n = 0
+                for prov, mp in snaps.items():
+                    if not isinstance(prov, str) or not isinstance(mp, dict):
+                        continue
+                    for tid, snap in mp.items():
+                        if isinstance(tid, str) and isinstance(snap, dict):
+                            update_snapshot(prov, tid, snap)
+                            n += 1
+                return _send_json(self, 200, {"ok": True, "count": n})
+            return _send_json(self, 400, {"ok": False, "error": "provider/table_id/snapshot required"})
 
         if u.path == "/api/executors/heartbeat":
             body = _read_json(self)

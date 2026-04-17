@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import requests
 
 from snapshot_store import update_snapshot
 
@@ -50,6 +53,23 @@ def main() -> int:
     ap.add_argument("--cookies", type=str, default="", help="stake cookies json (optional)")
     args = ap.parse_args()
 
+    api_url = os.getenv("BACOPY_API_URL", "").rstrip("/")
+    api_key = os.getenv("BACOPY_API_KEY", "").strip()
+    push = os.getenv("BACOPY_PUSH_SNAPSHOTS", "").strip() in ("1", "true", "yes", "on")
+
+    def _push_snapshot(provider: str, table_id: str, snap: dict[str, Any]) -> None:
+        if not push or not api_url or not api_key:
+            return
+        try:
+            requests.post(
+                f"{api_url}/api/snapshots/update",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"provider": provider, "table_id": table_id, "snapshot": snap},
+                timeout=5,
+            )
+        except Exception:
+            return
+
     # Lazy imports (Camoufox/Playwright may not exist in all dev envs)
     try:
         import collector_pragmatic as cp  # type: ignore
@@ -79,6 +99,7 @@ def main() -> int:
                 return
             snap = _make_snapshot(table_id, buf)
             update_snapshot("pragmatic", table_id, snap)
+            _push_snapshot("pragmatic", table_id, snap)
 
     c = WatchCollector(headless=args.headless, raw_log=False)
     profile = Path(args.profile) if args.profile else None
