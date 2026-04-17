@@ -373,6 +373,17 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
     if not shell:
         raise RuntimeError("shell-app not found")
 
+    # SPA 描画待ち: [role="button"] が出現するまで最大30秒待機
+    print("[Stage 3b] waiting for SPA render (role=button elements) ...", flush=True)
+    for _w in range(30):
+        try:
+            if shell.locator('[role="button"]').count() > 0:
+                print(f"[Stage 3b] SPA rendered ({shell.locator('[role=\"button\"]').count()} buttons) after {_w}s", flush=True)
+                break
+        except Exception:
+            pass
+        page.wait_for_timeout(1000)
+
     clicked = False
     table_substr = (table_substr or "").strip()
 
@@ -380,31 +391,27 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
         print(f"[Stage 4] wait (<= {auto_click_wait_sec}s) for '{table_substr}' then click ...", flush=True)
         deadline = time.time() + float(max(auto_click_wait_sec, 1))
         while time.time() < deadline and not clicked:
-            # 毎回ローダー除去を試みる (再出現するため)
             _dismiss_stake_loader(page)
+            # テキスト一致（日本語/英語両対応）
             try:
                 locator = shell.get_by_text(re.compile(re.escape(table_substr), re.I))
                 if locator.count() > 0:
                     first = locator.first
                     first.scroll_into_view_if_needed(timeout=3000)
-                    # The matched node may be a <span>. Try to click a nearby clickable element first.
                     try:
                         shell.locator(f"[role='button']:has-text('{table_substr}')").first.click(timeout=3000, force=True)
                     except Exception:
                         try:
                             shell.locator(f"button:has-text('{table_substr}')").first.click(timeout=3000, force=True)
                         except Exception:
-                            try:
-                                shell.locator(f"a:has-text('{table_substr}')").first.click(timeout=3000, force=True)
-                            except Exception:
-                                first.click(timeout=3000, force=True)
+                            first.click(timeout=3000, force=True)
                     clicked = True
                     print(f"[Stage 4] clicked '{table_substr}' via text match", flush=True)
                     break
             except Exception:
                 pass
 
-            # Fallback: only click elements that *contain the target text* (never click a random first button)
+            # フォールバック: テキスト付きセレクタ
             if not clicked:
                 for sel in [
                     f"[role='button']:has-text('{table_substr}')",
@@ -424,8 +431,20 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
                     except Exception:
                         continue
 
+            # 最終フォールバック: テーブルカード [role="button"] (60秒経過後のみ)
+            if not clicked and (time.time() - deadline + float(auto_click_wait_sec)) > 60:
+                try:
+                    btns = shell.locator('[role="button"]')
+                    cnt = btns.count()
+                    if cnt >= 10:
+                        # Skip first (Multi-Baccarat), click 2nd or later
+                        btns.nth(1).click(timeout=3000, force=True)
+                        clicked = True
+                        print(f"[Stage 4] clicked via [role=button] nth(1) (total={cnt})", flush=True)
+                except Exception:
+                    pass
+
             if not clicked:
-                # shell frame の再取得を試みる (DOM 更新時)
                 new_shell = find_shell_app_frame(page, attempts=2)
                 if new_shell:
                     shell = new_shell
@@ -611,6 +630,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             last_err = None
             for fr in target_frames:
                 try:
+                    # Re-inject WS bridge before every send (iframe may have reloaded)
+                    try:
+                        fr.evaluate(_WS_BRIDGE_INIT)
+                    except Exception:
+                        pass
                     res = fr.evaluate(
                         "(args) => window.__bacopy_ws_send(args.match, args.payload)",
                         {"match": match, "payload": xml_payload},
