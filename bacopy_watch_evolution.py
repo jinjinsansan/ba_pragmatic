@@ -61,11 +61,11 @@ def _summarize_raw_history(raw: list) -> dict[str, Any]:
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--interval", type=float, default=2.0)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     api_url = os.getenv("BACOPY_API_URL", "").rstrip("/")
     api_key = os.getenv("BACOPY_API_KEY", "").strip()

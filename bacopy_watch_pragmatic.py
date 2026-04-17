@@ -45,13 +45,13 @@ def _make_snapshot(table_id: str, buf: Any) -> dict[str, Any]:
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--duration", type=int, default=0, help="seconds (0=forever)")
     ap.add_argument("--profile", type=str, default="", help="Camoufox profile dir (optional)")
     ap.add_argument("--cookies", type=str, default="", help="stake cookies json (optional)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     api_url = os.getenv("BACOPY_API_URL", "").rstrip("/")
     api_key = os.getenv("BACOPY_API_KEY", "").strip()

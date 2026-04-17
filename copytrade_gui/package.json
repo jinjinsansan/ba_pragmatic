@@ -1,0 +1,47 @@
+{
+  "name": "bacopy-copytrade-gui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BACOPY Copytrade Receiver GUI (Executor + Watchers)",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder --dir --config.win.signAndEditExecutable=false",
+    "build:installer": "electron-builder --win nsis --config.win.signAndEditExecutable=false"
+  },
+  "devDependencies": {
+    "electron": "^41.1.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "ai.bacopy.copytrade",
+    "productName": "BACOPY",
+    "asar": true,
+    "compression": "store",
+    "win": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "../icon.ico"
+    },
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "build_staging/engine",
+        "to": "engine"
+      }
+    ]
+  }
+}
