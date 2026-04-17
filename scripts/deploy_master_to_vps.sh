@@ -30,15 +30,17 @@ DOMAIN=""
 VPS_HOST="210.131.215.116"
 VPS_USER="laplace"
 SSH_KEY="${HOME}/.ssh/laplace_vps"
+LE_EMAIL="${LE_EMAIL:-}"
 
 usage() {
   cat <<EOF
 Usage:
-  bash scripts/deploy_master_to_vps.sh --domain master.example.com [--host <ip>] [--user <user>] [--ssh-key <path>]
+  bash scripts/deploy_master_to_vps.sh --domain master.example.com [--host <ip>] [--user <user>] [--ssh-key <path>] [--email <letsencrypt-email>]
 
 Env (optional):
   BACOPY_API_KEY
   BACOPY_MASTER_PASSWORD
+  LE_EMAIL (Let's Encrypt registration email; optional but recommended)
 EOF
 }
 
@@ -48,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --host) VPS_HOST="${2:-}"; shift 2 ;;
     --user) VPS_USER="${2:-}"; shift 2 ;;
     --ssh-key) SSH_KEY="${2:-}"; shift 2 ;;
+    --email) LE_EMAIL="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1"; usage; exit 2 ;;
   esac
@@ -107,13 +110,17 @@ if [[ -z "${OS_ID}" ]]; then
 fi
 echo "  OS_ID=${OS_ID}"
 
-PORTS="$("${SSH_BASE[@]}" "sudo ss -lntp | egrep ':80|:443' || true" || true)"
-if [[ -n "${PORTS}" ]]; then
+PORTS_80_443="$("${SSH_BASE[@]}" "sudo ss -lntp | egrep ':(80|443)\\b' || true" || true)"
+NGINX_ACTIVE="$("${SSH_BASE[@]}" "systemctl is-active nginx 2>/dev/null || true" || true)"
+if [[ -n "${PORTS_80_443}" && "${NGINX_ACTIVE}" == "active" ]]; then
+  echo "  Detected nginx on 80/443. Using nginx reverse-proxy mode (recommended)."
+elif [[ -n "${PORTS_80_443}" ]]; then
   echo "ERROR: ports 80/443 are already in use on the VPS:"
-  echo "${PORTS}"
+  echo "${PORTS_80_443}"
   echo
-  echo "Caddy cannot bind 80/443 in this state."
-  echo "Stop the existing web server or switch to an Nginx-based setup."
+  echo "This script currently supports:"
+  echo "  - Caddy mode (ports 80/443 free)"
+  echo "  - nginx mode (nginx active on 80/443)"
   exit 2
 fi
 
@@ -167,34 +174,72 @@ EOF
 "${SSH_BASE[@]}" "sudo systemctl daemon-reload && sudo systemctl enable --now bacopy-api"
 
 echo "[5/6] Install and configure Caddy (HTTPS)..."
-case "${OS_ID}" in
-  ubuntu|debian)
-    "${SSH_BASE[@]}" "sudo apt-get update -y"
-    "${SSH_BASE[@]}" "sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl"
-    "${SSH_BASE[@]}" "curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg"
-    "${SSH_BASE[@]}" "curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null"
-    "${SSH_BASE[@]}" "sudo apt-get update -y && sudo apt-get install -y caddy"
-    ;;
-  centos|rhel|almalinux|rocky|fedora)
-    "${SSH_BASE[@]}" "sudo yum install -y yum-utils curl || sudo dnf install -y dnf-plugins-core curl"
-    "${SSH_BASE[@]}" "sudo yum-config-manager --add-repo https://dl.cloudsmith.io/public/caddy/stable/rpm.repo || sudo dnf config-manager --add-repo https://dl.cloudsmith.io/public/caddy/stable/rpm.repo"
-    "${SSH_BASE[@]}" "sudo yum install -y caddy || sudo dnf install -y caddy"
-    ;;
-  *)
-    echo "ERROR: unsupported OS_ID for auto-install: ${OS_ID}"
-    echo "Install caddy manually, then set /etc/caddy/Caddyfile with reverse_proxy to 127.0.0.1:8010"
-    exit 2
-    ;;
-esac
+if [[ "${NGINX_ACTIVE}" == "active" ]]; then
+  if [[ -z "${LE_EMAIL}" ]]; then
+    read -r -p "Enter LE_EMAIL (Let's Encrypt registration email, or leave blank to register without email): " LE_EMAIL
+  fi
+  echo "  Configuring nginx + certbot for ${DOMAIN} ..."
+  "${SSH_BASE[@]}" "sudo apt-get update -y"
+  "${SSH_BASE[@]}" "sudo apt-get install -y certbot python3-certbot-nginx"
 
-CADDY_TMP="${TMP_DIR}/Caddyfile"
-cat >"${CADDY_TMP}" <<EOF
+  NGINX_CONF_TMP="${TMP_DIR}/bacopy_master_nginx.conf"
+  cat >"${NGINX_CONF_TMP}" <<EOF
+server {
+  listen 80;
+  server_name ${DOMAIN};
+
+  location / {
+    proxy_pass http://127.0.0.1:8010;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+  }
+}
+EOF
+  "${SCP_BASE[@]}" "${NGINX_CONF_TMP}" "${VPS_USER}@${VPS_HOST}:/tmp/bacopy_master_nginx.conf"
+
+  "${SSH_BASE[@]}" "sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled"
+  "${SSH_BASE[@]}" "sudo mv /tmp/bacopy_master_nginx.conf /etc/nginx/sites-available/bacopy-master.conf"
+  "${SSH_BASE[@]}" "sudo ln -sf /etc/nginx/sites-available/bacopy-master.conf /etc/nginx/sites-enabled/bacopy-master.conf"
+  "${SSH_BASE[@]}" "sudo nginx -t"
+  "${SSH_BASE[@]}" "sudo systemctl reload nginx"
+
+  if [[ -n "${LE_EMAIL}" ]]; then
+    "${SSH_BASE[@]}" "sudo certbot --nginx -d ${DOMAIN} --non-interactive --agree-tos -m ${LE_EMAIL} --redirect"
+  else
+    "${SSH_BASE[@]}" "sudo certbot --nginx -d ${DOMAIN} --non-interactive --agree-tos --register-unsafely-without-email --redirect"
+  fi
+else
+  case "${OS_ID}" in
+    ubuntu|debian)
+      "${SSH_BASE[@]}" "sudo apt-get update -y"
+      "${SSH_BASE[@]}" "sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl"
+      "${SSH_BASE[@]}" "curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg"
+      "${SSH_BASE[@]}" "curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null"
+      "${SSH_BASE[@]}" "sudo apt-get update -y && sudo apt-get install -y caddy"
+      ;;
+    centos|rhel|almalinux|rocky|fedora)
+      "${SSH_BASE[@]}" "sudo yum install -y yum-utils curl || sudo dnf install -y dnf-plugins-core curl"
+      "${SSH_BASE[@]}" "sudo yum-config-manager --add-repo https://dl.cloudsmith.io/public/caddy/stable/rpm.repo || sudo dnf config-manager --add-repo https://dl.cloudsmith.io/public/caddy/stable/rpm.repo"
+      "${SSH_BASE[@]}" "sudo yum install -y caddy || sudo dnf install -y caddy"
+      ;;
+    *)
+      echo "ERROR: unsupported OS_ID for auto-install: ${OS_ID}"
+      echo "Install caddy manually, then set /etc/caddy/Caddyfile with reverse_proxy to 127.0.0.1:8010"
+      exit 2
+      ;;
+  esac
+
+  CADDY_TMP="${TMP_DIR}/Caddyfile"
+  cat >"${CADDY_TMP}" <<EOF
 ${DOMAIN} {
   reverse_proxy 127.0.0.1:8010
 }
 EOF
-"${SCP_BASE[@]}" "${CADDY_TMP}" "${VPS_USER}@${VPS_HOST}:/tmp/Caddyfile"
-"${SSH_BASE[@]}" "sudo mv /tmp/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy"
+  "${SCP_BASE[@]}" "${CADDY_TMP}" "${VPS_USER}@${VPS_HOST}:/tmp/Caddyfile"
+  "${SSH_BASE[@]}" "sudo mv /tmp/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy"
+fi
 
 echo "[6/6] Done."
 echo
