@@ -100,7 +100,7 @@ if ! "${SSH_BASE[@]}" "echo OK" >/dev/null 2>&1; then
 fi
 
 echo "[2/6] Detect OS and check ports 80/443..."
-OS_ID="$("${SSH_BASE[@]}" "set -e; . /etc/os-release; echo \"${ID:-}\"" 2>/dev/null || true)"
+OS_ID="$("${SSH_BASE[@]}" 'set -e; . /etc/os-release; echo "${ID:-}"' 2>/dev/null || true)"
 if [[ -z "${OS_ID}" ]]; then
   echo "ERROR: failed to detect OS via /etc/os-release"
   exit 2
