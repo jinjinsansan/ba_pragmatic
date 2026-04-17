@@ -54,6 +54,25 @@ def init_db() -> None:
             """
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_bet_guard_created_at ON bet_guard(created_at)")
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS executors (
+              executor_id TEXT PRIMARY KEY,
+              label TEXT,
+              username TEXT,
+              provider TEXT,
+              table_id TEXT,
+              table_name TEXT,
+              balance REAL,
+              seq_json TEXT,
+              status TEXT,
+              error TEXT,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_executors_updated_at ON executors(updated_at)")
         conn.commit()
     finally:
         conn.close()
@@ -96,7 +115,7 @@ def get_by_status(status: str, limit: int = 50) -> list[dict[str, Any]]:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT decision_id, received_at, payload_json
+            SELECT decision_id, received_at, status, payload_json, ack_json, result_json
             FROM decisions
             WHERE status = ?
             ORDER BY received_at ASC
@@ -106,13 +125,22 @@ def get_by_status(status: str, limit: int = 50) -> list[dict[str, Any]]:
         )
         rows = cur.fetchall()
         out: list[dict[str, Any]] = []
-        for did, at, pjson in rows:
+        for did, at, st, pjson, ajson, rjson in rows:
             try:
                 payload = json.loads(pjson) if pjson else {}
             except Exception:
                 payload = {}
             payload.setdefault("decision_id", did)
             payload.setdefault("received_at", at)
+            payload.setdefault("status", st)
+            try:
+                payload.setdefault("ack", json.loads(ajson) if ajson else {})
+            except Exception:
+                payload.setdefault("ack", {})
+            try:
+                payload.setdefault("result", json.loads(rjson) if rjson else {})
+            except Exception:
+                payload.setdefault("result", {})
             out.append(payload)
         return out
     finally:
@@ -188,5 +216,101 @@ def try_lock_bet(*, provider: str, table_id: str, game_id: str, decision_id: str
             return True
         except sqlite3.IntegrityError:
             return False
+    finally:
+        conn.close()
+
+
+def upsert_executor(executor_id: str, payload: dict[str, Any]) -> None:
+    if not executor_id:
+        return
+    conn = sqlite3.connect(_db_path())
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO executors
+              (executor_id, label, username, provider, table_id, table_name, balance, seq_json, status, error, updated_at)
+            VALUES
+              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(executor_id) DO UPDATE SET
+              label=excluded.label,
+              username=excluded.username,
+              provider=excluded.provider,
+              table_id=excluded.table_id,
+              table_name=excluded.table_name,
+              balance=excluded.balance,
+              seq_json=excluded.seq_json,
+              status=excluded.status,
+              error=excluded.error,
+              updated_at=excluded.updated_at
+            """,
+            (
+                executor_id,
+                str(payload.get("label") or ""),
+                str(payload.get("username") or ""),
+                str(payload.get("provider") or ""),
+                str(payload.get("table_id") or ""),
+                str(payload.get("table_name") or ""),
+                float(payload.get("balance")) if payload.get("balance") is not None else None,
+                json.dumps(payload.get("seq") or {}, ensure_ascii=False) if payload.get("seq") is not None else None,
+                str(payload.get("status") or ""),
+                str(payload.get("error") or ""),
+                _utc_now_iso(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_executors(limit: int = 200) -> list[dict[str, Any]]:
+    conn = sqlite3.connect(_db_path())
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT executor_id, label, username, provider, table_id, table_name, balance, seq_json, status, error, updated_at
+            FROM executors
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        )
+        rows = cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            (
+                executor_id,
+                label,
+                username,
+                provider,
+                table_id,
+                table_name,
+                balance,
+                seq_json,
+                status,
+                error,
+                updated_at,
+            ) = r
+            try:
+                seq = json.loads(seq_json) if seq_json else {}
+            except Exception:
+                seq = {}
+            out.append(
+                {
+                    "executor_id": executor_id,
+                    "label": label or "",
+                    "username": username or "",
+                    "provider": provider or "",
+                    "table_id": table_id or "",
+                    "table_name": table_name or "",
+                    "balance": balance,
+                    "seq": seq,
+                    "status": status or "",
+                    "error": error or "",
+                    "updated_at": updated_at,
+                }
+            )
+        return out
     finally:
         conn.close()

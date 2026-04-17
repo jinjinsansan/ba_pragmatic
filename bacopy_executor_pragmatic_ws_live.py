@@ -120,6 +120,19 @@ def _post_result(decision_id: str, result: dict[str, Any], status: str = "done")
     ).raise_for_status()
 
 
+def _post_heartbeat(payload: dict[str, Any]) -> None:
+    # best-effort
+    try:
+        requests.post(
+            f"{_api_url()}/api/executors/heartbeat",
+            headers=_headers(),
+            json=payload,
+            timeout=5,
+        )
+    except Exception:
+        return
+
+
 def _fetch_decisions(status: str, limit: int) -> list[dict[str, Any]]:
     r = requests.get(
         f"{_api_url()}/api/decisions",
@@ -366,6 +379,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--bet-timeout-sec", type=int, default=20)
     ap.add_argument("--min-timer-sec", type=float, default=2.0, help="Refuse bets if timer is below this (when available)")
     ap.add_argument("--result-timeout-sec", type=int, default=90)
+    ap.add_argument("--allow-switch-table", action="store_true", help="Allow SWITCH_TABLE action to navigate/click table")
     ap.add_argument("--once", action="store_true")
     args = ap.parse_args(argv)
 
@@ -387,6 +401,32 @@ def main(argv: Optional[list[str]] = None) -> int:
     init_db()
     processed_keys: set[tuple[str, str]] = set()  # (operator_table_id, game_id)
     consecutive_hard_errors = 0
+    executor_id = os.getenv("BACOPY_EXECUTOR_ID", "").strip() or f"exec_{uuid.uuid4().hex[:8]}"
+    executor_label = os.getenv("BACOPY_EXECUTOR_LABEL", "").strip()
+    executor_username = os.getenv("BACOPY_EXECUTOR_USERNAME", "").strip()
+    last_error = ""
+    last_hb = 0.0
+
+    def heartbeat(status: str) -> None:
+        nonlocal last_hb
+        now = time.time()
+        if now - last_hb < 5.0:
+            return
+        last_hb = now
+        _post_heartbeat(
+            {
+                "executor_id": executor_id,
+                "label": executor_label,
+                "username": executor_username,
+                "provider": "pragmatic",
+                "table_id": state.operator_table_id,
+                "table_name": state.table_name,
+                "balance": None,
+                "seq": {},
+                "status": status,
+                "error": last_error,
+            }
+        )
 
     def on_ws(ws):
         url = str(ws.url or "")
@@ -484,6 +524,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"[session] game_ws={_redact_jsession(state.game_ws_url)}", flush=True)
         if state.operator_table_id:
             print(f"[session] operator_table_id={state.operator_table_id} table_name={state.table_name}", flush=True)
+        print(f"[executor-live] executor_id={executor_id}", flush=True)
 
         def send_bet_xml(xml_payload: str, match: str) -> dict[str, Any]:
             target_frames = []
@@ -533,6 +574,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return _winner() if ok else None
 
         while True:
+            heartbeat("running")
+
             # Resume processing first, then pending (crash-safe).
             items = _fetch_decisions("processing", limit=int(args.limit))
             if not items:
@@ -555,6 +598,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 decision_table_id = str(d.get("table_id") or "")
                 decision_table_name = str(d.get("table_name") or "")
                 decision_snapshot = d.get("snapshot") if isinstance(d.get("snapshot"), dict) else {}
+                target_executor_id = str(d.get("target_executor_id") or "")
+
+                if target_executor_id and target_executor_id != executor_id:
+                    continue
 
                 if args.only_table_id and decision_table_id and str(args.only_table_id) != decision_table_id:
                     # refuse silently to avoid acting on wrong table if multiple masters exist
@@ -576,6 +623,63 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "snapshot_before": decision_snapshot,
                 }
                 _post_ack(did, ack, status="processing")
+
+                if action == "SWITCH_TABLE":
+                    if not args.allow_switch_table:
+                        _post_result(did, {"error": "switch_table disabled (start executor with --allow-switch-table)"}, status="error")
+                        continue
+                    target = decision_table_name or (decision_snapshot.get("table_name") if isinstance(decision_snapshot, dict) else "") or ""
+                    if not target:
+                        _post_result(did, {"error": "table_name required for SWITCH_TABLE"}, status="error")
+                        continue
+
+                    # Clear identifiers so we can wait for new mapping.
+                    state.operator_table_id = ""
+                    state.table_name = ""
+                    state.table_id = ""
+                    state.user_id = ""
+                    state.jsession_id = ""
+                    state.game_ws_url = ""
+
+                    try:
+                        _join_table(page, table_substr=str(target), auto_click_wait_sec=int(args.auto_click_wait_sec))
+                        game_frame = find_game_frame(page, attempts=60)
+                        if game_frame:
+                            try:
+                                game_frame.evaluate(_WS_BRIDGE_INIT)
+                            except Exception:
+                                pass
+                        _wait_for(
+                            lambda: bool(state.game_ws_url and state.table_id and state.user_id and state.jsession_id),
+                            timeout_sec=180,
+                            tick_ms=500,
+                            page=page,
+                        )
+                        # If numeric table_id provided, wait for operator table id match too (best-effort).
+                        if decision_table_id:
+                            _wait_for(
+                                lambda: bool(state.operator_table_id and state.operator_table_id == decision_table_id),
+                                timeout_sec=30,
+                                tick_ms=500,
+                                page=page,
+                            )
+                        res = {
+                            "mode": "live_ws",
+                            "observed_at": _utc_now_iso(),
+                            "executor_id": executor_id,
+                            "switched_to": {
+                                "operator_table_id": state.operator_table_id,
+                                "table_name": state.table_name,
+                                "table_id": state.table_id,
+                                "game_ws": _redact_jsession(state.game_ws_url),
+                            },
+                        }
+                        _post_result(did, res, status="done")
+                    except Exception as e:
+                        last_error = f"switch_table failed: {e}"
+                        heartbeat("error")
+                        _post_result(did, {"error": last_error}, status="error")
+                    continue
 
                 if action == "LOOK":
                     res = {"mode": "live_ws", "observed_at": _utc_now_iso(), "note": "LOOK no-op (live)"}
@@ -619,12 +723,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                         status="error",
                     )
                     consecutive_hard_errors += 1
+                    last_error = "betsopen timeout"
+                    heartbeat("error")
                     continue
 
                 op_tid = state.operator_table_id or decision_table_id or str(args.only_table_id or "")
                 if not op_tid:
                     _post_result(did, {"error": "operator_table_id unknown (set --only-table-id or ensure chat mapping)"}, status="error")
                     consecutive_hard_errors += 1
+                    last_error = "operator_table_id unknown"
+                    heartbeat("error")
                     continue
 
                 # Timer gating (best-effort)
@@ -636,6 +744,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         status="error",
                     )
                     consecutive_hard_errors += 1
+                    last_error = f"bet_window_too_late timer={tsec}"
+                    heartbeat("error")
                     continue
 
                 # Idempotency guard: at most 1 bet per (table, game) across restarts.
@@ -661,6 +771,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         status="error",
                     )
                     consecutive_hard_errors += 1
+                    last_error = "ws_send failed"
+                    heartbeat("error")
                     continue
 
                 confirm = wait_bet_confirm(timeout_sec=5.0)
@@ -673,10 +785,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                         status="error",
                     )
                     consecutive_hard_errors += 1
+                    last_error = "bet_confirm_timeout"
+                    heartbeat("error")
                     if consecutive_hard_errors >= 3:
                         raise SystemExit("panic_stop: repeated critical errors (missing bet confirmation)")
                     continue
                 consecutive_hard_errors = 0
+                last_error = ""
 
                 # Resolve by dga feed winner
                 outcome = wait_result(game_id, operator_table_id=op_tid, timeout_sec=float(args.result_timeout_sec))
@@ -687,12 +802,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                         status="error",
                     )
                     consecutive_hard_errors += 1
+                    last_error = "result timeout"
+                    heartbeat("error")
                     continue
 
                 result_payload = {
                     "mode": "live_ws",
                     "observed_at": _utc_now_iso(),
                     "provider": provider,
+                    "executor_id": executor_id,
                     "operator_table_id": state.operator_table_id,
                     "table_name": state.table_name,
                     "table_id": state.table_id,
