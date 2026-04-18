@@ -1320,11 +1320,21 @@ def _dismiss_session_elsewhere_modal(page, state: Optional[_PragmaticState] = No
     except Exception:
         roots = [page]
 
+    def _has_visible_text(root, pat: str) -> bool:
+        try:
+            loc = root.get_by_text(re.compile(pat, re.I))
+            try:
+                return bool(loc.first.is_visible())
+            except Exception:
+                return bool(loc.is_visible())
+        except Exception:
+            return False
+
     observed = False
     for root in roots:
         for pat in observed_pats:
             try:
-                if root.get_by_text(re.compile(pat, re.I)).count() > 0:
+                if _has_visible_text(root, pat):
                     observed = True
                     break
             except Exception:
@@ -1332,6 +1342,14 @@ def _dismiss_session_elsewhere_modal(page, state: Optional[_PragmaticState] = No
         if observed:
             break
     if not observed:
+        # If modal was previously observed but is now gone (manual or auto), clear the block.
+        if state is not None and state.session_elsewhere_unresolved:
+            state.session_elsewhere_unresolved = False
+            state.session_elsewhere_resolved_at = time.time()
+            try:
+                send_log("[session] session elsewhere resolved (modal gone)")
+            except Exception:
+                pass
         return False
 
     if state is not None:
@@ -1353,6 +1371,15 @@ def _dismiss_session_elsewhere_modal(page, state: Optional[_PragmaticState] = No
                         send_log(f"[session] dismissed 'session elsewhere' modal via '{pat}'")
                     except Exception:
                         pass
+                    if state is not None:
+                        # If the modal is no longer visible, unblock immediately.
+                        try:
+                            if not any(_has_visible_text(r, p) for r in roots for p in observed_pats):
+                                state.session_elsewhere_unresolved = False
+                                state.session_elsewhere_resolved_at = time.time()
+                                send_log("[session] session elsewhere resolved (dismissed)")
+                        except Exception:
+                            pass
                     return True
             except Exception:
                 continue
@@ -1368,6 +1395,14 @@ def _dismiss_session_elsewhere_modal(page, state: Optional[_PragmaticState] = No
                         send_log(f"[session] dismissed 'session elsewhere' modal via button text '{pat}'")
                     except Exception:
                         pass
+                    if state is not None:
+                        try:
+                            if not any(_has_visible_text(r, p) for r in roots for p in observed_pats):
+                                state.session_elsewhere_unresolved = False
+                                state.session_elsewhere_resolved_at = time.time()
+                                send_log("[session] session elsewhere resolved (dismissed)")
+                        except Exception:
+                            pass
                     return True
             except Exception:
                 continue
