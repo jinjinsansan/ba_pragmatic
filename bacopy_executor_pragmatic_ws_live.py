@@ -82,6 +82,71 @@ _WS_BRIDGE_INIT = r"""
       } catch (e) {}
     };
 
+    // Ensure we always have at least one controllable WS to the game url, even if
+    // Pragmatic moved its internal WS into a Worker and our wrapper can't capture it.
+    window.__bacopy_ws_open = (url) => {
+      try {
+        const u = String(url || "");
+        if (!u) return { ok: false, error: "url_required" };
+        for (const ws of (window.__bacopy_sockets || [])) {
+          try {
+            const wu = ws.__bacopy_url || ws.url || "";
+            if (wu === u && ws.readyState !== OrigWS.CLOSED) {
+              return { ok: true, existing: true, url: wu, readyState: ws.readyState };
+            }
+          } catch (e) {}
+        }
+        const ws = new OrigWS(u);
+        ws.__bacopy_url = u;
+        window.__bacopy_sockets.push(ws);
+        attachSpy(ws);
+        return { ok: true, existing: false, url: u, readyState: ws.readyState };
+      } catch (e) {
+        return { ok: false, error: "open_failed", detail: String(e) };
+      }
+    };
+
+    window.__bacopy_ws_open_send = async (url, payload, timeoutMs) => {
+      try {
+        const u = String(url || "");
+        if (!u) return { ok: false, error: "url_required" };
+
+        // Reuse an existing open socket if possible.
+        for (const ws of (window.__bacopy_sockets || [])) {
+          try {
+            const wu = ws.__bacopy_url || ws.url || "";
+            if (wu === u && ws.readyState === OrigWS.OPEN) {
+              ws.send(payload);
+              return { ok: true, url: wu, reused: true };
+            }
+          } catch (e) {}
+        }
+
+        // Otherwise, open then send.
+        const res = window.__bacopy_ws_open(u);
+        if (!res || !res.ok) return res;
+
+        const tmo = (typeof timeoutMs === "number" && timeoutMs > 0) ? timeoutMs : 5000;
+        const startedAt = Date.now();
+
+        while (Date.now() - startedAt < tmo) {
+          for (const ws of (window.__bacopy_sockets || [])) {
+            try {
+              const wu = ws.__bacopy_url || ws.url || "";
+              if (wu === u && ws.readyState === OrigWS.OPEN) {
+                ws.send(payload);
+                return { ok: true, url: wu, reused: false };
+              }
+            } catch (e) {}
+          }
+          await new Promise(r => setTimeout(r, 50));
+        }
+        return { ok: false, error: "open_timeout", url: u };
+      } catch (e) {
+        return { ok: false, error: "open_send_failed", detail: String(e) };
+      }
+    };
+
     function WrappedWebSocket(url, protocols) {
       const ws = protocols ? new OrigWS(url, protocols) : new OrigWS(url);
       try {
@@ -216,7 +281,7 @@ def find_game_frame(page, attempts: int = 30):
 def find_shell_app_frame(page, attempts: int = 60):
     for _ in range(attempts):
         for f in page.frames:
-            if "apps/lobby" in f.url or f.name == "shell-app":
+            if "apps/lobby" in f.url or f.name == "shell-app" or "desktop/lobby" in f.url:
                 return f
         page.wait_for_timeout(1000)
     return None
@@ -697,6 +762,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         if state.operator_table_id:
             print(f"[session] operator_table_id={state.operator_table_id} table_name={state.table_name}", flush=True)
         print(f"[executor-live] executor_id={executor_id}", flush=True)
+        if state.game_ws_url and game_frame:
+            try:
+                game_frame.evaluate(_WS_BRIDGE_INIT)
+            except Exception:
+                pass
+            try:
+                game_frame.evaluate("(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)", state.game_ws_url)
+            except Exception:
+                pass
 
         def send_bet_xml(xml_payload: str, match: str) -> dict[str, Any]:
             target_frames = []
@@ -721,6 +795,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                     )
                     if isinstance(res, dict) and res.get("ok"):
                         return res
+                    # If the bridge couldn't capture Pragmatic's internal WS (e.g. moved to Worker),
+                    # open our own WS to the game url and send through it.
+                    if state.game_ws_url:
+                        res2 = fr.evaluate(
+                            "(args) => window.__bacopy_ws_open_send(args.url, args.payload, args.timeoutMs)",
+                            {"url": state.game_ws_url, "payload": xml_payload, "timeoutMs": 5000},
+                        )
+                        if isinstance(res2, dict) and res2.get("ok"):
+                            return {**res2, "fallback": "open_send"}
                     last_err = res
                 except Exception as e:
                     last_err = {"ok": False, "error": f"evaluate_failed: {e}"}
@@ -971,7 +1054,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
                 amt = float(args.flat_amount or 1.0)
                 xml = _build_lpbet_xml(table_id=state.table_id, game_id=game_id, user_id=state.user_id, bc=bc, amount=amt)
-                match = f"tableId={state.table_id}&type=json"
+                match = f"tableId={state.table_id}"
                 send_res = send_bet_xml(xml, match=match)
 
                 if not send_res.get("ok"):
