@@ -10,6 +10,7 @@ Notes:
   - Safety: defaults to $1 flat. Banker/Tie codes are not enabled until verified.
 """
 
+import atexit
 import argparse
 import json
 import os
@@ -246,6 +247,62 @@ def _http_request(method: str, url: str, *, timeout: tuple[float, float], retrie
 
 def _redact_jsession(url: str) -> str:
     return re.sub(r"(JSESSIONID=)[^&]+", r"\1<REDACTED>", str(url or ""))
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _acquire_profile_lock(profile_dir: str, *, lock_name: str = ".bacopy_executor.lock") -> Path:
+    pdir = Path(profile_dir)
+    pdir.mkdir(parents=True, exist_ok=True)
+    lock_path = pdir / lock_name
+    this_pid = os.getpid()
+
+    def _try_create() -> bool:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"pid": this_pid, "created_at": _utc_now_iso()}, f)
+            return True
+        except FileExistsError:
+            return False
+
+    if not _try_create():
+        stale_pid = 0
+        try:
+            info = json.loads(lock_path.read_text(encoding="utf-8"))
+            stale_pid = int(info.get("pid") or 0)
+        except Exception:
+            stale_pid = 0
+
+        if stale_pid and _pid_is_alive(stale_pid):
+            raise SystemExit(f"another executor is already using this profile_dir (pid={stale_pid}): {pdir}")
+
+        # stale: remove and retry once
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        if not _try_create():
+            raise SystemExit(f"failed to acquire profile lock: {lock_path}")
+
+    def _release() -> None:
+        try:
+            info = json.loads(lock_path.read_text(encoding="utf-8"))
+            if int(info.get("pid") or 0) == this_pid:
+                lock_path.unlink(missing_ok=True)
+        except Exception:
+            return
+
+    atexit.register(_release)
+    return lock_path
 
 
 def _post_ack(decision_id: str, ack: dict[str, Any], status: str = "processing") -> None:
@@ -725,6 +782,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--allow-switch-table", action="store_true", help="Allow SWITCH_TABLE action to navigate/click table")
     ap.add_argument("--once", action="store_true")
     args = ap.parse_args(argv)
+
+    lock_path = _acquire_profile_lock(args.profile_dir)
+    print(f"[executor-live] profile_lock={lock_path}", flush=True)
 
     try:
         from camoufox.sync_api import Camoufox  # type: ignore
