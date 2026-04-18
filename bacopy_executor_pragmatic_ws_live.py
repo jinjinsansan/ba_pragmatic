@@ -205,17 +205,58 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {_api_key()}", "Content-Type": "application/json"}
 
 
+_HTTP = requests.Session()
+
+
+def _api_read_timeout_sec() -> float:
+    try:
+        return float(os.getenv("BACOPY_API_TIMEOUT_SEC", "30").strip() or "30")
+    except Exception:
+        return 30.0
+
+
+def _api_connect_timeout_sec() -> float:
+    try:
+        return float(os.getenv("BACOPY_API_CONNECT_TIMEOUT_SEC", "5").strip() or "5")
+    except Exception:
+        return 5.0
+
+
+def _api_retries() -> int:
+    try:
+        return max(1, int(os.getenv("BACOPY_API_RETRIES", "3").strip() or "3"))
+    except Exception:
+        return 3
+
+
+def _http_request(method: str, url: str, *, timeout: tuple[float, float], retries: int, **kwargs):
+    last_e: Optional[Exception] = None
+    for i in range(max(1, int(retries))):
+        try:
+            return _HTTP.request(method, url, timeout=timeout, **kwargs)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_e = e
+            if i >= retries - 1:
+                raise
+            backoff = min(8.0, 0.5 * (2**i))
+            print(f"[WARN] http {method} timeout/connection error (retry {i+1}/{retries}, sleep={backoff}s): {e}", flush=True)
+            time.sleep(backoff)
+    raise last_e or RuntimeError("http_request failed")
+
+
 def _redact_jsession(url: str) -> str:
     return re.sub(r"(JSESSIONID=)[^&]+", r"\1<REDACTED>", str(url or ""))
 
 
 def _post_ack(decision_id: str, ack: dict[str, Any], status: str = "processing") -> None:
     try:
-        requests.post(
+        _http_request(
+            "POST",
             f"{_api_url()}/api/decisions/{decision_id}/ack",
             headers=_headers(),
             json={"ack": ack, "status": status},
-            timeout=10,
+            timeout=(_api_connect_timeout_sec(), _api_read_timeout_sec()),
+            retries=min(_api_retries(), 2),
         ).raise_for_status()
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
         print(f"[WARN] post_ack timeout: {e}", flush=True)
@@ -225,11 +266,13 @@ def _post_ack(decision_id: str, ack: dict[str, Any], status: str = "processing")
 
 def _post_result(decision_id: str, result: dict[str, Any], status: str = "done") -> None:
     try:
-        requests.post(
+        _http_request(
+            "POST",
             f"{_api_url()}/api/decisions/{decision_id}/result",
             headers=_headers(),
             json={"result": result, "status": status},
-            timeout=10,
+            timeout=(_api_connect_timeout_sec(), _api_read_timeout_sec()),
+            retries=min(_api_retries(), 2),
         ).raise_for_status()
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
         print(f"[WARN] post_result timeout: {e}", flush=True)
@@ -240,11 +283,13 @@ def _post_result(decision_id: str, result: dict[str, Any], status: str = "done")
 def _post_heartbeat(payload: dict[str, Any]) -> None:
     # best-effort
     try:
-        requests.post(
+        _http_request(
+            "POST",
             f"{_api_url()}/api/executors/heartbeat",
             headers=_headers(),
             json=payload,
-            timeout=5,
+            timeout=(_api_connect_timeout_sec(), 5.0),
+            retries=1,
         )
     except Exception:
         return
@@ -252,11 +297,13 @@ def _post_heartbeat(payload: dict[str, Any]) -> None:
 
 def _fetch_decisions(status: str, limit: int) -> list[dict[str, Any]]:
     try:
-        r = requests.get(
+        r = _http_request(
+            "GET",
             f"{_api_url()}/api/decisions",
             params={"status": status, "limit": int(limit)},
             headers=_headers(),
-            timeout=10,
+            timeout=(_api_connect_timeout_sec(), _api_read_timeout_sec()),
+            retries=_api_retries(),
         )
         r.raise_for_status()
         items = r.json().get("decisions") or []
