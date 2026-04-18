@@ -16,7 +16,8 @@ process.on('uncaughtException', (err) => {
 });
 
 function repoRoot() {
-  return path.join(__dirname, '..', '..');
+  // copytrade_gui/src -> bacopy repo root
+  return path.join(__dirname, '..', '..', '..');
 }
 
 function resolveEnvPath() {
@@ -222,6 +223,10 @@ function _saveSession(session) {
 }
 
 function _httpsGetJson(url) {
+  return _httpsGetJsonFollow(url, 3);
+}
+
+function _httpsGetJsonFollow(url, redirectsLeft) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const req = https.request(
@@ -237,6 +242,19 @@ function _httpsGetJson(url) {
         },
       },
       (res) => {
+        const code = res.statusCode || 0;
+        const loc = res.headers && res.headers.location ? String(res.headers.location) : '';
+        if ([301, 302, 307, 308].includes(code) && loc && redirectsLeft > 0) {
+          try {
+            const next = new URL(loc, u).toString();
+            res.resume();
+            return resolve(_httpsGetJsonFollow(next, redirectsLeft - 1));
+          } catch (e) {
+            res.resume();
+            return reject(e);
+          }
+        }
+
         let data = '';
         res.on('data', (c) => { data += c; });
         res.on('end', () => {
@@ -251,6 +269,29 @@ function _httpsGetJson(url) {
     req.on('error', reject);
     req.end();
   });
+}
+
+function _loadSupabaseFromWebEnvLocal() {
+  // Dev-only convenience: use web/.env.local NEXT_PUBLIC_* when root .env is missing.
+  if (app.isPackaged) return null;
+  const p = path.join(repoRoot(), 'web', '.env.local');
+  if (!fs.existsSync(p)) return null;
+  try {
+    const out = {};
+    const content = fs.readFileSync(p, 'utf-8');
+    for (const raw of content.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+      if (!m) continue;
+      const k = m[1];
+      const v = m[2];
+      if (k === 'NEXT_PUBLIC_SUPABASE_URL') out.url = v;
+      if (k === 'NEXT_PUBLIC_SUPABASE_ANON_KEY') out.anonKey = v;
+    }
+    if (out.url && out.anonKey) return out;
+  } catch (_) {}
+  return null;
 }
 
 function _httpsJson(method, url, body, headers = {}) {
@@ -307,6 +348,12 @@ async function getSupabaseConfig() {
   const key = envFile.NEXT_PUBLIC_SUPABASE_ANON_KEY || envFile.BAFATHER_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.BAFATHER_SUPABASE_ANON_KEY;
   if (url && key) {
     _supabaseConfig = { url, anonKey: key };
+    return _supabaseConfig;
+  }
+
+  const webLocal = _loadSupabaseFromWebEnvLocal();
+  if (webLocal) {
+    _supabaseConfig = { url: webLocal.url, anonKey: webLocal.anonKey };
     return _supabaseConfig;
   }
 
