@@ -136,7 +136,8 @@ async function refreshBilling({ silent = false } = {}) {
     _billingOk = !!(b && b.ok);
     const el = $('#creditBalance');
     if (el) {
-      if (b && typeof b.balance === 'number') el.textContent = `$${b.balance.toFixed(2)}`;
+      if (b && b.is_free) el.textContent = 'FREE / UNLIMITED';
+      else if (b && typeof b.balance === 'number') el.textContent = `$${b.balance.toFixed(2)}`;
       else el.textContent = '-';
       el.className = 'stat-value ' + (_billingOk ? 'positive' : 'negative');
     }
