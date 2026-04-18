@@ -106,6 +106,19 @@ function buildSpawnSpec(config) {
 
   // Hidden master config (no GUI inputs)
   if (!childEnv.BACOPY_API_URL) childEnv.BACOPY_API_URL = 'https://master.bafather.uk';
+  if (!childEnv.BACOPY_API_CONNECT_TIMEOUT_SEC) childEnv.BACOPY_API_CONNECT_TIMEOUT_SEC = '5';
+  if (!childEnv.BACOPY_API_TIMEOUT_SEC) childEnv.BACOPY_API_TIMEOUT_SEC = '15';
+
+  // DNS instability workaround: allow the executor to skip DNS by using direct IP + SNI.
+  // (Still verifies TLS cert for master.bafather.uk.)
+  try {
+    const u = new URL(childEnv.BACOPY_API_URL);
+    if (u.hostname === 'master.bafather.uk') {
+      if (!childEnv.BACOPY_API_FALLBACK_IPS && !childEnv.BACOPY_API_FALLBACK_IP) {
+        childEnv.BACOPY_API_FALLBACK_IPS = '210.131.215.116';
+      }
+    }
+  } catch (_) {}
 
   // Per-user/executor config (from GUI settings)
   if (config && config.executor_id) childEnv.BACOPY_EXECUTOR_ID = String(config.executor_id);

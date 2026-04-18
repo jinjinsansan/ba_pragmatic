@@ -11,6 +11,7 @@ Endpoints:
   GET  /api/status                 (auth)
   POST /api/decisions              (auth)
   GET  /api/decisions/pending      (auth)
+  GET  /api/decisions/wait         (auth)  (long-poll)
   POST /api/decisions/{id}/ack     (auth)
   POST /api/decisions/{id}/result  (auth)
 """
@@ -40,6 +41,17 @@ from bacopy_db import (
 
 from decision_logger import append_decision_event
 from snapshot_store import get_snapshot, load_snapshots, update_snapshot
+
+
+_DECISION_WAIT_COND = threading.Condition()
+_DECISION_WAIT_TICK = 0
+
+
+def _notify_decision_waiters() -> None:
+    global _DECISION_WAIT_TICK
+    with _DECISION_WAIT_COND:
+        _DECISION_WAIT_TICK += 1
+        _DECISION_WAIT_COND.notify_all()
 
 
 def _resolve_table_id_from_snapshots(provider: str, table_name: str) -> str:
@@ -340,6 +352,56 @@ button:disabled{{opacity:.45}}
 <script>
 const csrf = document.querySelector('meta[name=\"csrf\"]').content;
 let selected = {{provider:'pragmatic', table_id:'', table_name:''}};
+const LS = {{
+  provider: 'bacopy_master_provider',
+  exec: 'bacopy_master_exec',
+  tableId: 'bacopy_master_table_id',
+  tableName: 'bacopy_master_table_name',
+  amount: 'bacopy_master_amount',
+  note: 'bacopy_master_note',
+  search: 'bacopy_master_search',
+}};
+
+function persistState() {{
+  try {{ localStorage.setItem(LS.provider, document.getElementById('providerSel').value || ''); }} catch(e) {{}}
+  try {{ localStorage.setItem(LS.exec, document.getElementById('execSel').value || ''); }} catch(e) {{}}
+  try {{ localStorage.setItem(LS.tableId, selected.table_id || ''); }} catch(e) {{}}
+  try {{ localStorage.setItem(LS.tableName, selected.table_name || ''); }} catch(e) {{}}
+  try {{ localStorage.setItem(LS.amount, document.getElementById('amountBox').value || ''); }} catch(e) {{}}
+  try {{ localStorage.setItem(LS.note, document.getElementById('noteBox').value || ''); }} catch(e) {{}}
+  try {{ localStorage.setItem(LS.search, document.getElementById('searchBox').value || ''); }} catch(e) {{}}
+}}
+
+function loadState() {{
+  try {{
+    const prov = localStorage.getItem(LS.provider);
+    if (prov) document.getElementById('providerSel').value = prov;
+  }} catch(e) {{}}
+  try {{
+    const s = localStorage.getItem(LS.search);
+    if (s !== null && s !== undefined) document.getElementById('searchBox').value = s;
+  }} catch(e) {{}}
+  try {{
+    const a = localStorage.getItem(LS.amount);
+    if (a !== null && a !== undefined) document.getElementById('amountBox').value = a;
+  }} catch(e) {{}}
+  try {{
+    const n = localStorage.getItem(LS.note);
+    if (n !== null && n !== undefined) document.getElementById('noteBox').value = n;
+  }} catch(e) {{}}
+  try {{
+    const tid = localStorage.getItem(LS.tableId) || '';
+    const tn = localStorage.getItem(LS.tableName) || '';
+    if (tid) {{
+      selected.table_id = tid;
+      selected.table_name = tn;
+      document.getElementById('selectedTable').textContent = tn || tid;
+      document.getElementById('selectedMeta').textContent = 'provider=' + (document.getElementById('providerSel').value || '') + ' table_id=' + tid;
+    }}
+  }} catch(e) {{}}
+}}
+
+loadState();
 
 function fmt(o){{ try{{return JSON.stringify(o)}}catch(e){{return String(o)}} }}
 function escapeHtml(s){{ return String(s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }}
@@ -377,6 +439,7 @@ async function sendDecision(action, side) {{
   const target_executor_id = document.getElementById('execSel').value || '';
   const amount = Number(document.getElementById('amountBox').value || '0');
   const note = document.getElementById('noteBox').value || '';
+  persistState();
   const payload = {{
     decision_id: decisionId(),
     provider,
@@ -396,7 +459,7 @@ function renderExecList(executors) {{
   wrap.innerHTML = '';
   for(const e of (executors||[])) {{
     const ageSec = e.updated_at ? Math.max(0, (now - Date.parse(e.updated_at))/1000) : 99999;
-    const online = ageSec < 30;
+    const online = ageSec < 60;
     const c = document.createElement('div');
     c.className = 'card';
     const bal = (e.balance===null || e.balance===undefined) ? '-' : String(e.balance);
@@ -416,7 +479,10 @@ function renderExecList(executors) {{
 
 function renderExecutorSelect(executors) {{
   const sel = document.getElementById('execSel');
-  const cur = sel.value;
+  let cur = sel.value;
+  if (!cur) {{
+    try {{ cur = localStorage.getItem(LS.exec) || ''; }} catch(e) {{}}
+  }}
   sel.innerHTML = '<option value=\"\">(broadcast)</option>';
   for(const e of (executors||[])) {{
     const opt = document.createElement('option');
@@ -448,6 +514,7 @@ function renderTables(provider, snapshots) {{
       selected = {{provider, table_id:String(it.tid), table_name:name}};
       document.getElementById('selectedTable').textContent = name || it.tid;
       document.getElementById('selectedMeta').textContent = 'provider='+provider+' table_id='+it.tid;
+      persistState();
       refreshOnce();
     }};
     wrap.appendChild(btn);
@@ -520,8 +587,11 @@ async function refreshOnce() {{
   document.getElementById('btnT').disabled = isPrag;
 }}
 
-document.getElementById('providerSel').onchange = refreshOnce;
-document.getElementById('searchBox').oninput = () => {{ window.clearTimeout(window.__t); window.__t=setTimeout(refreshOnce, 200); }};
+document.getElementById('providerSel').onchange = () => {{ persistState(); refreshOnce(); }};
+document.getElementById('execSel').onchange = () => {{ persistState(); }};
+document.getElementById('amountBox').oninput = () => {{ persistState(); }};
+document.getElementById('noteBox').oninput = () => {{ persistState(); }};
+document.getElementById('searchBox').oninput = () => {{ persistState(); window.clearTimeout(window.__t); window.__t=setTimeout(refreshOnce, 200); }};
 document.getElementById('btnSwitch').onclick = () => sendDecision('SWITCH_TABLE', '');
 document.getElementById('btnLook').onclick = () => sendDecision('LOOK', '');
 document.getElementById('btnP').onclick = () => sendDecision('BET', 'PLAYER');
@@ -597,6 +667,45 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception:
                 limit = 50
             return _send_json(self, 200, {"decisions": get_by_status(status, limit=limit)})
+        if u.path == "/api/decisions/wait":
+            qs = parse_qs(u.query or "")
+            status = (qs.get("status") or ["pending"])[0]
+            provider = str((qs.get("provider") or [""])[0] or "")
+            executor_id = str((qs.get("executor_id") or [""])[0] or "")
+            try:
+                limit = int((qs.get("limit") or ["50"])[0])
+            except Exception:
+                limit = 50
+            try:
+                wait_sec = float((qs.get("wait_sec") or ["20"])[0])
+            except Exception:
+                wait_sec = 20.0
+            wait_sec = max(0.2, min(25.0, wait_sec))
+
+            def _match(d: dict[str, Any]) -> bool:
+                if provider and str(d.get("provider") or "") != provider:
+                    return False
+                if not executor_id:
+                    return True
+                tgt = str(d.get("target_executor_id") or "")
+                # If executor_id was specified, return broadcast (no target) + explicit matches.
+                return (not tgt) or tgt == executor_id
+
+            deadline = time.time() + wait_sec
+            while True:
+                with _DECISION_WAIT_COND:
+                    tick = _DECISION_WAIT_TICK
+                items = [d for d in (get_by_status(status, limit=limit) or []) if isinstance(d, dict) and _match(d)]
+                if items:
+                    return _send_json(self, 200, {"ok": True, "decisions": items})
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return _send_json(self, 200, {"ok": True, "decisions": []})
+                with _DECISION_WAIT_COND:
+                    # If a decision arrived between our DB read and waiting, loop and re-check.
+                    if _DECISION_WAIT_TICK != tick:
+                        continue
+                    _DECISION_WAIT_COND.wait(timeout=remaining)
         return _send_json(self, 404, {"ok": False, "error": "not_found"})
 
     def do_POST(self):  # noqa: N802
@@ -650,6 +759,7 @@ class _Handler(BaseHTTPRequestHandler):
 
             append_decision_event(payload)
             insert_decision(decision_id, payload)
+            _notify_decision_waiters()
             return _send_json(self, 200, {"accepted": True, "decision_id": decision_id})
 
         if u.path == "/api/snapshots/update":
@@ -692,6 +802,7 @@ class _Handler(BaseHTTPRequestHandler):
                     ack = {}
                 status = str(body.get("status") or "processing") if isinstance(body, dict) else "processing"
                 mark_ack(decision_id, ack, status=status)
+                _notify_decision_waiters()
                 return _send_json(self, 200, {"ok": True})
             if parts[3] == "result":
                 result = body.get("result") if isinstance(body, dict) else {}
@@ -699,6 +810,7 @@ class _Handler(BaseHTTPRequestHandler):
                     result = {}
                 status = str(body.get("status") or "done") if isinstance(body, dict) else "done"
                 mark_result(decision_id, result, status=status)
+                _notify_decision_waiters()
                 return _send_json(self, 200, {"ok": True})
 
         return _send_json(self, 404, {"ok": False, "error": "not_found"})

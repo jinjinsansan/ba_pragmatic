@@ -12,19 +12,26 @@ Notes:
 
 import atexit
 import argparse
+import ipaddress
 import json
 import os
+import queue
 import re
+import ssl
 import sys
+import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit, urlunsplit
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
 
 from decision_logger import append_decision_event
 from bacopy_db import init_db, try_lock_bet
@@ -488,11 +495,14 @@ def _headers() -> dict[str, str]:
 
 
 _HTTP = requests.Session()
+_IP_HTTP_LOCK = threading.Lock()
+_IP_HTTP: dict[tuple[str, str], requests.Session] = {}  # (ip, sni_host) -> session
 
 
 def _api_read_timeout_sec() -> float:
     try:
-        return float(os.getenv("BACOPY_API_TIMEOUT_SEC", "30").strip() or "30")
+        v = float(os.getenv("BACOPY_API_TIMEOUT_SEC", "30").strip() or "30")
+        return max(15.0, v)
     except Exception:
         return 30.0
 
@@ -511,16 +521,127 @@ def _api_retries() -> int:
         return 3
 
 
+class _SNIAdapter(HTTPAdapter):
+    def __init__(self, server_hostname: str, **kwargs):
+        self.server_hostname = server_hostname
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        ctx = ssl.create_default_context()
+        pool_kwargs["ssl_context"] = ctx
+        pool_kwargs["server_hostname"] = self.server_hostname
+        pool_kwargs["assert_hostname"] = self.server_hostname
+        self.poolmanager = PoolManager(num_pools=connections, maxsize=maxsize, block=block, **pool_kwargs)
+
+
+def _api_fallback_ips() -> list[str]:
+    raw = (os.getenv("BACOPY_API_FALLBACK_IPS", "") or os.getenv("BACOPY_API_FALLBACK_IP", "") or "").strip()
+    if not raw:
+        return []
+    parts = [p.strip() for p in re.split(r"[,\s]+", raw) if p.strip()]
+    out: list[str] = []
+    for p in parts:
+        try:
+            ipaddress.ip_address(p)
+            out.append(p)
+        except Exception:
+            continue
+    return out
+
+
+def _is_ip_host(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except Exception:
+        return False
+
+
+def _get_ip_session(ip: str, *, sni_host: str) -> requests.Session:
+    key = (ip, sni_host)
+    with _IP_HTTP_LOCK:
+        s = _IP_HTTP.get(key)
+        if s is not None:
+            return s
+        s = requests.Session()
+        s.mount(f"https://{ip}", _SNIAdapter(sni_host))
+        _IP_HTTP[key] = s
+        return s
+
+
+def _rewrite_url_to_ip(url: str, *, ip: str) -> tuple[str, str]:
+    """Return (ip_url, original_host). Keeps path/query; swaps netloc host->ip."""
+    p = urlsplit(url)
+    host = str(p.hostname or "")
+    port = p.port
+    scheme = p.scheme or "http"
+    netloc = ip
+    if port is not None:
+        netloc = f"{ip}:{port}"
+    return urlunsplit((scheme, netloc, p.path, p.query, p.fragment)), host
+
+
+def _maybe_ip_fallback_request(method: str, url: str, *, timeout: tuple[float, float], **kwargs):
+    p = urlsplit(url)
+    scheme = (p.scheme or "").lower()
+    host = str(p.hostname or "")
+    if not host or _is_ip_host(host):
+        return None
+    ips = _api_fallback_ips()
+    if not ips:
+        return None
+
+    # Preserve original host for nginx routing + TLS SNI.
+    hdrs = dict((kwargs.get("headers") or {}).items())
+    if not any(k.lower() == "host" for k in hdrs.keys()):
+        hdrs["Host"] = host
+    kwargs["headers"] = hdrs
+
+    last_e: Optional[Exception] = None
+    for ip in ips:
+        try:
+            ip_url, sni_host = _rewrite_url_to_ip(url, ip=ip)
+            if scheme == "https":
+                sess = _get_ip_session(ip, sni_host=sni_host)
+                return sess.request(method, ip_url, timeout=timeout, **kwargs)
+            # http fallback
+            return _HTTP.request(method, ip_url, timeout=timeout, **kwargs)
+        except Exception as e:
+            last_e = e
+            continue
+    if last_e is not None:
+        raise last_e
+    return None
+
+
 def _http_request(method: str, url: str, *, timeout: tuple[float, float], retries: int, **kwargs):
     last_e: Optional[Exception] = None
     for i in range(max(1, int(retries))):
         try:
+            prefer_ip_env = (os.getenv("BACOPY_API_PREFER_IP", "") or "").strip().lower()
+            prefer_ip = prefer_ip_env in ("1", "true", "yes", "on") or (prefer_ip_env == "" and bool(_api_fallback_ips()))
+            if prefer_ip:
+                try:
+                    r = _maybe_ip_fallback_request(method, url, timeout=timeout, **kwargs)
+                    if r is not None:
+                        return r
+                except Exception:
+                    # Fallback IP may be stale; keep going with the normal hostname path.
+                    pass
             return _HTTP.request(method, url, timeout=timeout, **kwargs)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             last_e = e
+            # DNS flaps: retry via fallback IP (hosts file equivalent) if configured.
+            try:
+                r = _maybe_ip_fallback_request(method, url, timeout=timeout, **kwargs)
+                if r is not None:
+                    return r
+            except Exception as e2:
+                last_e = e2
             if i >= retries - 1:
                 raise
-            backoff = min(8.0, 0.5 * (2**i))
+            jitter = 0.15 * (1.0 + (time.time() % 1.0))
+            backoff = min(8.0, 0.5 * (2**i) + jitter)
             print(f"[WARN] http {method} timeout/connection error (retry {i+1}/{retries}, sleep={backoff}s): {e}", flush=True)
             time.sleep(backoff)
     raise last_e or RuntimeError("http_request failed")
@@ -639,19 +760,20 @@ def _post_result(decision_id: str, result: dict[str, Any], status: str = "done")
         print(f"[WARN] post_result error: {e}", flush=True)
 
 
-def _post_heartbeat(payload: dict[str, Any]) -> None:
-    # best-effort
+def _post_heartbeat(payload: dict[str, Any]) -> tuple[bool, str]:
     try:
-        _http_request(
+        r = _http_request(
             "POST",
             f"{_api_url()}/api/executors/heartbeat",
             headers=_headers(),
             json=payload,
-            timeout=(_api_connect_timeout_sec(), 5.0),
+            timeout=(_api_connect_timeout_sec(), _api_read_timeout_sec()),
             retries=1,
         )
-    except Exception:
-        return
+        r.raise_for_status()
+        return True, ""
+    except Exception as e:
+        return False, str(e)[:200]
 
 
 def _fetch_decisions(status: str, limit: int) -> list[dict[str, Any]]:
@@ -671,6 +793,41 @@ def _fetch_decisions(status: str, limit: int) -> list[dict[str, Any]]:
         return []
     except Exception as e:
         print(f"[WARN] fetch_decisions error: {e}", flush=True)
+        return []
+    return items if isinstance(items, list) else []
+
+
+def _wait_decisions(
+    *,
+    status: str,
+    limit: int,
+    provider: str,
+    executor_id: str,
+    wait_sec: float,
+) -> list[dict[str, Any]]:
+    """Long-poll pending decisions to reduce polling + DNS lookups."""
+    try:
+        r = _http_request(
+            "GET",
+            f"{_api_url()}/api/decisions/wait",
+            params={
+                "status": status,
+                "limit": int(limit),
+                "provider": provider,
+                "executor_id": executor_id,
+                "wait_sec": float(wait_sec),
+            },
+            headers=_headers(),
+            timeout=(_api_connect_timeout_sec(), max(_api_read_timeout_sec(), float(wait_sec) + 5.0)),
+            retries=_api_retries(),
+        )
+        r.raise_for_status()
+        items = r.json().get("decisions") or []
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+        print(f"[WARN] wait_decisions timeout/connection error: {e}", flush=True)
+        return []
+    except Exception as e:
+        print(f"[WARN] wait_decisions error: {e}", flush=True)
         return []
     return items if isinstance(items, list) else []
 
@@ -712,6 +869,9 @@ class _PragmaticState:
 
     # ws urls
     game_ws_url: str = ""  # gsXX.../game?JSESSIONID=...&tableId=...&type=json
+    dga_ws_url: str = ""  # wss://dga.pragmaticplaylive.net/ws (lobby feed)
+    dga_subscribed_keys: set[str] = None
+    dga_last_subscribe_at: float = 0.0
 
     # result cache from lobby feed
     winners_by_table_game_id: dict[str, dict[str, str]] = None  # tableId -> (gameId -> winner)
@@ -732,6 +892,8 @@ class _PragmaticState:
             self._seen_table_game = set()
         if self.stake_balance_by_currency is None:
             self.stake_balance_by_currency = {}
+        if self.dga_subscribed_keys is None:
+            self.dga_subscribed_keys = set()
 
 
 def _side_to_bc(side: str) -> Optional[str]:
@@ -853,6 +1015,24 @@ def _update_from_lobby_msg(state: _PragmaticState, msg: dict[str, Any]) -> None:
     table_id = str(msg.get("tableId") or "")
     if not table_id:
         return
+
+    # Best-effort: if we haven't resolved operator_table_id yet, map it from dga metadata by table name.
+    try:
+        tname = str(msg.get("tableName") or "")
+        if not state.operator_table_id and tname and state.table_name:
+            def _norm(s: str) -> str:
+                return re.sub(r"[^a-z0-9]+", "", str(s or "").lower())
+            if _norm(tname) == _norm(state.table_name):
+                state.operator_table_id = table_id
+                # If internal qpid table_id is missing, recover it from the poster url.
+                if not state.table_id:
+                    img = str(msg.get("tableImage") or "")
+                    m = re.search(r"/snaps/([^/]+)/", img)
+                    if m:
+                        state.table_id = str(m.group(1) or "")
+    except Exception:
+        pass
+
     gr = msg.get("gameResult")
     if not isinstance(gr, list) or not gr:
         return
@@ -893,11 +1073,16 @@ def _update_from_stake_ws_msg(state: _PragmaticState, msg: dict[str, Any]) -> No
                 continue
 
 
-def _wait_for(predicate, *, timeout_sec: float, tick_ms: int, page=None) -> bool:
+def _wait_for(predicate, *, timeout_sec: float, tick_ms: int, page=None, on_tick=None) -> bool:
     t0 = time.time()
     while time.time() - t0 < timeout_sec:
         if predicate():
             return True
+        if on_tick is not None:
+            try:
+                on_tick()
+            except Exception:
+                pass
         if page is not None:
             page.wait_for_timeout(int(tick_ms))
         else:
@@ -937,13 +1122,101 @@ def _maybe_update_from_game_ws_url(state: _PragmaticState, url: str) -> None:
         return
 
 
+def _discover_session_from_sockets(page_or_frame, state: _PragmaticState) -> None:
+    """Recover session identifiers from already-open WebSocket URLs (no events needed)."""
+    try:
+        urls = page_or_frame.evaluate(
+            "() => (window.__bacopy_sockets || []).map(ws => ws.__bacopy_url || ws.url || '').filter(Boolean)"
+        )
+        if not isinstance(urls, list):
+            return
+        for u in urls:
+            if isinstance(u, str) and "pragmaticplaylive.net/game" in u:
+                _maybe_update_from_game_ws_url(state, u)
+            if isinstance(u, str) and "dga.pragmaticplaylive.net" in u and "/ws" in u:
+                if not state.dga_ws_url:
+                    state.dga_ws_url = u
+    except Exception:
+        return
+
+
+def _ensure_dga_subscription(page, state: _PragmaticState, *, operator_table_id: str, currency: str) -> None:
+    """Ensure we are subscribed to Pragmatic lobby feed for the target operator_table_id.
+
+    This is critical for result detection (gameResult winner lookup).
+    """
+    op_tid = str(operator_table_id or "").strip()
+    if not op_tid:
+        return
+    now = time.time()
+    if op_tid in (state.dga_subscribed_keys or set()) and (now - float(state.dga_last_subscribe_at or 0)) < 300:
+        return
+
+    ws_url = state.dga_ws_url or "wss://dga.pragmaticplaylive.net/ws"
+    casino_id = (os.getenv("BACOPY_PRAGMATIC_CASINO_ID", "ppcds00000003709") or "ppcds00000003709").strip()
+    cur = (currency or "USD").strip().upper() or "USD"
+    payloads = [
+        {"type": "statistics"},
+        {"type": "available", "casinoId": casino_id},
+        {"type": "subscribe", "isDeltaEnabled": True, "casinoId": casino_id, "key": [op_tid], "currency": cur},
+    ]
+    try:
+        # Open once then send all payloads on the same socket (fast, avoids repeated open timeouts).
+        page.evaluate(
+            """async (args) => {
+  const url = String(args.url || "");
+  const payloads = Array.isArray(args.payloads) ? args.payloads : [];
+  const timeoutMs = (typeof args.timeoutMs === "number" && args.timeoutMs > 0) ? args.timeoutMs : 5000;
+  if (!window.__bacopy_ws_open) return { ok: false, error: "bridge_missing" };
+
+  // Ensure we have a socket instance.
+  const res = window.__bacopy_ws_open(url);
+  if (!res || !res.ok) return res || { ok: false, error: "open_failed" };
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    for (const ws of (window.__bacopy_sockets || [])) {
+      try {
+        const wu = ws.__bacopy_url || ws.url || "";
+        if (wu === url && ws.readyState === WebSocket.OPEN) {
+          for (const p of payloads) {
+            try { ws.send(p); } catch (e) {}
+          }
+          return { ok: true, url: wu, sent: payloads.length };
+        }
+      } catch (e) {}
+    }
+    await new Promise(r => setTimeout(r, 50));
+  }
+  return { ok: false, error: "open_timeout", url };
+}""",
+            {"url": ws_url, "payloads": [json.dumps(p, separators=(",", ":")) for p in payloads], "timeoutMs": 5000},
+        )
+    except Exception:
+        pass
+
+    try:
+        state.dga_subscribed_keys.add(op_tid)
+        state.dga_last_subscribe_at = now
+    except Exception:
+        pass
+
+
 def _pump_ws_events(page, game_frame, state: _PragmaticState) -> None:
-    frames = []
+    frames: list[Any] = []
     if game_frame:
         frames.append(game_frame)
-    frames.append(page)
+    try:
+        for f in page.frames:
+            if f not in frames:
+                frames.append(f)
+    except Exception:
+        pass
+    if page not in frames:
+        frames.append(page)
 
     for fr in frames:
+        _discover_session_from_sockets(fr, state)
         for ev in _drain_ws_events(fr, max_items=400):
             if not isinstance(ev, dict):
                 continue
@@ -959,8 +1232,7 @@ def _pump_ws_events(page, game_frame, state: _PragmaticState) -> None:
             if not obj:
                 continue
             if "chat.pragmaticplaylive.net" in url:
-                if str(ev.get("dir") or "") == "send":
-                    _update_from_chat_msg(state, obj)
+                _update_from_chat_msg(state, obj)
             if "pragmaticplaylive.net/game" in url:
                 _update_from_game_msg(state, obj)
             if "dga.pragmaticplaylive.net/ws" in url:
@@ -986,7 +1258,59 @@ def _dismiss_stake_loader(page) -> None:
         pass
 
 
-def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
+def _dismiss_session_elsewhere_modal(page) -> bool:
+    """Best-effort auto-dismiss for Stake 'session elsewhere' modal."""
+    labels = [
+        r"ここで続ける",
+        r"続行",
+        r"続ける",
+        r"このデバイス",
+        r"この端末",
+        r"Continue\s+here",
+        r"Keep\s+using\s+here",
+        r"Continue",
+        r"OK",
+    ]
+    try:
+        roots = [page] + list(getattr(page, "frames", []) or [])
+    except Exception:
+        roots = [page]
+    for root in roots:
+        for pat in labels:
+            try:
+                btn = root.get_by_role("button", name=re.compile(pat, re.I))
+                if btn.count() > 0:
+                    btn.first.click(timeout=2000, force=True)
+                    try:
+                        page.wait_for_timeout(1200)
+                    except Exception:
+                        pass
+                    try:
+                        send_log(f"[session] dismissed 'session elsewhere' modal via '{pat}'")
+                    except Exception:
+                        pass
+                    return True
+            except Exception:
+                continue
+            try:
+                loc = root.locator(f"button:has-text('{pat}')")
+                if loc.count() > 0:
+                    loc.first.click(timeout=2000, force=True)
+                    try:
+                        page.wait_for_timeout(1200)
+                    except Exception:
+                        pass
+                    try:
+                        send_log(f"[session] dismissed 'session elsewhere' modal via button text '{pat}'")
+                    except Exception:
+                        pass
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, on_tick=None) -> None:
     send_phase("entering", "OPEN STAKE")
     send_action("Opening Stake lobby. If prompted, please log in to Stake.")
     print("[Stage 1] goto stake pragmatic lobby ...", flush=True)
@@ -995,6 +1319,7 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
 
     # Stake loader overlay を除去 (クリック遮断防止)
     _dismiss_stake_loader(page)
+    _dismiss_session_elsewhere_modal(page)
 
     print("[Stage 2] wait pragmatic shell ...", flush=True)
     gf = find_game_frame(page)
@@ -1018,10 +1343,16 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
         t0 = time.time()
         last_notice = 0.0
         while not shell:
+            _dismiss_session_elsewhere_modal(page)
             shell = find_shell_app_frame(page, attempts=1)
             if shell:
                 break
             _dismiss_stake_loader(page)
+            if on_tick is not None:
+                try:
+                    on_tick()
+                except Exception:
+                    pass
             if time.time() - last_notice >= 30.0:
                 last_notice = time.time()
                 try:
@@ -1038,6 +1369,11 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
                 break
         except Exception:
             pass
+        if on_tick is not None:
+            try:
+                on_tick()
+            except Exception:
+                pass
         page.wait_for_timeout(1000)
 
     clicked = False
@@ -1048,6 +1384,12 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
         deadline = time.time() + float(max(auto_click_wait_sec, 1))
         while time.time() < deadline and not clicked:
             _dismiss_stake_loader(page)
+            _dismiss_session_elsewhere_modal(page)
+            if on_tick is not None:
+                try:
+                    on_tick()
+                except Exception:
+                    pass
             # テキスト一致（日本語/英語両対応）
             try:
                 locator = shell.get_by_text(re.compile(re.escape(table_substr), re.I))
@@ -1167,6 +1509,81 @@ def main(argv: Optional[list[str]] = None) -> int:
     executor_label = os.getenv("BACOPY_EXECUTOR_LABEL", "").strip()
     executor_username = os.getenv("BACOPY_EXECUTOR_USERNAME", "").strip()
 
+    decision_q: queue.Queue[dict[str, Any]] = queue.Queue()
+    stop_fetcher = threading.Event()
+    seen_ids_order: deque[str] = deque()
+    seen_ids_set: set[str] = set()
+
+    def _seen_add(did: str, *, maxlen: int = 2000) -> bool:
+        if not did:
+            return False
+        if did in seen_ids_set:
+            return False
+        seen_ids_set.add(did)
+        seen_ids_order.append(did)
+        while len(seen_ids_order) > maxlen:
+            old = seen_ids_order.popleft()
+            seen_ids_set.discard(old)
+        return True
+
+    def _decision_fetcher() -> None:
+        # Initial drain: crash-safe resume (processing first), then pending.
+        try:
+            for st in ("processing", "pending"):
+                for d in _fetch_decisions(st, limit=int(args.limit)):
+                    if not isinstance(d, dict):
+                        continue
+                    if str(d.get("provider") or "") != "pragmatic":
+                        continue
+                    did = str(d.get("decision_id") or "")
+                    if not did:
+                        continue
+                    tgt = str(d.get("target_executor_id") or "")
+                    if tgt and tgt != executor_id:
+                        continue
+                    if args.only_table_id:
+                        dtid = str(d.get("table_id") or "")
+                        if dtid and str(args.only_table_id) != dtid:
+                            continue
+                    decision_q.put(d)
+        except Exception:
+            pass
+
+        backoff = 0.5
+        while not stop_fetcher.is_set():
+            wait_sec = max(5.0, float(os.getenv("BACOPY_DECISION_WAIT_SEC", "20") or "20"))
+            started = time.time()
+            items = _wait_decisions(
+                status="pending",
+                limit=int(args.limit),
+                provider="pragmatic",
+                executor_id=executor_id,
+                wait_sec=wait_sec,
+            )
+            elapsed = time.time() - started
+            if not items:
+                # If it returned too quickly (network/DNS error), backoff to avoid hot-loop.
+                if elapsed < 1.0:
+                    time.sleep(backoff)
+                    backoff = min(8.0, backoff * 2.0)
+                else:
+                    backoff = 0.5
+                continue
+            for d in items:
+                if not isinstance(d, dict):
+                    continue
+                did = str(d.get("decision_id") or "")
+                if not did:
+                    continue
+                # Don't drop duplicates here; ack timing can cause pending re-appearance. Main loop dedupes.
+                decision_q.put(d)
+            backoff = 0.5
+            # A safety sleep prevents tight loops if server returns instantly with same pending items.
+            time.sleep(0.05)
+
+    atexit.register(lambda: stop_fetcher.set())
+    threading.Thread(target=_decision_fetcher, name="decision_fetcher", daemon=True).start()
+
     chip_base = float(args.chip_base) if float(args.chip_base or 0) > 0 else float(args.flat_amount or 1.0)
     profit_stop_chips = max(1, int(round(float(args.profit_target) / max(chip_base, 0.01))))
     loss_cut_chips = max(1, int(round(float(args.loss_cut) / max(chip_base, 0.01))))
@@ -1183,13 +1600,41 @@ def main(argv: Optional[list[str]] = None) -> int:
     master_last_ok_ts = 0.0
     master_last_ok_at = ""
     master_last_err = ""
-    master_last_check_ts = 0.0
     master_last_decision_id = ""
     master_last_decision_action = ""
     master_last_decision_at = ""
     master_last_active_ts = 0.0
     master_pending_for_me = 0
     master_prev_active: Optional[bool] = None
+
+    hb_lock = threading.Lock()
+    hb_latest_payload: dict[str, Any] = {}
+    hb_stop = threading.Event()
+    hb_last_sent = 0.0
+
+    def _hb_sender() -> None:
+        nonlocal hb_last_sent
+        nonlocal master_last_ok_ts, master_last_ok_at, master_last_err
+        while not hb_stop.is_set():
+            time.sleep(0.25)
+            now2 = time.time()
+            if now2 - hb_last_sent < 5.0:
+                continue
+            with hb_lock:
+                payload = dict(hb_latest_payload) if hb_latest_payload else None
+            if not payload:
+                continue
+            ok, err = _post_heartbeat(payload)
+            hb_last_sent = now2
+            if ok:
+                master_last_ok_ts = now2
+                master_last_ok_at = _utc_now_iso()
+                master_last_err = ""
+            elif err:
+                master_last_err = err
+
+    atexit.register(lambda: hb_stop.set())
+    threading.Thread(target=_hb_sender, name="hb_sender", daemon=True).start()
 
     send_log(
         f"Config: chip_base=${chip_base:.2f} profit_target=${float(args.profit_target):.0f} "
@@ -1207,7 +1652,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     def heartbeat(status: str) -> None:
         nonlocal last_hb
-        nonlocal master_last_ok_ts, master_last_ok_at, master_last_err, master_last_check_ts
+        nonlocal master_last_ok_ts, master_last_ok_at, master_last_err
         nonlocal master_last_decision_id, master_last_decision_action, master_last_decision_at
         nonlocal master_last_active_ts, master_pending_for_me, master_prev_active
         now = time.time()
@@ -1224,25 +1669,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         except Exception:
             pass
 
-        # Master connectivity check (auth-required endpoint)
-        try:
-            if now - master_last_check_ts >= 5.0:
-                master_last_check_ts = now
-                r = _http_request(
-                    "GET",
-                    f"{_api_url()}/api/status",
-                    headers=_headers(),
-                    timeout=(_api_connect_timeout_sec(), 5.0),
-                    retries=1,
-                )
-                r.raise_for_status()
-                master_last_ok_ts = now
-                master_last_ok_at = _utc_now_iso()
-                master_last_err = ""
-        except Exception as e:
-            master_last_err = str(e)[:200]
-
-        connected = bool(master_last_ok_ts and (now - master_last_ok_ts) < 20.0)
+        connected = bool(master_last_ok_ts and (now - master_last_ok_ts) < 45.0)
         active = connected and (master_pending_for_me > 0 or (master_last_active_ts and (now - master_last_active_ts) < 30.0))
         if master_prev_active is None:
             master_prev_active = active
@@ -1269,28 +1696,29 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         except Exception:
             pass
-        _post_heartbeat(
-            {
-                "executor_id": executor_id,
-                "label": executor_label,
-                "username": executor_username,
-                "provider": "pragmatic",
-                "table_id": state.operator_table_id,
-                "table_name": state.table_name,
-                "balance": bal,
-                "seq": {
-                    "mode": "counter_seq7",
-                    "chip_base": chip_base,
-                    "unit_idx": seq7.tracker.current_unit_idx,
-                    "unit": seq7.bet_unit(),
-                    "bet_amount": seq7.bet_amount(),
-                    "turn": len(seq7.tracker.current_turns) + 1,
-                    "overshoot": getattr(seq7.tracker, "prev_overshoot", 0),
-                },
-                "status": status,
-                "error": last_error,
-            }
-        )
+        payload = {
+            "executor_id": executor_id,
+            "label": executor_label,
+            "username": executor_username,
+            "provider": "pragmatic",
+            "table_id": state.operator_table_id,
+            "table_name": state.table_name,
+            "balance": bal,
+            "seq": {
+                "mode": "counter_seq7",
+                "chip_base": chip_base,
+                "unit_idx": seq7.tracker.current_unit_idx,
+                "unit": seq7.bet_unit(),
+                "bet_amount": seq7.bet_amount(),
+                "turn": len(seq7.tracker.current_turns) + 1,
+                "overshoot": getattr(seq7.tracker, "prev_overshoot", 0),
+            },
+            "status": status,
+            "error": last_error,
+        }
+        with hb_lock:
+            hb_latest_payload.clear()
+            hb_latest_payload.update(payload)
 
     def on_ws(ws):
         url = str(ws.url or "")
@@ -1335,7 +1763,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         persistent_context=True,
         user_data_dir=str(Path(args.profile_dir)),
     ) as ctx:
-        page = ctx.new_page()
+        # persistent_context=True creates a default Page; using ctx.new_page() would open a 2nd window.
+        # Keep a single window to avoid Stake session conflicts / user confusion.
+        try:
+            pages = list(getattr(ctx, "pages", []) or [])
+        except Exception:
+            pages = []
+        page = pages[0] if pages else ctx.new_page()
+        for p in pages[1:]:
+            try:
+                p.close()
+            except Exception:
+                pass
         try:
             page.add_init_script(_WS_BRIDGE_INIT)
         except Exception:
@@ -1366,7 +1805,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         page.on("websocket", _attach_ws_frame_spy)
 
         # Enter lobby and (attempt to) join table
-        _join_table(page, table_substr=str(args.table_name_substr or ""), auto_click_wait_sec=int(args.auto_click_wait_sec))
+        _join_table(
+            page,
+            table_substr=str(args.table_name_substr or ""),
+            auto_click_wait_sec=int(args.auto_click_wait_sec),
+            on_tick=lambda: heartbeat("running"),
+        )
 
         # Ensure WS bridge exists in the pragmatic iframe context (send must be evaluated in-frame).
         game_frame = find_game_frame(page, attempts=60)
@@ -1383,6 +1827,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         t0 = time.time()
         last_notice = 0.0
         while not (state.game_ws_url and state.table_id and state.user_id and state.jsession_id):
+            _dismiss_session_elsewhere_modal(page)
             try:
                 if not game_frame:
                     game_frame = find_game_frame(page, attempts=1)
@@ -1395,6 +1840,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 pass
             try:
                 _pump_ws_events(page, game_frame, state)
+            except Exception:
+                pass
+            try:
+                heartbeat("running")
             except Exception:
                 pass
 
@@ -1414,15 +1863,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         if state.operator_table_id:
             print(f"[session] operator_table_id={state.operator_table_id} table_name={state.table_name}", flush=True)
         print(f"[executor-live] executor_id={executor_id}", flush=True)
-        if state.game_ws_url and game_frame:
+        if state.game_ws_url:
+            # Keep an always-controllable WS in the top page context too (iframe can reload/detach).
             try:
-                game_frame.evaluate(_WS_BRIDGE_INIT)
+                page.evaluate(_WS_BRIDGE_INIT)
             except Exception:
                 pass
             try:
-                game_frame.evaluate("(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)", state.game_ws_url)
+                page.evaluate("(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)", state.game_ws_url)
             except Exception:
                 pass
+            if game_frame:
+                try:
+                    game_frame.evaluate(_WS_BRIDGE_INIT)
+                except Exception:
+                    pass
+                try:
+                    game_frame.evaluate("(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)", state.game_ws_url)
+                except Exception:
+                    pass
 
         def send_bet_xml(xml_payload: str, match: str) -> dict[str, Any]:
             target_frames = []
@@ -1467,6 +1926,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             prev_at = state.last_bets_open_at
 
             def _pred() -> bool:
+                try:
+                    if state.game_ws_url:
+                        page.evaluate("(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)", state.game_ws_url)
+                except Exception:
+                    pass
                 _pump_ws_events(page, game_frame, state)
                 if not state.bets_open_game_id:
                     return False
@@ -1479,7 +1943,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 # If betsopen arrived slightly earlier but is likely still open, accept it.
                 return (time.time() - state.last_bets_open_at) < 20.0
 
-            ok = _wait_for(_pred, timeout_sec=timeout_sec, tick_ms=200, page=page)
+            ok = _wait_for(_pred, timeout_sec=timeout_sec, tick_ms=200, page=page, on_tick=lambda: heartbeat("running"))
             return state.bets_open_game_id if ok else None
 
         def wait_bet_confirm(
@@ -1514,7 +1978,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     return True
                 return False
 
-            _wait_for(_pred, timeout_sec=timeout_sec, tick_ms=200, page=page)
+            _wait_for(_pred, timeout_sec=timeout_sec, tick_ms=200, page=page, on_tick=lambda: heartbeat("running"))
             return state.last_bet_confirm
 
         def wait_result(game_id: str, operator_table_id: str, timeout_sec: float) -> Optional[str]:
@@ -1536,31 +2000,76 @@ def main(argv: Optional[list[str]] = None) -> int:
                 timeout_sec=timeout_sec,
                 tick_ms=250,
                 page=page,
+                on_tick=lambda: heartbeat("running"),
             )
             return _winner() if ok else None
 
         while True:
             heartbeat("running")
-            master_pending_for_me = 0
             try:
                 _pump_ws_events(page, game_frame, state)
             except Exception:
                 pass
 
-            # Resume processing first, then pending (crash-safe).
-            items = _fetch_decisions("processing", limit=int(args.limit))
-            if not items:
-                items = _fetch_decisions("pending", limit=int(args.limit))
-            if not items:
+            # Decisions are fetched via long-poll in a background thread (reduces DNS churn + timeouts).
+            try:
+                d0 = decision_q.get(timeout=max(float(args.poll_sec), 0.2))
+                items = [d0]
+                while len(items) < int(args.limit):
+                    try:
+                        items.append(decision_q.get_nowait())
+                    except queue.Empty:
+                        break
+                master_pending_for_me = decision_q.qsize() + len(items)
+            except queue.Empty:
+                master_pending_for_me = decision_q.qsize()
                 if args.once:
                     break
                 page.wait_for_timeout(int(max(args.poll_sec, 0.2) * 1000))
                 continue
 
+            # Coalesce SWITCH_TABLE floods: keep only the latest SWITCH_TABLE in this batch.
+            try:
+                sw: list[dict[str, Any]] = []
+                non_sw: list[dict[str, Any]] = []
+                for _d in items:
+                    fa0 = _d.get("friend_action") or {}
+                    if isinstance(fa0, dict) and str(fa0.get("action") or "").upper() == "SWITCH_TABLE":
+                        sw.append(_d)
+                    else:
+                        non_sw.append(_d)
+                if len(sw) > 1:
+                    # sw list order is not stable due to duplicate enqueue; choose by timestamp, not by list order.
+                    keep = max(sw, key=lambda x: str(x.get("received_at") or x.get("captured_at") or ""))
+                    keep_id = str(keep.get("decision_id") or "")
+                    superseded: set[str] = set()
+                    for old in sw:
+                        old_id = str(old.get("decision_id") or "")
+                        if not old_id or old_id == keep_id or old_id in superseded:
+                            continue
+                        superseded.add(old_id)
+                        try:
+                            _post_result(
+                                old_id,
+                                {"error": "superseded by later SWITCH_TABLE", "superseded_by": keep_id},
+                                status="error",
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            _seen_add(old_id)
+                        except Exception:
+                            pass
+                    items = [keep] + non_sw
+            except Exception:
+                pass
+
             for d in items:
                 did = str(d.get("decision_id") or "")
                 provider = str(d.get("provider") or "")
                 if provider != "pragmatic" or not did:
+                    continue
+                if not _seen_add(did):
                     continue
 
                 fa = d.get("friend_action") or {}
@@ -1609,6 +2118,33 @@ def main(argv: Optional[list[str]] = None) -> int:
                     if not target:
                         _post_result(did, {"error": "table_name required for SWITCH_TABLE"}, status="error")
                         continue
+
+                    # If we're already in the requested table, treat as no-op (prevents queue stalls).
+                    try:
+                        same_table = False
+                        if decision_table_id and state.operator_table_id and decision_table_id == state.operator_table_id:
+                            same_table = True
+                        if state.table_name and target and str(state.table_name).strip().upper() == str(target).strip().upper():
+                            same_table = True
+                        if same_table:
+                            res = {
+                                "mode": "live_ws",
+                                "observed_at": _utc_now_iso(),
+                                "executor_id": executor_id,
+                                "note": "already_in_table",
+                                "current": {
+                                    "operator_table_id": state.operator_table_id,
+                                    "table_name": state.table_name,
+                                    "table_id": state.table_id,
+                                },
+                            }
+                            _post_result(did, res, status="done")
+                            send_action(f"Already in table: {state.table_name or target}")
+                            send_phase("idle", "ARMED")
+                            continue
+                    except Exception:
+                        pass
+
                     send_phase("entering", str(target)[:40])
                     send_action(f"Switching table: {target}")
 
@@ -1621,7 +2157,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                     state.game_ws_url = ""
 
                     try:
-                        _join_table(page, table_substr=str(target), auto_click_wait_sec=int(args.auto_click_wait_sec))
+                        _join_table(
+                            page,
+                            table_substr=str(target),
+                            auto_click_wait_sec=int(args.auto_click_wait_sec),
+                            on_tick=lambda: heartbeat("running"),
+                        )
                         game_frame = find_game_frame(page, attempts=60)
                         if game_frame:
                             try:
@@ -1633,6 +2174,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                             timeout_sec=180,
                             tick_ms=500,
                             page=page,
+                            on_tick=lambda: heartbeat("running"),
                         )
                         if not ok:
                             raise RuntimeError("session identifiers not populated (table/user/ws missing)")
@@ -1643,6 +2185,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                                 timeout_sec=30,
                                 tick_ms=500,
                                 page=page,
+                                on_tick=lambda: heartbeat("running"),
                             )
                         res = {
                             "mode": "live_ws",
@@ -1792,6 +2335,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 last_error = ""
 
                 # Resolve by dga feed winner
+                try:
+                    _ensure_dga_subscription(page, state, operator_table_id=op_tid, currency=bet_currency)
+                except Exception:
+                    pass
                 outcome = wait_result(game_id, operator_table_id=op_tid, timeout_sec=float(args.result_timeout_sec))
                 if outcome is None:
                     _post_result(
