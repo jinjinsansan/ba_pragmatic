@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
@@ -912,6 +913,30 @@ def _drain_ws_events(page_or_frame, *, max_items: int = 300) -> list[dict[str, A
         return []
 
 
+def _maybe_update_from_game_ws_url(state: _PragmaticState, url: str) -> None:
+    if not url or "pragmaticplaylive.net/game" not in url:
+        return
+    if not state.game_ws_url:
+        state.game_ws_url = url
+    try:
+        u = urlparse(url)
+        qs = parse_qs(u.query or "")
+        if not state.jsession_id:
+            js = (qs.get("JSESSIONID") or qs.get("jsessionid") or [""])[0]
+            if js:
+                state.jsession_id = str(js)
+        if not state.table_id:
+            tid = (qs.get("tableId") or qs.get("tableid") or [""])[0]
+            if tid:
+                state.table_id = str(tid)
+        if not state.user_id:
+            uid = (qs.get("userId") or qs.get("userid") or [""])[0]
+            if uid:
+                state.user_id = str(uid)
+    except Exception:
+        return
+
+
 def _pump_ws_events(page, game_frame, state: _PragmaticState) -> None:
     frames = []
     if game_frame:
@@ -923,6 +948,8 @@ def _pump_ws_events(page, game_frame, state: _PragmaticState) -> None:
             if not isinstance(ev, dict):
                 continue
             url = str(ev.get("url") or "")
+            if "pragmaticplaylive.net/game" in url:
+                _maybe_update_from_game_ws_url(state, url)
             data = ev.get("data")
             obj = _maybe_json(data)
             if not obj and isinstance(data, str) and "<" in data:
@@ -960,6 +987,8 @@ def _dismiss_stake_loader(page) -> None:
 
 
 def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
+    send_phase("entering", "OPEN STAKE")
+    send_action("Opening Stake lobby. If prompted, please log in to Stake.")
     print("[Stage 1] goto stake pragmatic lobby ...", flush=True)
     page.goto(LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(10_000)
@@ -970,6 +999,8 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
     print("[Stage 2] wait pragmatic shell ...", flush=True)
     gf = find_game_frame(page)
     if not gf:
+        send_phase("entering", "STAKE LOGIN")
+        send_action("Stake login may be required. Please complete login in the opened browser window.")
         try:
             print(f"[WARN] pragmatic frame not detected yet (url={page.url})", flush=True)
         except Exception:
@@ -982,7 +1013,21 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
     print("[Stage 3] find internal lobby (shell-app) ...", flush=True)
     shell = find_shell_app_frame(page)
     if not shell:
-        raise RuntimeError("shell-app not found")
+        send_phase("entering", "WAIT LOGIN")
+        send_action("Waiting for Stake lobby... Please finish Stake login in the opened browser window.")
+        t0 = time.time()
+        last_notice = 0.0
+        while not shell:
+            shell = find_shell_app_frame(page, attempts=1)
+            if shell:
+                break
+            _dismiss_stake_loader(page)
+            if time.time() - last_notice >= 30.0:
+                last_notice = time.time()
+                try:
+                    print(f"[INFO] waiting for shell-app (login) elapsed={time.time()-t0:.0f}s url={page.url}", flush=True)
+                except Exception:
+                    print(f"[INFO] waiting for shell-app (login) elapsed={time.time()-t0:.0f}s", flush=True)
 
     # SPA 描画待ち: [role="button"] が出現するまで最大30秒待機
     print("[Stage 3b] waiting for SPA render (role=button elements) ...", flush=True)
@@ -1272,12 +1317,37 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         # Wait until we have game ws + chat mapping (user_id/table_id/jsession/operator_table_id)
         print("[Stage 5] waiting for Pragmatic session identifiers ...", flush=True)
-        _wait_for(
-            lambda: bool(state.game_ws_url and state.table_id and state.user_id and state.jsession_id),
-            timeout_sec=180,
-            tick_ms=500,
-            page=page,
-        )
+        send_phase("entering", "WAIT TABLE")
+        send_action("Waiting for Stake table entry... Please enter a baccarat table in the opened browser window.")
+        t0 = time.time()
+        last_notice = 0.0
+        while not (state.game_ws_url and state.table_id and state.user_id and state.jsession_id):
+            try:
+                if not game_frame:
+                    game_frame = find_game_frame(page, attempts=1)
+                    if game_frame:
+                        try:
+                            game_frame.evaluate(_WS_BRIDGE_INIT)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            try:
+                _pump_ws_events(page, game_frame, state)
+            except Exception:
+                pass
+
+            if time.time() - last_notice >= 30.0:
+                last_notice = time.time()
+                try:
+                    print(f"[Stage 5] waiting... elapsed={time.time()-t0:.0f}s url={page.url}", flush=True)
+                except Exception:
+                    print(f"[Stage 5] waiting... elapsed={time.time()-t0:.0f}s", flush=True)
+                send_action("Waiting for Stake table entry... (login/click a table in the browser window)")
+            page.wait_for_timeout(500)
+
+        send_phase("idle", "ARMED")
+        send_action("Armed. Waiting for master signal...")
         if state.game_ws_url:
             print(f"[session] game_ws={_redact_jsession(state.game_ws_url)}", flush=True)
         if state.operator_table_id:
