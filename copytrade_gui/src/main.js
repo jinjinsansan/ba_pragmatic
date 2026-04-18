@@ -17,7 +17,7 @@ process.on('uncaughtException', (err) => {
 
 function repoRoot() {
   // copytrade_gui/src -> bacopy repo root
-  return path.join(__dirname, '..', '..', '..');
+  return path.join(__dirname, '..', '..');
 }
 
 function resolveEnvPath() {
@@ -360,9 +360,11 @@ async function getSupabaseConfig() {
   let data = null;
   try {
     data = await _httpsGetJson('https://bafather.uk/api/public/supabase');
-  } catch (_) {
-    // Some deployments redirect root ↔ www (Node https does not auto-follow)
-    data = await _httpsGetJson('https://www.bafather.uk/api/public/supabase');
+  } catch (_) {}
+  if (!data) {
+    try {
+      data = await _httpsGetJson('https://www.bafather.uk/api/public/supabase');
+    } catch (_) {}
   }
   if (!data || !data.ok || !data.supabase_url || !data.supabase_anon_key) {
     throw new Error('Failed to load Supabase public config');
