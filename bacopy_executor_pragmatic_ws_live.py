@@ -19,7 +19,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -27,11 +27,291 @@ import requests
 
 from decision_logger import append_decision_event
 from bacopy_db import init_db, try_lock_bet
+from marubatsu_strategy import MaruBatsuTracker, SEQ_COUNTER, SetData
 
 BA_ROOT = Path(__file__).parent.parent / "ba"
 sys.path.insert(0, str(BA_ROOT))
 
 LOBBY_URL = "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat"
+
+# ======== GUI IPC (stdout JSON) ========
+
+def send_msg(msg: dict) -> None:
+    line = json.dumps(msg, ensure_ascii=False) + "\n"
+    try:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+    except UnicodeEncodeError:
+        buf = getattr(sys.stdout, "buffer", None)
+        if buf is not None:
+            try:
+                buf.write(line.encode("utf-8", errors="replace"))
+                buf.flush()
+                return
+            except Exception:
+                pass
+        try:
+            ascii_line = json.dumps(msg, ensure_ascii=True) + "\n"
+            sys.stdout.write(ascii_line)
+            sys.stdout.flush()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def send_log(text: str) -> None:
+    send_msg({"type": "log", "message": text})
+
+
+def send_action(text: str) -> None:
+    send_msg({"type": "action", "message": text})
+
+
+_LAST_PHASE = [""]
+
+
+def send_phase(name: str, detail: str = "") -> None:
+    key = f"{name}|{detail}"
+    if _LAST_PHASE[0] == key:
+        return
+    _LAST_PHASE[0] = key
+    send_msg({"type": "phase", "name": name, "detail": detail, "ts": time.time()})
+
+
+def _jst_date_str(ts: float | None = None) -> str:
+    if ts is None:
+        ts = time.time()
+    # NOTE: Don't rely on the OS timezone in packaged builds; force JST (+09:00).
+    jst = timezone(timedelta(hours=9))
+    dt = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(jst)
+    return dt.date().isoformat()
+
+
+class Seq7Session:
+    def __init__(
+        self,
+        *,
+        chip_base: float,
+        profit_stop_chips: int,
+        loss_cut_chips: int,
+        state_path: Path,
+        profit_session_limit: int = 0,
+    ) -> None:
+        self.chip_base = float(chip_base)
+        self.profit_stop = int(profit_stop_chips)
+        self.loss_cut = int(loss_cut_chips)
+        self.profit_session_limit = int(profit_session_limit or 0)
+
+        self.tracker = MaruBatsuTracker(chip_base=self.chip_base, seq=SEQ_COUNTER, set_size=7)
+        self.session_count = 0
+        self.profit_sessions = 0
+
+        self.total_bets = 0
+        self.total_wins = 0
+        self.total_losses = 0
+        self.total_ties = 0
+
+        self.session_open_balance: float | None = None
+        self.daily_open_balance: float | None = None
+        self.daily_open_date: str | None = None  # JST date
+        self.current_balance: float | None = None
+        self.state_path = state_path
+
+        self._load_state()
+
+        # GUI settings must win over saved state
+        self.tracker.chip_base = self.chip_base
+        self.profit_stop = max(1, self.profit_stop)
+        self.loss_cut = max(1, self.loss_cut)
+
+    def _load_state(self) -> None:
+        if not self.state_path.exists():
+            return
+        try:
+            data = json.loads(self.state_path.read_text("utf-8"))
+        except Exception:
+            return
+
+        try:
+            self.session_count = int(data.get("session_count", 0) or 0)
+            self.profit_sessions = int(data.get("profit_sessions", 0) or 0)
+            self.total_bets = int(data.get("total_bets", 0) or 0)
+            self.total_wins = int(data.get("total_wins", 0) or 0)
+            self.total_losses = int(data.get("total_losses", 0) or 0)
+            self.total_ties = int(data.get("total_ties", 0) or 0)
+            self.session_open_balance = data.get("session_open_balance")
+            self.daily_open_balance = data.get("daily_open_balance")
+            self.daily_open_date = data.get("daily_open_date")
+            self.current_balance = data.get("current_balance")
+
+            sets = data.get("sets") or []
+            self.tracker.sets.clear()
+            for sd in sets:
+                if not isinstance(sd, dict):
+                    continue
+                self.tracker.sets.append(SetData(**sd))
+
+            turns = data.get("current_turns") or []
+            self.tracker.current_turns = list(turns)
+            self.tracker.total_o = int(data.get("total_o", 0) or 0)
+            self.tracker.total_x = int(data.get("total_x", 0) or 0)
+        except Exception:
+            pass
+
+    def _save_state(self) -> None:
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schema_version": 1,
+                "chip_base": self.chip_base,
+                "profit_stop": self.profit_stop,
+                "loss_cut": self.loss_cut,
+                "profit_session_limit": self.profit_session_limit,
+                "session_count": self.session_count,
+                "profit_sessions": self.profit_sessions,
+                "total_bets": self.total_bets,
+                "total_wins": self.total_wins,
+                "total_losses": self.total_losses,
+                "total_ties": self.total_ties,
+                "session_open_balance": self.session_open_balance,
+                "daily_open_balance": self.daily_open_balance,
+                "daily_open_date": self.daily_open_date,
+                "current_balance": self.current_balance,
+                "sets": [s.__dict__ for s in self.tracker.sets[-200:]],
+                "current_turns": list(self.tracker.current_turns),
+                "total_o": self.tracker.total_o,
+                "total_x": self.tracker.total_x,
+                "saved_at": time.time(),
+            }
+            self.state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+        except Exception:
+            pass
+
+    def update_balance(self, balance: float | None) -> None:
+        if balance is None:
+            return
+        self.current_balance = float(balance)
+        if self.session_open_balance is None:
+            self.session_open_balance = float(balance)
+        jst_date = _jst_date_str()
+        if self.daily_open_date != jst_date:
+            self.daily_open_date = jst_date
+            self.daily_open_balance = float(balance)
+        self._save_state()
+
+    def bet_unit(self) -> int:
+        idx = self.tracker.current_unit_idx
+        unit = SEQ_COUNTER[min(idx, len(SEQ_COUNTER) - 1)]
+        return int(unit)
+
+    def bet_amount(self) -> float:
+        return float(self.bet_unit()) * float(self.chip_base)
+
+    def effective_profit_chips(self) -> int:
+        cp = int(self.tracker.cumulative_profit)
+        turns = self.tracker.current_turns
+        if turns:
+            wins = turns.count("O")
+            losses = turns.count("X")
+            unit = SEQ_COUNTER[min(self.tracker.current_unit_idx, len(SEQ_COUNTER) - 1)]
+            cp += (wins - losses) * int(unit)
+        return cp
+
+    def should_reset(self) -> bool:
+        cp = self.effective_profit_chips()
+        if cp >= self.profit_stop:
+            return True
+        if cp <= -self.loss_cut:
+            return True
+        return False
+
+    def reset_session(self, reason: str) -> dict:
+        old_open = self.session_open_balance
+        balance = self.current_balance
+        self.session_count += 1
+        money = self.effective_profit_chips() * float(self.chip_base)
+        money_actual = (balance - old_open) if (balance is not None and old_open is not None) else money
+
+        self.tracker.sets.clear()
+        self.tracker.current_turns.clear()
+        if balance is not None:
+            self.session_open_balance = float(balance)
+        is_profit = reason in ("profit", "target")
+        if is_profit:
+            self.profit_sessions += 1
+        self._save_state()
+
+        return {
+            "type": "session_reset",
+            "reason": reason,
+            "session_count": self.session_count,
+            "profit_sessions": self.profit_sessions,
+            "is_profit": bool(is_profit),
+            "amount": float(money),
+            "amount_actual": float(money_actual),
+            "balance": float(balance) if balance is not None else None,
+        }
+
+    def apply_round(self, outcome: str, won: bool | None) -> dict:
+        # outcome: player|banker|tie
+        if outcome == "tie":
+            self.total_bets += 1
+            self.total_ties += 1
+            self._save_state()
+            return {"completed_set": None, "pre_turn_count": len(self.tracker.current_turns), "pre_wins": None, "pre_losses": None}
+
+        if won is None:
+            return {"completed_set": None, "pre_turn_count": len(self.tracker.current_turns), "pre_wins": None, "pre_losses": None}
+
+        self.total_bets += 1
+        if won:
+            self.total_wins += 1
+        else:
+            self.total_losses += 1
+
+        pre_turns = list(self.tracker.current_turns) + ["O" if won else "X"]
+        pre_turn_count = len(pre_turns)
+        pre_wins = sum(1 for t in pre_turns if t == "O")
+        pre_losses = pre_turn_count - pre_wins
+
+        completed_set = self.tracker.add_result("player" if won else "banker")
+        self._save_state()
+        return {
+            "completed_set": completed_set,
+            "pre_turn_count": pre_turn_count,
+            "pre_wins": pre_wins,
+            "pre_losses": pre_losses,
+        }
+
+    def status_payload(self) -> dict:
+        bal = self.current_balance
+        spnl = (bal - self.session_open_balance) if (bal is not None and self.session_open_balance is not None) else None
+        dpnl = (bal - self.daily_open_balance) if (bal is not None and self.daily_open_balance is not None) else None
+        return {
+            "type": "status",
+            "chip_base": self.chip_base,
+            "session_count": self.session_count,
+            "profit_sessions": self.profit_sessions,
+            "wins": self.total_wins,
+            "losses": self.total_losses,
+            "ties": self.total_ties,
+            "total_bets": self.total_bets,
+            "balance": bal,
+            "session_open_balance": self.session_open_balance,
+            "daily_open_balance": self.daily_open_balance,
+            "daily_open_date": self.daily_open_date,
+            "session_pnl": spnl,
+            "daily_pnl": dpnl,
+            "overshoot": getattr(self.tracker, "prev_overshoot", 0),
+            "current_turn": len(self.tracker.current_turns) + 1,
+            "turns_display": "".join(self.tracker.current_turns),
+            "bet_unit": self.bet_unit(),
+            "bet_amount": self.bet_amount(),
+            "profit_stop_chips": self.profit_stop,
+            "loss_cut_chips": self.loss_cut,
+            "should_reset": self.should_reset(),
+        }
 
 # Captures WebSocket objects so python can trigger ws.send(payload) via page.evaluate().
 _WS_BRIDGE_INIT = r"""
@@ -800,6 +1080,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--poll-sec", type=float, default=0.5)
     ap.add_argument("--limit", type=int, default=20)
     ap.add_argument("--flat-amount", type=float, default=1.0)
+    ap.add_argument("--chip-base", type=float, default=0.0, help="Base bet ($) for SEQ7 (falls back to --flat-amount)")
+    ap.add_argument("--profit-target", type=float, default=50.0, help="Session profit target in $ (converted to chips by chip_base)")
+    ap.add_argument("--profit-session-limit", type=int, default=0, help="Stop after N profit resets (0=unlimited)")
+    ap.add_argument("--loss-cut", type=float, default=200.0, help="Session loss cut in $ (converted to chips by chip_base)")
     ap.add_argument("--only-table-id", default=os.getenv("BACOPY_ONLY_TABLE_ID", ""), help="operator tableId (numeric) to accept")
     ap.add_argument("--bet-timeout-sec", type=int, default=20)
     ap.add_argument("--min-timer-sec", type=float, default=2.0, help="Refuse bets if timer is below this (when available)")
@@ -807,6 +1091,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--allow-switch-table", action="store_true", help="Allow SWITCH_TABLE action to navigate/click table")
     ap.add_argument("--once", action="store_true")
     args = ap.parse_args(argv)
+
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
     lock_path = _acquire_profile_lock(args.profile_dir)
     print(f"[executor-live] profile_lock={lock_path}", flush=True)
@@ -832,6 +1121,30 @@ def main(argv: Optional[list[str]] = None) -> int:
     executor_id = os.getenv("BACOPY_EXECUTOR_ID", "").strip() or f"exec_{uuid.uuid4().hex[:8]}"
     executor_label = os.getenv("BACOPY_EXECUTOR_LABEL", "").strip()
     executor_username = os.getenv("BACOPY_EXECUTOR_USERNAME", "").strip()
+
+    chip_base = float(args.chip_base) if float(args.chip_base or 0) > 0 else float(args.flat_amount or 1.0)
+    profit_stop_chips = max(1, int(round(float(args.profit_target) / max(chip_base, 0.01))))
+    loss_cut_chips = max(1, int(round(float(args.loss_cut) / max(chip_base, 0.01))))
+    seq7 = Seq7Session(
+        chip_base=chip_base,
+        profit_stop_chips=profit_stop_chips,
+        loss_cut_chips=loss_cut_chips,
+        profit_session_limit=int(args.profit_session_limit or 0),
+        state_path=Path(args.profile_dir) / "seq7_state.json",
+    )
+    bet_currency = (os.getenv("BACOPY_BET_CURRENCY", "USD") or "USD").strip().upper()
+
+    send_log(
+        f"Config: chip_base=${chip_base:.2f} profit_target=${float(args.profit_target):.0f} "
+        f"(={profit_stop_chips} chips) loss_cut=${float(args.loss_cut):.0f} (={loss_cut_chips} chips)"
+    )
+    send_phase("idle", "ARMED")
+    send_action("Armed. Waiting for master signal...")
+    try:
+        send_msg({"type": "shoe_history", "sets": [s.__dict__ for s in seq7.tracker.sets], "chip_base": chip_base})
+    except Exception:
+        pass
+
     last_error = ""
     last_hb = 0.0
 
@@ -841,6 +1154,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         if now - last_hb < 5.0:
             return
         last_hb = now
+        bal = state.stake_balance_by_currency.get(bet_currency)
+        try:
+            seq7.update_balance(bal)
+        except Exception:
+            pass
+        try:
+            send_msg(seq7.status_payload())
+        except Exception:
+            pass
         _post_heartbeat(
             {
                 "executor_id": executor_id,
@@ -849,8 +1171,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "provider": "pragmatic",
                 "table_id": state.operator_table_id,
                 "table_name": state.table_name,
-                "balance": None,
-                "seq": {},
+                "balance": bal,
+                "seq": {
+                    "mode": "counter_seq7",
+                    "chip_base": chip_base,
+                    "unit_idx": seq7.tracker.current_unit_idx,
+                    "unit": seq7.bet_unit(),
+                    "bet_amount": seq7.bet_amount(),
+                    "turn": len(seq7.tracker.current_turns) + 1,
+                    "overshoot": getattr(seq7.tracker, "prev_overshoot", 0),
+                },
                 "status": status,
                 "error": last_error,
             }
@@ -1141,6 +1471,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     if not target:
                         _post_result(did, {"error": "table_name required for SWITCH_TABLE"}, status="error")
                         continue
+                    send_phase("entering", str(target)[:40])
+                    send_action(f"Switching table: {target}")
 
                     # Clear identifiers so we can wait for new mapping.
                     state.operator_table_id = ""
@@ -1186,6 +1518,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                             },
                         }
                         _post_result(did, res, status="done")
+                        send_action(f"Table ready: {state.table_name or target}")
+                        send_phase("idle", "ARMED")
                     except Exception as e:
                         last_error = f"switch_table failed: {e}"
                         heartbeat("error")
@@ -1193,6 +1527,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     continue
 
                 if action == "LOOK":
+                    send_action("LOOK (no bet)")
+                    send_phase("idle", "ARMED")
                     res = {"mode": "live_ws", "observed_at": _utc_now_iso(), "note": "LOOK no-op (live)"}
                     _post_result(did, res, status="done")
                     continue
@@ -1201,10 +1537,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                     _post_result(did, {"error": f"unsupported action: {action}"}, status="error")
                     continue
 
-                bc = _side_to_bc(side)
-                if bc is None:
-                    _post_result(did, {"error": f"unsupported side (needs sniff): {side}"}, status="error")
-                    continue
+                # Receiver bets are always PLAYER (master sends only PLAYER BET / LOOK).
+                if side and side not in ("PLAYER", "P"):
+                    send_log(f"[warn] ignoring non-player side from master: {side}")
+                side = "PLAYER"
+                bc = _side_to_bc(side) or "0"
 
                 if not (state.table_id and state.user_id and state.game_ws_url):
                     _post_result(did, {"error": "pragmatic session not ready (table/user/ws missing)"}, status="error")
@@ -1268,9 +1605,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                     continue
                 processed_keys.add(key)
 
-                amt = float(args.flat_amount or 1.0)
-                bet_currency = (os.getenv("BACOPY_BET_CURRENCY", "USD") or "USD").strip().upper()
+                amt = float(seq7.bet_amount())
+                send_phase("betting_player", f"${amt:.0f}")
+                send_action(f"BET PLAYER ${amt:.0f}")
                 before_balance = state.stake_balance_by_currency.get(bet_currency)
+                try:
+                    seq7.update_balance(before_balance)
+                except Exception:
+                    pass
                 xml = _build_lpbet_xml(table_id=state.table_id, game_id=game_id, user_id=state.user_id, bc=bc, amount=amt)
                 state.expected_bet_ck = _extract_ck_from_lpbet_xml(xml)
                 state.last_bet_confirm = None
@@ -1323,6 +1665,89 @@ def main(argv: Optional[list[str]] = None) -> int:
                     last_error = "result timeout"
                     heartbeat("error")
                     continue
+
+                # Update SEQ7 + push GUI metrics (stdout JSON)
+                try:
+                    _pump_ws_events(page, game_frame, state)
+                except Exception:
+                    pass
+                after_balance = state.stake_balance_by_currency.get(bet_currency)
+                try:
+                    seq7.update_balance(after_balance)
+                except Exception:
+                    pass
+
+                won = None if outcome == "tie" else (outcome == "player")
+                rr_meta = seq7.apply_round(outcome, won)
+
+                try:
+                    if outcome == "tie":
+                        send_action("Tie — BET returned")
+                    elif won:
+                        if after_balance is not None:
+                            send_action(f"WIN PLAYER ${amt:.0f}. Balance: ${after_balance:.2f}")
+                        else:
+                            send_action(f"WIN PLAYER ${amt:.0f}")
+                    else:
+                        if after_balance is not None:
+                            send_action(f"LOSE PLAYER ${amt:.0f}. Balance: ${after_balance:.2f}")
+                        else:
+                            send_action(f"LOSE PLAYER ${amt:.0f}")
+                    send_phase("idle", "ARMED")
+
+                    send_msg(
+                        {
+                            "type": "round_result",
+                            "result": outcome,
+                            "won": won,
+                            "bet_amount": amt,
+                            "balance": seq7.current_balance if seq7.current_balance is not None else after_balance,
+                            "session_open_balance": seq7.session_open_balance,
+                            "daily_open_date": seq7.daily_open_date,
+                            "daily_open_balance": seq7.daily_open_balance,
+                            "current_turn": rr_meta.get("pre_turn_count"),
+                            "turns_display": "".join(seq7.tracker.current_turns),
+                            "overshoot": getattr(seq7.tracker, "prev_overshoot", 0),
+                            "pre_wins": rr_meta.get("pre_wins"),
+                            "pre_losses": rr_meta.get("pre_losses"),
+                        }
+                    )
+                    send_msg(seq7.status_payload())
+                except Exception:
+                    pass
+
+                if rr_meta.get("completed_set") is not None:
+                    s = rr_meta["completed_set"]
+                    try:
+                        send_msg(
+                            {
+                                "type": "set_complete",
+                                "set_index": s.set_index,
+                                "results": s.results,
+                                "wins": s.wins,
+                                "losses": s.losses,
+                                "set_profit": s.set_profit,
+                                "cumulative_profit": s.cumulative_profit,
+                                "money_set": s.set_profit * chip_base,
+                                "money_cum": s.cumulative_profit * chip_base,
+                                "overshoot": s.overshoot,
+                            }
+                        )
+                        send_msg({"type": "shoe_history", "sets": [x.__dict__ for x in seq7.tracker.sets], "chip_base": chip_base})
+                    except Exception:
+                        pass
+
+                if seq7.should_reset():
+                    cp = seq7.effective_profit_chips()
+                    reason = "profit" if cp >= seq7.profit_stop else "loss"
+                    reset_msg = seq7.reset_session(reason)
+                    send_msg(reset_msg)
+                    send_msg({"type": "shoe_history", "sets": [], "chip_base": chip_base})
+                    send_msg(seq7.status_payload())
+                    send_phase("idle", "ARMED")
+                    if seq7.profit_session_limit > 0 and reset_msg.get("is_profit") and seq7.profit_sessions >= seq7.profit_session_limit:
+                        send_action("Profit session limit reached. Stopping.")
+                        raise SystemExit("profit_session_limit reached")
 
                 result_payload = {
                     "mode": "live_ws",

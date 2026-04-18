@@ -16,7 +16,7 @@
   },
   "build": {
     "appId": "ai.bacopy.copytrade",
-    "productName": "BACOPY",
+    "productName": "BACOPYRECEIVER",
     "asar": true,
     "compression": "store",
     "win": {
@@ -41,6 +41,10 @@
       {
         "from": "build_staging/engine",
         "to": "engine"
+      },
+      {
+        "from": "../.env",
+        "to": ".env"
       }
     ]
   }

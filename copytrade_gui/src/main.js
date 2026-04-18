@@ -1,226 +1,460 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
 const { spawn } = require('child_process');
 
 let mainWindow = null;
+let botProcess = null;
 
-const SERVICES = {
-  executor_pragmatic: { label: 'Executor (Pragmatic Live)' },
-  watch_pragmatic: { label: 'Watcher (Pragmatic)' },
-  watch_evolution: { label: 'Watcher (Evolution)' },
-};
-
-const processes = new Map(); // name -> { proc, startedAt }
-const lineRemainders = new Map(); // name -> string
-
-function _configPath() {
-  return path.join(app.getPath('userData'), 'bacopy_config.json');
-}
-
-function _defaultConfig() {
-  return {
-    apiUrl: 'https://master.bafather.uk',
-    apiKey: '',
-    pushSnapshots: true,
-    executor: {
-      executorId: 'gui-1',
-      label: 'MAIN-PC',
-      username: '',
-      tableNameSubstr: 'Speed Baccarat',
-      autoClickWaitSec: 90,
-      flatAmount: 1,
-      allowSwitchTable: true,
-      headless: false,
-      profileDir: '',
-      cookiesFile: '',
-      onlyTableId: '',
-    },
-    watchPragmatic: {
-      headless: true,
-      profile: '',
-      cookies: 'auth_state/stake_cookies.json',
-      duration: 0,
-    },
-    watchEvolution: {
-      headless: true,
-      interval: 2.0,
-    },
-    pythonExe: 'python',
-  };
-}
-
-function loadConfig() {
-  const p = _configPath();
-  if (!fs.existsSync(p)) return _defaultConfig();
-  try {
-    const raw = fs.readFileSync(p, 'utf-8');
-    const j = JSON.parse(raw);
-    return { ..._defaultConfig(), ...(j || {}) };
-  } catch (_) {
-    return _defaultConfig();
+process.on('uncaughtException', (err) => {
+  if (err && (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED')) {
+    console.error('[Main] Suppressed EPIPE:', err.message);
+    return;
   }
-}
-
-function saveConfig(cfg) {
-  const p = _configPath();
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(cfg, null, 2), 'utf-8');
-}
-
-function sendLog(name, line) {
-  if (!mainWindow) return;
-  mainWindow.webContents.send('service-log', { name, line: String(line || '') });
-}
-
-function _emitLines(name, chunk) {
-  const prev = lineRemainders.get(name) || '';
-  const s = (prev + String(chunk || '')).replace(/\r/g, '');
-  const parts = s.split('\n');
-  const remainder = parts.pop() || '';
-  lineRemainders.set(name, remainder);
-  for (const line of parts) {
-    if (!line.trim()) continue;
-    sendLog(name, line);
-  }
-}
+  console.error('[Main] Uncaught exception:', err);
+});
 
 function repoRoot() {
-  // copytrade_gui/src/main.js -> copytrade_gui/src -> copytrade_gui -> repoRoot
   return path.join(__dirname, '..', '..');
+}
+
+function resolveEnvPath() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, '.env');
+  }
+  return path.join(repoRoot(), '.env');
+}
+
+function loadDotEnv() {
+  const envPath = resolveEnvPath();
+  const env = {};
+  if (!fs.existsSync(envPath)) return env;
+  try {
+    const content = fs.readFileSync(envPath, 'utf-8');
+    for (const raw of content.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+      if (!m) continue;
+      env[m[1]] = m[2];
+    }
+  } catch (e) {
+    console.error('[Main] .env load error:', e);
+  }
+  return env;
 }
 
 function resolveEngine() {
   if (app.isPackaged) {
     const engineDir = path.join(process.resourcesPath, 'engine');
-    return { mode: 'packaged', exe: path.join(engineDir, 'bacopy_engine.exe'), cwd: engineDir };
+    return {
+      mode: 'packaged',
+      exe: path.join(engineDir, 'bacopy_engine.exe'),
+      cwd: engineDir,
+      baseArgs: [],
+    };
   }
-  return { mode: 'dev', exe: null, cwd: repoRoot() };
+
+  const root = repoRoot();
+  const venvPython = process.platform === 'win32'
+    ? path.join(root, 'venv', 'Scripts', 'python.exe')
+    : path.join(root, 'venv', 'bin', 'python');
+  const py = fs.existsSync(venvPython) ? venvPython : 'python';
+  return {
+    mode: 'dev',
+    exe: py,
+    cwd: root,
+    baseArgs: ['-X', 'utf8', '-u', path.join(root, 'bacopy_executor_pragmatic_ws_live.py')],
+  };
 }
 
-function buildSpawnSpec(serviceName, cfg) {
-  const engine = resolveEngine();
-  const env = { ...process.env };
-  env.BACOPY_API_URL = cfg.apiUrl || '';
-  env.BACOPY_API_KEY = cfg.apiKey || '';
-  env.BACOPY_PUSH_SNAPSHOTS = cfg.pushSnapshots ? '1' : '0';
+function sendToRenderer(channel, payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send(channel, payload);
+}
 
-  if (serviceName === 'executor_pragmatic') {
-    env.BACOPY_EXECUTOR_ID = (cfg.executor && cfg.executor.executorId) || '';
-    env.BACOPY_EXECUTOR_LABEL = (cfg.executor && cfg.executor.label) || '';
-    env.BACOPY_EXECUTOR_USERNAME = (cfg.executor && cfg.executor.username) || '';
+let _stdoutRemainder = '';
+function _emitStdoutLines(chunk) {
+  const text = (_stdoutRemainder + String(chunk || '')).replace(/\r/g, '');
+  const parts = text.split('\n');
+  _stdoutRemainder = parts.pop() || '';
+
+  for (const rawLine of parts) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    try {
+      const msg = JSON.parse(line);
+      sendToRenderer('agent-message', msg);
+    } catch {
+      sendToRenderer('agent-message', { type: 'log', message: line });
+    }
   }
+}
+
+function _emitStderr(chunk) {
+  const text = String(chunk || '');
+  if (!text) return;
+  sendToRenderer('agent-log', text);
+}
+
+function buildSpawnSpec(config) {
+  const engine = resolveEngine();
+  const envFile = loadDotEnv();
+  const childEnv = { ...process.env, ...envFile, PYTHONIOENCODING: 'utf-8' };
+
+  // Hidden master config (no GUI inputs)
+  if (!childEnv.BACOPY_API_URL) childEnv.BACOPY_API_URL = 'https://master.bafather.uk';
+
+  // Per-user/executor config (from GUI settings)
+  if (config && config.executor_id) childEnv.BACOPY_EXECUTOR_ID = String(config.executor_id);
+  if (config && config.executor_label) childEnv.BACOPY_EXECUTOR_LABEL = String(config.executor_label);
+  if (config && config.stake_username) childEnv.BACOPY_EXECUTOR_USERNAME = String(config.stake_username);
+
+  const args = [];
+  if (engine.mode === 'packaged') {
+    args.push('executor-pragmatic');
+  }
+
+  // SEQ7 config
+  if (config && config.allow_switch_table) args.push('--allow-switch-table');
+  const chipBase = (config && typeof config.chip_base === 'number') ? config.chip_base : 1;
+  args.push('--chip-base', String(chipBase));
+
+  const profitTarget = (config && typeof config.profit_target === 'number') ? config.profit_target : 50;
+  args.push('--profit-target', String(profitTarget));
+
+  const lossCut = (config && typeof config.loss_cut === 'number') ? config.loss_cut : 200;
+  args.push('--loss-cut', String(lossCut));
+
+  const profitSessionLimit = (config && Number.isFinite(Number(config.profit_session_limit))) ? Number(config.profit_session_limit) : 0;
+  args.push('--profit-session-limit', String(profitSessionLimit));
+
+  if (config && config.table_name_substr) args.push('--table-name-substr', String(config.table_name_substr));
+  const waitSec = (config && Number.isFinite(Number(config.auto_click_wait_sec))) ? Number(config.auto_click_wait_sec) : 90;
+  args.push('--auto-click-wait-sec', String(waitSec));
+
+  if (config && config.headless) args.push('--headless');
+
+  // Persistent browser profile (manual Stake login is stored here)
+  const profileDir = path.join(app.getPath('userData'), 'profiles', 'executor_pragmatic');
+  try { fs.mkdirSync(profileDir, { recursive: true }); } catch (_) {}
+  args.push('--profile-dir', profileDir);
 
   if (engine.mode === 'packaged') {
-    const args = [];
-    if (serviceName === 'executor_pragmatic') {
-      args.push('executor-pragmatic');
-      if (cfg.executor.allowSwitchTable) args.push('--allow-switch-table');
-      args.push('--flat-amount', String(cfg.executor.flatAmount || 1));
-      if (cfg.executor.tableNameSubstr) args.push('--table-name-substr', String(cfg.executor.tableNameSubstr));
-      args.push('--auto-click-wait-sec', String(cfg.executor.autoClickWaitSec || 90));
-      if (cfg.executor.onlyTableId) args.push('--only-table-id', String(cfg.executor.onlyTableId));
-      if (cfg.executor.headless) args.push('--headless');
-      if (cfg.executor.profileDir) args.push('--profile-dir', String(cfg.executor.profileDir));
-      if (cfg.executor.cookiesFile) args.push('--cookies-file', String(cfg.executor.cookiesFile));
-    } else if (serviceName === 'watch_pragmatic') {
-      args.push('watch-pragmatic');
-      if (cfg.watchPragmatic.headless) args.push('--headless');
-      if (cfg.watchPragmatic.duration) args.push('--duration', String(cfg.watchPragmatic.duration));
-      if (cfg.watchPragmatic.profile) args.push('--profile', String(cfg.watchPragmatic.profile));
-      if (cfg.watchPragmatic.cookies) args.push('--cookies', String(cfg.watchPragmatic.cookies));
-    } else if (serviceName === 'watch_evolution') {
-      args.push('watch-evolution');
-      if (cfg.watchEvolution.headless) args.push('--headless');
-      args.push('--interval', String(cfg.watchEvolution.interval || 2.0));
-    } else {
-      throw new Error(`unknown service: ${serviceName}`);
-    }
-    return { exe: engine.exe, cwd: engine.cwd, args, env };
+    return { exe: engine.exe, cwd: engine.cwd, args, env: childEnv };
   }
 
-  const py = (cfg.pythonExe || 'python').trim() || 'python';
-  const args = ['-u'];
-  if (serviceName === 'executor_pragmatic') {
-    args.push(path.join(repoRoot(), 'bacopy_executor_pragmatic_ws_live.py'));
-    if (cfg.executor.allowSwitchTable) args.push('--allow-switch-table');
-    args.push('--flat-amount', String(cfg.executor.flatAmount || 1));
-    if (cfg.executor.tableNameSubstr) args.push('--table-name-substr', String(cfg.executor.tableNameSubstr));
-    args.push('--auto-click-wait-sec', String(cfg.executor.autoClickWaitSec || 90));
-    if (cfg.executor.onlyTableId) args.push('--only-table-id', String(cfg.executor.onlyTableId));
-    if (cfg.executor.headless) args.push('--headless');
-    if (cfg.executor.profileDir) args.push('--profile-dir', String(cfg.executor.profileDir));
-    if (cfg.executor.cookiesFile) args.push('--cookies-file', String(cfg.executor.cookiesFile));
-  } else if (serviceName === 'watch_pragmatic') {
-    args.push(path.join(repoRoot(), 'bacopy_watch_pragmatic.py'));
-    if (cfg.watchPragmatic.headless) args.push('--headless');
-    if (cfg.watchPragmatic.duration) args.push('--duration', String(cfg.watchPragmatic.duration));
-    if (cfg.watchPragmatic.profile) args.push('--profile', String(cfg.watchPragmatic.profile));
-    if (cfg.watchPragmatic.cookies) args.push('--cookies', String(cfg.watchPragmatic.cookies));
-  } else if (serviceName === 'watch_evolution') {
-    args.push(path.join(repoRoot(), 'bacopy_watch_evolution.py'));
-    if (cfg.watchEvolution.headless) args.push('--headless');
-    args.push('--interval', String(cfg.watchEvolution.interval || 2.0));
-  } else {
-    throw new Error(`unknown service: ${serviceName}`);
-  }
-  return { exe: py, cwd: repoRoot(), args, env };
+  return { exe: engine.exe, cwd: engine.cwd, args: [...engine.baseArgs, ...args], env: childEnv };
 }
 
-function startService(serviceName) {
-  if (processes.has(serviceName)) return;
-  const cfg = loadConfig();
-  const spec = buildSpawnSpec(serviceName, cfg);
-  const proc = spawn(spec.exe, spec.args, {
+function startBot(config) {
+  if (botProcess) return;
+
+  const spec = buildSpawnSpec(config || {});
+  sendToRenderer('agent-message', { type: 'log', message: `[spawn] exe=${spec.exe} cwd=${spec.cwd} args=${JSON.stringify(spec.args)}` });
+
+  botProcess = spawn(spec.exe, spec.args, {
     cwd: spec.cwd,
     env: spec.env,
     stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: false,
+    windowsHide: true,
   });
-  processes.set(serviceName, { proc, startedAt: Date.now() });
-  lineRemainders.set(serviceName, '');
-  sendLog(serviceName, `[spawn] exe=${spec.exe} cwd=${spec.cwd} args=${JSON.stringify(spec.args)}`);
 
-  proc.stdout.on('data', (d) => _emitLines(serviceName, d.toString('utf-8')));
-  proc.stderr.on('data', (d) => _emitLines(serviceName, d.toString('utf-8')));
-  proc.on('exit', (code) => {
-    const rem = (lineRemainders.get(serviceName) || '').trim();
-    if (rem) sendLog(serviceName, rem);
-    lineRemainders.delete(serviceName);
-    sendLog(serviceName, `[exit] code=${code}`);
-    processes.delete(serviceName);
-    if (mainWindow) mainWindow.webContents.send('service-log', { name: serviceName, exit: true, code });
+  botProcess.stdout.on('data', _emitStdoutLines);
+  botProcess.stderr.on('data', _emitStderr);
+
+  botProcess.on('exit', (code) => {
+    // flush remainder
+    const rem = _stdoutRemainder.trim();
+    if (rem) sendToRenderer('agent-message', { type: 'log', message: rem });
+    _stdoutRemainder = '';
+
+    sendToRenderer('agent-message', { type: 'stopped', code });
+    botProcess = null;
   });
-  proc.on('error', (e) => {
-    sendLog(serviceName, `[error] ${e.message || e}`);
+
+  botProcess.on('error', (err) => {
+    sendToRenderer('agent-message', { type: 'error', message: err && err.message ? err.message : String(err) });
   });
 }
 
-function stopService(serviceName) {
-  const entry = processes.get(serviceName);
-  if (!entry) return;
+function stopBot() {
+  if (!botProcess) return;
   try {
-    entry.proc.kill();
+    botProcess.kill();
   } catch (_) {}
 }
 
-function listServices() {
-  const out = {};
-  for (const name of Object.keys(SERVICES)) {
-    out[name] = {
-      label: SERVICES[name].label,
-      running: processes.has(name),
-    };
-  }
-  return out;
+// === Supabase Auth (bafather.uk) ===
+let _supabaseConfig = null; // { url, anonKey }
+let _supabaseSession = null; // { access_token, refresh_token, expires_at, user:{id,email} }
+
+function _sessionPath() {
+  return path.join(app.getPath('userData'), 'bafather_supabase_session.json');
 }
 
+function _loadSavedSession() {
+  const p = _sessionPath();
+  if (!fs.existsSync(p)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+function _saveSession(session) {
+  if (!session) return;
+  const payload = {
+    access_token: session.access_token,
+    refresh_token: session.refresh_token,
+    expires_at: session.expires_at,
+    user: session.user ? { id: session.user.id, email: session.user.email } : null,
+    saved_at: Date.now(),
+  };
+  try {
+    fs.mkdirSync(path.dirname(_sessionPath()), { recursive: true });
+    fs.writeFileSync(_sessionPath(), JSON.stringify(payload, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('[auth] failed to save session:', e);
+  }
+}
+
+function _httpsGetJson(url) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = https.request(
+      {
+        protocol: u.protocol,
+        hostname: u.hostname,
+        port: u.port || 443,
+        path: u.pathname + (u.search || ''),
+        method: 'GET',
+        headers: {
+          'User-Agent': 'BACOPYRECEIVER/1.0',
+          'Accept': 'application/json',
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function _httpsJson(method, url, body, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const payload = body ? Buffer.from(JSON.stringify(body), 'utf-8') : null;
+
+    const req = https.request(
+      {
+        protocol: u.protocol,
+        hostname: u.hostname,
+        port: u.port || 443,
+        path: u.pathname + (u.search || ''),
+        method: String(method || 'GET').toUpperCase(),
+        headers: {
+          'User-Agent': 'BACOPYRECEIVER/1.0',
+          'Accept': 'application/json',
+          ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': String(payload.length) } : {}),
+          ...headers,
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => {
+          let parsed = null;
+          try {
+            parsed = data ? JSON.parse(data) : {};
+          } catch (e) {
+            return reject(e);
+          }
+          const ok = res.statusCode >= 200 && res.statusCode < 300;
+          if (ok) return resolve(parsed);
+          const msg = (parsed && (parsed.error_description || parsed.msg || parsed.error || parsed.message)) || `HTTP ${res.statusCode}`;
+          const err = new Error(msg);
+          err.statusCode = res.statusCode;
+          err.payload = parsed;
+          return reject(err);
+        });
+      }
+    );
+
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function getSupabaseConfig() {
+  if (_supabaseConfig) return _supabaseConfig;
+
+  const envFile = loadDotEnv();
+  const url = envFile.NEXT_PUBLIC_SUPABASE_URL || envFile.BAFATHER_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.BAFATHER_SUPABASE_URL;
+  const key = envFile.NEXT_PUBLIC_SUPABASE_ANON_KEY || envFile.BAFATHER_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.BAFATHER_SUPABASE_ANON_KEY;
+  if (url && key) {
+    _supabaseConfig = { url, anonKey: key };
+    return _supabaseConfig;
+  }
+
+  let data = null;
+  try {
+    data = await _httpsGetJson('https://bafather.uk/api/public/supabase');
+  } catch (_) {
+    // Some deployments redirect root ↔ www (Node https does not auto-follow)
+    data = await _httpsGetJson('https://www.bafather.uk/api/public/supabase');
+  }
+  if (!data || !data.ok || !data.supabase_url || !data.supabase_anon_key) {
+    throw new Error('Failed to load Supabase public config');
+  }
+  _supabaseConfig = { url: data.supabase_url, anonKey: data.supabase_anon_key };
+  return _supabaseConfig;
+}
+
+async function signInWithPassword(email, password) {
+  const cfg = await getSupabaseConfig();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const data = await _httpsJson(
+    'POST',
+    `${cfg.url}/auth/v1/token?grant_type=password`,
+    { email, password },
+    { apikey: cfg.anonKey }
+  );
+
+  const expiresIn = Number(data.expires_in || 0) || 3600;
+  const session = {
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    expires_at: nowSec + expiresIn,
+    user: data.user ? { id: data.user.id, email: data.user.email } : null,
+  };
+
+  _supabaseSession = session;
+  _saveSession(session);
+  return session;
+}
+
+async function ensureSession() {
+  if (!_supabaseSession) {
+    const saved = _loadSavedSession();
+    if (saved && saved.access_token && saved.refresh_token) {
+      _supabaseSession = saved;
+    }
+  }
+  if (!_supabaseSession) return null;
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const exp = Number(_supabaseSession.expires_at || 0) || 0;
+  if (exp === 0 || (exp - nowSec) < 60) {
+    const cfg = await getSupabaseConfig();
+    const ref = await _httpsJson(
+      'POST',
+      `${cfg.url}/auth/v1/token?grant_type=refresh_token`,
+      { refresh_token: _supabaseSession.refresh_token },
+      { apikey: cfg.anonKey }
+    );
+    const expiresIn = Number(ref.expires_in || 0) || 3600;
+    _supabaseSession = {
+      access_token: ref.access_token,
+      refresh_token: ref.refresh_token || _supabaseSession.refresh_token,
+      expires_at: nowSec + expiresIn,
+      user: ref.user ? { id: ref.user.id, email: ref.user.email } : _supabaseSession.user,
+    };
+    _saveSession(_supabaseSession);
+  }
+
+  return _supabaseSession;
+}
+
+async function billingStatus() {
+  const session = await ensureSession();
+  if (!session || !session.user) {
+    return { ok: false, reason: 'Not signed in', balance: 0 };
+  }
+
+  const cfg = await getSupabaseConfig();
+
+  async function _fetchBillingRows(accessToken) {
+    return _httpsJson(
+      'GET',
+      `${cfg.url}/rest/v1/billing?select=bot_paid,balance,suspended,is_free&limit=1`,
+      null,
+      { apikey: cfg.anonKey, Authorization: `Bearer ${accessToken}` }
+    );
+  }
+
+  let rows = null;
+  try {
+    rows = await _fetchBillingRows(session.access_token);
+  } catch (e) {
+    if (e && e.statusCode === 401) {
+      // force refresh and retry once
+      _supabaseSession = { ...session, expires_at: 0 };
+      const s2 = await ensureSession();
+      if (!s2) return { ok: false, reason: 'Not signed in', balance: 0 };
+      rows = await _fetchBillingRows(s2.access_token);
+    } else {
+      return { ok: false, reason: e && e.message ? e.message : 'Billing query failed', balance: 0 };
+    }
+  }
+
+  const data = Array.isArray(rows) && rows.length ? rows[0] : null;
+  if (!data) {
+    return { ok: false, reason: 'No subscription found. Please purchase a plan at bafather.uk', balance: 0 };
+  }
+
+  const balance = typeof data.balance === 'number' ? data.balance : Number(data.balance || 0);
+  const isFree = !!data.is_free;
+  const botPaid = !!data.bot_paid;
+  const suspended = !!data.suspended;
+
+  if (!botPaid) {
+    return { ok: false, reason: 'License not active. Please complete your purchase.', balance };
+  }
+
+  if (!isFree) {
+    if (suspended) {
+      return { ok: false, reason: 'Your account is suspended. Please contact admin.', balance };
+    }
+    if ((balance || 0) <= 0) {
+      return { ok: false, reason: 'Balance is empty. Please charge to enable live betting.', balance };
+    }
+  }
+
+  return {
+    ok: true,
+    balance,
+    is_free: isFree,
+    bot_paid: botPaid,
+    suspended,
+    email: session.user.email,
+    user_id: session.user.id,
+  };
+}
+
+// === Window ===
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1100,
-    height: 800,
+    height: 820,
+    frame: false,
+    backgroundColor: '#0f1117',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
     },
   });
 
@@ -230,23 +464,61 @@ function createWindow() {
 app.whenReady().then(() => {
   createWindow();
 
-  ipcMain.handle('get-config', () => loadConfig());
-  ipcMain.handle('save-config', (_evt, cfg) => {
-    saveConfig(cfg || {});
+  ipcMain.handle('window-minimize', () => { if (mainWindow) mainWindow.minimize(); return { ok: true }; });
+  ipcMain.handle('window-maximize', () => {
+    if (!mainWindow) return { ok: false };
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    else mainWindow.maximize();
     return { ok: true };
   });
-  ipcMain.handle('start-service', (_evt, name) => {
-    startService(String(name || ''));
-    return { ok: true, services: listServices() };
+  ipcMain.handle('window-close', () => { if (mainWindow) mainWindow.close(); return { ok: true }; });
+
+  ipcMain.handle('open-external', (_evt, url) => shell.openExternal(String(url || '')));
+
+  ipcMain.handle('start-bot', (_evt, config) => {
+    startBot(config || {});
+    return { ok: true };
   });
-  ipcMain.handle('stop-service', (_evt, name) => {
-    stopService(String(name || ''));
-    return { ok: true, services: listServices() };
+
+  ipcMain.handle('stop-bot', () => {
+    stopBot();
+    return { ok: true };
   });
-  ipcMain.handle('get-services', () => listServices());
+
+  ipcMain.handle('auth-signin', async (_evt, payload) => {
+    const email = String(payload && payload.email ? payload.email : '').trim();
+    const password = String(payload && payload.password ? payload.password : '').trim();
+    if (!email || !password) return { ok: false, reason: 'Email and password are required' };
+
+    try {
+      const session = await signInWithPassword(email, password);
+      if (!session || !session.user) return { ok: false, reason: 'Sign-in failed' };
+      return { ok: true, email: session.user.email, user_id: session.user.id };
+    } catch (e) {
+      return { ok: false, reason: e && e.message ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('auth-session', async () => {
+    try {
+      const session = await ensureSession();
+      if (!session || !session.user) return { ok: false };
+      return { ok: true, email: session.user.email, user_id: session.user.id };
+    } catch (e) {
+      return { ok: false, reason: e && e.message ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('billing-status', async () => {
+    try {
+      return await billingStatus();
+    } catch (e) {
+      return { ok: false, reason: e && e.message ? e.message : String(e), balance: 0 };
+    }
+  });
 });
 
 app.on('window-all-closed', () => {
-  for (const name of processes.keys()) stopService(name);
+  stopBot();
   if (process.platform !== 'darwin') app.quit();
 });
