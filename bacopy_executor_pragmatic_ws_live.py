@@ -883,7 +883,14 @@ class _PragmaticState:
 
     # Stake (GraphQL WS) balance cache (used as alternative bet confirmation signal)
     stake_balance_by_currency: dict[str, float] = None
+    stake_balance_delta_by_currency: dict[str, float] = None
     last_stake_balance_at: float = 0.0
+
+    # Stake session takeover safety
+    session_elsewhere_observed: bool = False
+    session_elsewhere_unresolved: bool = False
+    session_elsewhere_last_at: float = 0.0
+    session_elsewhere_resolved_at: float = 0.0
 
     def __post_init__(self) -> None:
         if self.winners_by_table_game_id is None:
@@ -892,6 +899,8 @@ class _PragmaticState:
             self._seen_table_game = set()
         if self.stake_balance_by_currency is None:
             self.stake_balance_by_currency = {}
+        if self.stake_balance_delta_by_currency is None:
+            self.stake_balance_delta_by_currency = {}
         if self.dga_subscribed_keys is None:
             self.dga_subscribed_keys = set()
 
@@ -956,10 +965,8 @@ def _update_from_game_xml(state: _PragmaticState, xml_payload: str) -> None:
     if not p:
         return
     ck = state.expected_bet_ck
-    if ck and ck in p and ("lpbet" in p or "<bet" in p):
-        state.last_bet_confirm = {"type": "xml", "ck": ck, "snippet": p[:500]}
-        return
-    # If server responds with an error for our bet, also treat as "confirm" so we can surface it.
+    # Only treat explicit server-side errors as confirmations.
+    # (Do NOT treat an echo of our own <lpbet ...> send frame as confirmation.)
     if ck and ck in p and "<error" in p:
         state.last_bet_confirm = {"type": "xml_error", "ck": ck, "snippet": p[:800]}
         return
@@ -1056,21 +1063,47 @@ def _update_from_stake_ws_msg(state: _PragmaticState, msg: dict[str, Any]) -> No
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     if not data:
         return
-    ab = data.get("availableBalances")
-    if isinstance(ab, list):
-        for it in ab:
-            if not isinstance(it, dict):
-                continue
+
+    now = time.time()
+    updated = False
+
+    for field in ("availableBalances", "vaultBalances"):
+        ab = data.get(field)
+        items: list[dict[str, Any]] = []
+        if isinstance(ab, dict):
+            items = [ab]
+        elif isinstance(ab, list):
+            items = [x for x in ab if isinstance(x, dict)]
+        else:
+            items = []
+
+        for it in items:
             bal = it.get("balance") if isinstance(it.get("balance"), dict) else {}
-            cur = str(bal.get("currency") or "")
-            amt = bal.get("amount")
+            cur = str(bal.get("currency") or "").strip().upper()
             if not cur:
                 continue
             try:
-                state.stake_balance_by_currency[cur] = float(amt)
-                state.last_stake_balance_at = time.time()
+                amt = bal.get("amount")
+                if amt is not None:
+                    state.stake_balance_by_currency[cur] = float(amt)
+                delta = it.get("amount")
+                if delta is not None:
+                    state.stake_balance_delta_by_currency[cur] = float(delta)
+                updated = True
             except Exception:
                 continue
+
+    if updated:
+        state.last_stake_balance_at = now
+        # If we observed Stake's "session elsewhere" modal, treat fresh balance updates as a
+        # (weak but useful) signal that the session is live again.
+        if state.session_elsewhere_unresolved and state.session_elsewhere_last_at and now >= state.session_elsewhere_last_at:
+            state.session_elsewhere_unresolved = False
+            state.session_elsewhere_resolved_at = now
+            try:
+                send_log("[session] session elsewhere resolved (balance updates resumed)")
+            except Exception:
+                pass
 
 
 def _wait_for(predicate, *, timeout_sec: float, tick_ms: int, page=None, on_tick=None) -> bool:
@@ -1220,24 +1253,26 @@ def _pump_ws_events(page, game_frame, state: _PragmaticState) -> None:
         for ev in _drain_ws_events(fr, max_items=400):
             if not isinstance(ev, dict):
                 continue
+            ev_dir = str(ev.get("dir") or "").strip().lower()
+            is_recv = (ev_dir != "send")
             url = str(ev.get("url") or "")
             if "pragmaticplaylive.net/game" in url:
                 _maybe_update_from_game_ws_url(state, url)
             data = ev.get("data")
             obj = _maybe_json(data)
             if not obj and isinstance(data, str) and "<" in data:
-                if "pragmaticplaylive.net/game" in url:
+                if is_recv and "pragmaticplaylive.net/game" in url:
                     _update_from_game_xml(state, data)
                 continue
             if not obj:
                 continue
             if "chat.pragmaticplaylive.net" in url:
                 _update_from_chat_msg(state, obj)
-            if "pragmaticplaylive.net/game" in url:
+            if is_recv and "pragmaticplaylive.net/game" in url:
                 _update_from_game_msg(state, obj)
-            if "dga.pragmaticplaylive.net/ws" in url:
+            if is_recv and "dga.pragmaticplaylive.net/ws" in url:
                 _update_from_lobby_msg(state, obj)
-            if "stake.com/_api/websockets" in url:
+            if is_recv and "stake.com/_api/websockets" in url:
                 _update_from_stake_ws_msg(state, obj)
 
 
@@ -1258,9 +1293,18 @@ def _dismiss_stake_loader(page) -> None:
         pass
 
 
-def _dismiss_session_elsewhere_modal(page) -> bool:
-    """Best-effort auto-dismiss for Stake 'session elsewhere' modal."""
-    labels = [
+def _dismiss_session_elsewhere_modal(page, state: Optional[_PragmaticState] = None) -> bool:
+    """Best-effort auto-dismiss for Stake 'session elsewhere' modal.
+
+    Returns True if the modal was observed (dismissal may or may not succeed).
+    """
+    observed_pats = [
+        r"他の場所でセッション",
+        r"セッションが開始",
+        r"session.*elsewhere",
+        r"session.*another",
+    ]
+    button_labels = [
         r"ここで続ける",
         r"続行",
         r"続ける",
@@ -1275,8 +1319,28 @@ def _dismiss_session_elsewhere_modal(page) -> bool:
         roots = [page] + list(getattr(page, "frames", []) or [])
     except Exception:
         roots = [page]
+
+    observed = False
     for root in roots:
-        for pat in labels:
+        for pat in observed_pats:
+            try:
+                if root.get_by_text(re.compile(pat, re.I)).count() > 0:
+                    observed = True
+                    break
+            except Exception:
+                continue
+        if observed:
+            break
+    if not observed:
+        return False
+
+    if state is not None:
+        state.session_elsewhere_observed = True
+        state.session_elsewhere_unresolved = True
+        state.session_elsewhere_last_at = time.time()
+
+    for root in roots:
+        for pat in button_labels:
             try:
                 btn = root.get_by_role("button", name=re.compile(pat, re.I))
                 if btn.count() > 0:
@@ -1307,10 +1371,14 @@ def _dismiss_session_elsewhere_modal(page) -> bool:
                     return True
             except Exception:
                 continue
-    return False
+    try:
+        send_log("[session] session elsewhere modal observed but dismiss failed")
+    except Exception:
+        pass
+    return True
 
 
-def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, on_tick=None) -> None:
+def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Optional[_PragmaticState] = None, on_tick=None) -> None:
     send_phase("entering", "OPEN STAKE")
     send_action("Opening Stake lobby. If prompted, please log in to Stake.")
     print("[Stage 1] goto stake pragmatic lobby ...", flush=True)
@@ -1319,7 +1387,7 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, on_tick=No
 
     # Stake loader overlay を除去 (クリック遮断防止)
     _dismiss_stake_loader(page)
-    _dismiss_session_elsewhere_modal(page)
+    _dismiss_session_elsewhere_modal(page, state)
 
     print("[Stage 2] wait pragmatic shell ...", flush=True)
     gf = find_game_frame(page)
@@ -1343,7 +1411,7 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, on_tick=No
         t0 = time.time()
         last_notice = 0.0
         while not shell:
-            _dismiss_session_elsewhere_modal(page)
+            _dismiss_session_elsewhere_modal(page, state)
             shell = find_shell_app_frame(page, attempts=1)
             if shell:
                 break
@@ -1384,7 +1452,7 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, on_tick=No
         deadline = time.time() + float(max(auto_click_wait_sec, 1))
         while time.time() < deadline and not clicked:
             _dismiss_stake_loader(page)
-            _dismiss_session_elsewhere_modal(page)
+            _dismiss_session_elsewhere_modal(page, state)
             if on_tick is not None:
                 try:
                     on_tick()
@@ -1660,6 +1728,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             return
         last_hb = now
         bal = state.stake_balance_by_currency.get(bet_currency)
+        if bal is None and state.stake_balance_by_currency and len(state.stake_balance_by_currency) == 1:
+            try:
+                bal = next(iter(state.stake_balance_by_currency.values()))
+            except Exception:
+                pass
         try:
             seq7.update_balance(bal)
         except Exception:
@@ -1729,6 +1802,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             p = frame_data.payload if hasattr(frame_data, "payload") else frame_data
             obj = _maybe_json(p)
             if not obj:
+                try:
+                    if isinstance(p, bytes):
+                        p = p.decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+                if isinstance(p, str) and "<" in p and "pragmaticplaylive.net/game" in url:
+                    _update_from_game_xml(state, p)
+                return
+            if "stake.com/_api/websockets" in url:
+                _update_from_stake_ws_msg(state, obj)
                 return
             if "betsopen" in obj or "betsclosed" in obj or "game" in obj or "timer" in obj or "bet" in obj:
                 _update_from_game_msg(state, obj)
@@ -1809,6 +1892,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             page,
             table_substr=str(args.table_name_substr or ""),
             auto_click_wait_sec=int(args.auto_click_wait_sec),
+            state=state,
             on_tick=lambda: heartbeat("running"),
         )
 
@@ -1827,7 +1911,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         t0 = time.time()
         last_notice = 0.0
         while not (state.game_ws_url and state.table_id and state.user_id and state.jsession_id):
-            _dismiss_session_elsewhere_modal(page)
+            _dismiss_session_elsewhere_modal(page, state)
             try:
                 if not game_frame:
                     game_frame = find_game_frame(page, attempts=1)
@@ -1958,24 +2042,50 @@ def main(argv: Optional[list[str]] = None) -> int:
 
             def _pred() -> bool:
                 _pump_ws_events(page, game_frame, state)
-                if state.last_bet_confirm is not None:
+                # Explicit server-side bet error (if any) should short-circuit.
+                if isinstance(state.last_bet_confirm, dict) and state.last_bet_confirm.get("type") == "xml_error":
                     return True
-                if before_balance is None:
-                    return False
+
                 if state.last_stake_balance_at < start - 0.5:
                     return False
-                after = state.stake_balance_by_currency.get(currency)
-                if after is None:
-                    return False
-                # If available balance decreased by at least the bet amount, treat it as accepted.
-                if (before_balance - after) >= max(0.0, float(bet_amount) * 0.9):
+
+                cur = str(currency or "").strip().upper()
+                if cur and cur not in state.stake_balance_by_currency and state.stake_balance_by_currency:
+                    # If user didn't set BACOPY_BET_CURRENCY correctly, fall back only when unambiguous.
+                    if len(state.stake_balance_by_currency) == 1:
+                        cur = next(iter(state.stake_balance_by_currency.keys()))
+
+                after = state.stake_balance_by_currency.get(cur) if cur else None
+                delta = state.stake_balance_delta_by_currency.get(cur) if cur else None
+
+                # Prefer delta-based confirmation (doesn't require prior snapshot).
+                if delta is not None and float(delta) <= -max(0.0, float(bet_amount) * 0.9):
+                    bb = before_balance
+                    if bb is None and after is not None:
+                        try:
+                            bb = float(after) - float(delta)
+                        except Exception:
+                            bb = None
                     state.last_bet_confirm = {
-                        "type": "stake_balance",
-                        "currency": currency,
-                        "before": before_balance,
+                        "type": "stake_delta",
+                        "currency": cur,
+                        "delta": float(delta),
+                        "before": bb,
                         "after": after,
                     }
                     return True
+
+                # Fallback: if we do have before_balance, use absolute drop.
+                if before_balance is not None and after is not None:
+                    if (float(before_balance) - float(after)) >= max(0.0, float(bet_amount) * 0.9):
+                        state.last_bet_confirm = {
+                            "type": "stake_balance",
+                            "currency": cur,
+                            "before": float(before_balance),
+                            "after": float(after),
+                        }
+                        return True
+
                 return False
 
             _wait_for(_pred, timeout_sec=timeout_sec, tick_ms=200, page=page, on_tick=lambda: heartbeat("running"))
@@ -2006,6 +2116,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         while True:
             heartbeat("running")
+            try:
+                _dismiss_session_elsewhere_modal(page, state)
+            except Exception:
+                pass
             try:
                 _pump_ws_events(page, game_frame, state)
             except Exception:
@@ -2161,6 +2275,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                             page,
                             table_substr=str(target),
                             auto_click_wait_sec=int(args.auto_click_wait_sec),
+                            state=state,
                             on_tick=lambda: heartbeat("running"),
                         )
                         game_frame = find_game_frame(page, attempts=60)
@@ -2262,6 +2377,26 @@ def main(argv: Optional[list[str]] = None) -> int:
                     heartbeat("error")
                     continue
 
+                # Safety: block betting if Stake indicates this account session was taken elsewhere.
+                try:
+                    _dismiss_session_elsewhere_modal(page, state)
+                except Exception:
+                    pass
+                if state.session_elsewhere_unresolved:
+                    _post_result(
+                        did,
+                        {
+                            "error": "session_taken_by_other_client (BET blocked)",
+                            "session_elsewhere_observed": state.session_elsewhere_observed,
+                            "session_elsewhere_last_at": state.session_elsewhere_last_at,
+                            "session_elsewhere_resolved_at": state.session_elsewhere_resolved_at,
+                        },
+                        status="error",
+                    )
+                    last_error = "session_taken_by_other_client"
+                    heartbeat("error")
+                    continue
+
                 # Timer gating (best-effort)
                 tsec = _parse_timer_sec(state.last_timer)
                 if tsec is not None and tsec < float(args.min_timer_sec):
@@ -2289,7 +2424,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 amt = float(seq7.bet_amount())
                 send_phase("betting_player", f"${amt:.0f}")
                 send_action(f"BET PLAYER ${amt:.0f}")
-                before_balance = state.stake_balance_by_currency.get(bet_currency)
+                stake_cur = bet_currency
+                if stake_cur not in state.stake_balance_by_currency and state.stake_balance_by_currency:
+                    if len(state.stake_balance_by_currency) == 1:
+                        stake_cur = next(iter(state.stake_balance_by_currency.keys()))
+                before_balance = state.stake_balance_by_currency.get(stake_cur)
                 try:
                     seq7.update_balance(before_balance)
                 except Exception:
@@ -2313,7 +2452,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
                 confirm = wait_bet_confirm(
                     timeout_sec=10.0,
-                    currency=bet_currency,
+                    currency=stake_cur,
                     before_balance=before_balance,
                     bet_amount=amt,
                 )
@@ -2331,6 +2470,22 @@ def main(argv: Optional[list[str]] = None) -> int:
                     if consecutive_hard_errors >= 3:
                         raise SystemExit("panic_stop: repeated critical errors (missing bet confirmation)")
                     continue
+                if isinstance(confirm, dict) and confirm.get("type") == "xml_error":
+                    _post_result(
+                        did,
+                        {"error": "bet_rejected", "game_id": game_id, "operator_table_id": op_tid, "bet_ck": state.expected_bet_ck, "bet_confirm": confirm},
+                        status="error",
+                    )
+                    consecutive_hard_errors += 1
+                    last_error = "bet_rejected"
+                    heartbeat("error")
+                    continue
+
+                # If stake currency was auto-detected, use it for subsequent balance reads.
+                if isinstance(confirm, dict) and confirm.get("currency"):
+                    stake_cur = str(confirm.get("currency") or stake_cur)
+                if isinstance(confirm, dict) and "before" in confirm and confirm.get("before") is not None:
+                    before_balance = float(confirm.get("before"))
                 consecutive_hard_errors = 0
                 last_error = ""
 
@@ -2356,7 +2511,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     _pump_ws_events(page, game_frame, state)
                 except Exception:
                     pass
-                after_balance = state.stake_balance_by_currency.get(bet_currency)
+                after_balance = state.stake_balance_by_currency.get(stake_cur)
                 try:
                     seq7.update_balance(after_balance)
                 except Exception:
