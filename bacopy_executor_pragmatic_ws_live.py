@@ -690,9 +690,13 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int) -> None:
     print("[Stage 2] wait pragmatic shell ...", flush=True)
     gf = find_game_frame(page)
     if not gf:
-        raise RuntimeError("pragmatic shell not found")
+        try:
+            print(f"[WARN] pragmatic frame not detected yet (url={page.url})", flush=True)
+        except Exception:
+            print("[WARN] pragmatic frame not detected yet", flush=True)
 
-    page.wait_for_timeout(5_000)
+    if gf:
+        page.wait_for_timeout(5_000)
     _dismiss_stake_loader(page)
 
     print("[Stage 3] find internal lobby (shell-app) ...", flush=True)

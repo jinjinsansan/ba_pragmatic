@@ -12,6 +12,7 @@ const SERVICES = {
 };
 
 const processes = new Map(); // name -> { proc, startedAt }
+const lineRemainders = new Map(); // name -> string
 
 function _configPath() {
   return path.join(app.getPath('userData'), 'bacopy_config.json');
@@ -70,6 +71,18 @@ function saveConfig(cfg) {
 function sendLog(name, line) {
   if (!mainWindow) return;
   mainWindow.webContents.send('service-log', { name, line: String(line || '') });
+}
+
+function _emitLines(name, chunk) {
+  const prev = lineRemainders.get(name) || '';
+  const s = (prev + String(chunk || '')).replace(/\r/g, '');
+  const parts = s.split('\n');
+  const remainder = parts.pop() || '';
+  lineRemainders.set(name, remainder);
+  for (const line of parts) {
+    if (!line.trim()) continue;
+    sendLog(name, line);
+  }
 }
 
 function repoRoot() {
@@ -165,11 +178,15 @@ function startService(serviceName) {
     windowsHide: false,
   });
   processes.set(serviceName, { proc, startedAt: Date.now() });
-  sendLog(serviceName, `[spawn] ${spec.exe} ${spec.args.join(' ')}`);
+  lineRemainders.set(serviceName, '');
+  sendLog(serviceName, `[spawn] exe=${spec.exe} cwd=${spec.cwd} args=${JSON.stringify(spec.args)}`);
 
-  proc.stdout.on('data', (d) => sendLog(serviceName, d.toString('utf-8')));
-  proc.stderr.on('data', (d) => sendLog(serviceName, d.toString('utf-8')));
+  proc.stdout.on('data', (d) => _emitLines(serviceName, d.toString('utf-8')));
+  proc.stderr.on('data', (d) => _emitLines(serviceName, d.toString('utf-8')));
   proc.on('exit', (code) => {
+    const rem = (lineRemainders.get(serviceName) || '').trim();
+    if (rem) sendLog(serviceName, rem);
+    lineRemainders.delete(serviceName);
     sendLog(serviceName, `[exit] code=${code}`);
     processes.delete(serviceName);
     if (mainWindow) mainWindow.webContents.send('service-log', { name: serviceName, exit: true, code });
