@@ -24,6 +24,7 @@ try {
     --collect-data apify_fingerprint_datapoints `
     --collect-data browserforge `
     --collect-data camoufox `
+    --collect-data language_tags `
     --distpath (Join-Path $ROOT "copytrade_gui/build_staging/engine") `
     --workpath $build `
     --specpath $build `
