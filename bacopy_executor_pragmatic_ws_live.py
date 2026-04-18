@@ -360,12 +360,19 @@ class _PragmaticState:
 
     # bet confirms (from game ws)
     last_bet_confirm: dict[str, Any] | None = None
+    expected_bet_ck: str = ""
+
+    # Stake (GraphQL WS) balance cache (used as alternative bet confirmation signal)
+    stake_balance_by_currency: dict[str, float] = None
+    last_stake_balance_at: float = 0.0
 
     def __post_init__(self) -> None:
         if self.winners_by_table_game_id is None:
             self.winners_by_table_game_id = {}
         if self._seen_table_game is None:
             self._seen_table_game = set()
+        if self.stake_balance_by_currency is None:
+            self.stake_balance_by_currency = {}
 
 
 def _side_to_bc(side: str) -> Optional[str]:
@@ -413,6 +420,28 @@ def _maybe_json(payload: Any) -> Optional[dict[str, Any]]:
         return obj if isinstance(obj, dict) else None
     except Exception:
         return None
+
+
+def _extract_ck_from_lpbet_xml(xml_payload: str) -> str:
+    try:
+        m = re.search(r'\bck="(\d{8,})"', str(xml_payload or ""))
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
+def _update_from_game_xml(state: _PragmaticState, xml_payload: str) -> None:
+    p = str(xml_payload or "")
+    if not p:
+        return
+    ck = state.expected_bet_ck
+    if ck and ck in p and ("lpbet" in p or "<bet" in p):
+        state.last_bet_confirm = {"type": "xml", "ck": ck, "snippet": p[:500]}
+        return
+    # If server responds with an error for our bet, also treat as "confirm" so we can surface it.
+    if ck and ck in p and "<error" in p:
+        state.last_bet_confirm = {"type": "xml_error", "ck": ck, "snippet": p[:800]}
+        return
 
 
 def _update_from_chat_msg(state: _PragmaticState, msg: dict[str, Any]) -> None:
@@ -482,6 +511,29 @@ def _update_from_lobby_msg(state: _PragmaticState, msg: dict[str, Any]) -> None:
         state.winners_by_table_game_id.setdefault(table_id, {})[gid] = win
 
 
+def _update_from_stake_ws_msg(state: _PragmaticState, msg: dict[str, Any]) -> None:
+    # GraphQL WS protocol: {"type":"next","payload":{"data":{...}}} etc
+    payload = msg.get("payload") if isinstance(msg.get("payload"), dict) else {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    if not data:
+        return
+    ab = data.get("availableBalances")
+    if isinstance(ab, list):
+        for it in ab:
+            if not isinstance(it, dict):
+                continue
+            bal = it.get("balance") if isinstance(it.get("balance"), dict) else {}
+            cur = str(bal.get("currency") or "")
+            amt = bal.get("amount")
+            if not cur:
+                continue
+            try:
+                state.stake_balance_by_currency[cur] = float(amt)
+                state.last_stake_balance_at = time.time()
+            except Exception:
+                continue
+
+
 def _wait_for(predicate, *, timeout_sec: float, tick_ms: int, page=None) -> bool:
     t0 = time.time()
     while time.time() - t0 < timeout_sec:
@@ -513,7 +565,12 @@ def _pump_ws_events(page, game_frame, state: _PragmaticState) -> None:
             if not isinstance(ev, dict):
                 continue
             url = str(ev.get("url") or "")
-            obj = _maybe_json(ev.get("data"))
+            data = ev.get("data")
+            obj = _maybe_json(data)
+            if not obj and isinstance(data, str) and "<" in data:
+                if "pragmaticplaylive.net/game" in url:
+                    _update_from_game_xml(state, data)
+                continue
             if not obj:
                 continue
             if "chat.pragmaticplaylive.net" in url:
@@ -523,6 +580,8 @@ def _pump_ws_events(page, game_frame, state: _PragmaticState) -> None:
                 _update_from_game_msg(state, obj)
             if "dga.pragmaticplaylive.net/ws" in url:
                 _update_from_lobby_msg(state, obj)
+            if "stake.com/_api/websockets" in url:
+                _update_from_stake_ws_msg(state, obj)
 
 
 def _dismiss_stake_loader(page) -> None:
@@ -877,14 +936,39 @@ def main(argv: Optional[list[str]] = None) -> int:
             ok = _wait_for(_pred, timeout_sec=timeout_sec, tick_ms=200, page=page)
             return state.bets_open_game_id if ok else None
 
-        def wait_bet_confirm(timeout_sec: float) -> Optional[dict[str, Any]]:
+        def wait_bet_confirm(
+            timeout_sec: float,
+            *,
+            currency: str,
+            before_balance: Optional[float],
+            bet_amount: float,
+        ) -> Optional[dict[str, Any]]:
             state.last_bet_confirm = None
-            _wait_for(
-                lambda: (_pump_ws_events(page, game_frame, state) or True) and state.last_bet_confirm is not None,
-                timeout_sec=timeout_sec,
-                tick_ms=200,
-                page=page,
-            )
+            start = time.time()
+
+            def _pred() -> bool:
+                _pump_ws_events(page, game_frame, state)
+                if state.last_bet_confirm is not None:
+                    return True
+                if before_balance is None:
+                    return False
+                if state.last_stake_balance_at < start - 0.5:
+                    return False
+                after = state.stake_balance_by_currency.get(currency)
+                if after is None:
+                    return False
+                # If available balance decreased by at least the bet amount, treat it as accepted.
+                if (before_balance - after) >= max(0.0, float(bet_amount) * 0.9):
+                    state.last_bet_confirm = {
+                        "type": "stake_balance",
+                        "currency": currency,
+                        "before": before_balance,
+                        "after": after,
+                    }
+                    return True
+                return False
+
+            _wait_for(_pred, timeout_sec=timeout_sec, tick_ms=200, page=page)
             return state.last_bet_confirm
 
         def wait_result(game_id: str, operator_table_id: str, timeout_sec: float) -> Optional[str]:
@@ -1100,7 +1184,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 processed_keys.add(key)
 
                 amt = float(args.flat_amount or 1.0)
+                bet_currency = (os.getenv("BACOPY_BET_CURRENCY", "USD") or "USD").strip().upper()
+                before_balance = state.stake_balance_by_currency.get(bet_currency)
                 xml = _build_lpbet_xml(table_id=state.table_id, game_id=game_id, user_id=state.user_id, bc=bc, amount=amt)
+                state.expected_bet_ck = _extract_ck_from_lpbet_xml(xml)
+                state.last_bet_confirm = None
                 match = f"tableId={state.table_id}"
                 send_res = send_bet_xml(xml, match=match)
 
@@ -1115,13 +1203,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                     heartbeat("error")
                     continue
 
-                confirm = wait_bet_confirm(timeout_sec=5.0)
+                confirm = wait_bet_confirm(
+                    timeout_sec=10.0,
+                    currency=bet_currency,
+                    before_balance=before_balance,
+                    bet_amount=amt,
+                )
                 if confirm is None:
                     # At this point we might have placed a bet but lost confirmation.
                     # Stop to avoid accidental duplicate bets.
                     _post_result(
                         did,
-                        {"error": "bet_confirm_timeout", "game_id": game_id, "operator_table_id": op_tid},
+                        {"error": "bet_confirm_timeout", "game_id": game_id, "operator_table_id": op_tid, "bet_ck": state.expected_bet_ck},
                         status="error",
                     )
                     consecutive_hard_errors += 1
