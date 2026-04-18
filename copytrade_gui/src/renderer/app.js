@@ -61,27 +61,27 @@ let _masterStatus = {
 };
 
 function _renderMasterStatus() {
-  const pill = $('#masterPill');
-  const textEl = $('#masterPillText');
-  if (!pill || !textEl) return;
+  const card = $('#masterCard');
+  const valueEl = $('#masterCardValue');
+  if (!card || !valueEl) return;
 
-  pill.classList.remove('master-online', 'master-active', 'master-offline', 'master-unknown');
-  let label = 'MASTER: --';
+  card.classList.remove('master-online', 'master-active', 'master-offline', 'master-unknown');
+  let label = '--';
   if (_masterStatus.connected === true) {
     if (_masterStatus.active) {
-      pill.classList.add('master-active');
-      label = 'MASTER: ACTIVE';
+      card.classList.add('master-active');
+      label = 'ACTIVE';
     } else {
-      pill.classList.add('master-online');
-      label = 'MASTER: ONLINE';
+      card.classList.add('master-online');
+      label = 'ONLINE';
     }
   } else if (_masterStatus.connected === false) {
-    pill.classList.add('master-offline');
-    label = 'MASTER: OFFLINE';
+    card.classList.add('master-offline');
+    label = 'OFFLINE';
   } else {
-    pill.classList.add('master-unknown');
+    card.classList.add('master-unknown');
   }
-  textEl.textContent = label;
+  valueEl.textContent = label;
 }
 
 function _renderMasterModal() {
@@ -108,7 +108,7 @@ function _renderMasterModal() {
   }
 }
 
-$('#masterPill')?.addEventListener('click', () => {
+$('#masterCard')?.addEventListener('click', () => {
   $('#masterModal')?.classList.remove('hidden');
   _renderMasterModal();
 });

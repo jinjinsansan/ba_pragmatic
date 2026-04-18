@@ -16,7 +16,6 @@
   <!-- Title Bar -->
   <div class="title-bar">
     <div class="title-bar-left">
-      <span class="title-bar-logo">B</span>
       <span class="title-bar-text">BACOPYRECEIVER</span>
     </div>
     <div class="title-bar-controls">
@@ -35,7 +34,6 @@
       </div>
       <div class="modal-body">
         <div class="setup-brand">
-          <div class="setup-brand-logo">B</div>
           <div class="setup-brand-text">
             <div class="setup-brand-title">BACOPYRECEIVER</div>
             <div class="setup-brand-sub">bafather.uk account</div>
@@ -76,10 +74,6 @@
         <span class="phase-badge-dot"></span>
         <span class="phase-badge-text" id="phaseBadgeText">IDLE</span>
       </span>
-      <button class="master-pill master-unknown" id="masterPill" type="button" title="Master connection">
-        <span class="master-dot"></span>
-        <span class="master-pill-text" id="masterPillText">MASTER: --</span>
-      </button>
     </div>
 
     <!-- Stats Row -->
@@ -87,6 +81,10 @@
       <div class="stat-card">
         <div class="stat-label">BALANCE</div>
         <div class="stat-value" id="balance">$0.00</div>
+      </div>
+      <div class="stat-card master-card master-unknown" id="masterCard" title="Master connection / control status">
+        <div class="stat-label">MASTER</div>
+        <div class="stat-value" id="masterCardValue">--</div>
       </div>
       <div class="stat-card" title="Your bafather.uk service credit. If empty, START is disabled.">
         <div class="stat-label">SERVICE CREDIT</div>

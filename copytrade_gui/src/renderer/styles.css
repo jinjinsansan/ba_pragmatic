@@ -602,47 +602,47 @@ html[data-variant="user"] .os-tag { display: none !important; }
 .btn-gear .btn-icon { font-size: 17px; line-height: 1; }
 
 /* ============================================================
-   MASTER PILL
+   MASTER CARD
    ============================================================ */
-.master-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(0,229,255,0.22);
-  background: rgba(0,229,255,0.06);
-  color: var(--text-muted);
-  font-family: var(--font-hud);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+.stat-card.master-card {
   cursor: pointer;
-  user-select: none;
-  transition: all 0.15s;
 }
-.master-pill:hover { border-color: rgba(0,229,255,0.45); background: rgba(0,229,255,0.10); }
-.master-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #6a7280;
-  box-shadow: 0 0 6px rgba(106,114,128,0.6);
+.stat-card.master-card:active {
+  transform: translateY(1px);
 }
-.master-pill.master-online { border-color: rgba(0,229,255,0.45); color: rgba(108,243,255,0.85); }
-.master-pill.master-online .master-dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
-.master-pill.master-active { border-color: rgba(0,255,136,0.5); color: #8fffd0; background: rgba(0,255,136,0.10); }
-.master-pill.master-active .master-dot { background: var(--win); box-shadow: 0 0 10px rgba(0,255,136,0.8); }
-.master-pill.master-offline { border-color: rgba(255,51,102,0.55); color: #ff9aaa; background: rgba(255,51,102,0.10); }
-.master-pill.master-offline .master-dot { background: var(--lose); box-shadow: 0 0 10px rgba(255,51,102,0.8); }
-.master-pill.master-unknown { opacity: 0.8; }
+.stat-card.master-card.master-online {
+  border-color: rgba(0,229,255,0.35);
+  background: rgba(0,229,255,0.04);
+}
+.stat-card.master-card.master-online .stat-value {
+  color: rgba(108,243,255,0.85);
+  text-shadow: 0 0 8px rgba(0,229,255,0.28);
+}
+.stat-card.master-card.master-active {
+  border-color: rgba(0,255,136,0.45);
+  background: rgba(0,255,136,0.06);
+}
+.stat-card.master-card.master-active .stat-value {
+  color: var(--win);
+  text-shadow: 0 0 10px rgba(0,255,136,0.35);
+}
+.stat-card.master-card.master-offline {
+  border-color: rgba(255,51,102,0.45);
+  background: rgba(255,51,102,0.05);
+}
+.stat-card.master-card.master-offline .stat-value {
+  color: #ff9aaa;
+  text-shadow: 0 0 10px rgba(255,51,102,0.25);
+}
+.stat-card.master-card.master-unknown .stat-value {
+  color: rgba(160,168,184,0.9);
+}
 
 /* ============================================================
    SETUP (SIGN-IN) PANEL
    ============================================================ */
 .setup-card { width: 420px; max-width: 96vw; }
-.setup-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.setup-brand { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 14px; text-align: center; }
 .setup-brand-logo {
   width: 40px; height: 40px; border-radius: 10px;
   display: flex; align-items: center; justify-content: center;
@@ -1053,7 +1053,6 @@ body.animations-on .neon-frame {
   .btn-gear { flex: 1 1 auto; font-size: 12px; }
   .btn-gear .btn-icon { font-size: 14px; }
   .btn-gear .btn-label { display: inline; }
-  .master-pill { width: 100%; justify-content: center; }
   .setup-card { width: 92vw; }
   .master-grid { grid-template-columns: 1fr; }
 }
