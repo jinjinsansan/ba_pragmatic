@@ -21,6 +21,8 @@ try {
 
   python -m PyInstaller --noconfirm --clean --onefile `
     --name bacopy_engine `
+    --collect-data apify_fingerprint_datapoints `
+    --collect-data browserforge `
     --distpath (Join-Path $ROOT "copytrade_gui/build_staging/engine") `
     --workpath $build `
     --specpath $build `
