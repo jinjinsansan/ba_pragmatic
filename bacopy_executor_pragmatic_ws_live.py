@@ -248,58 +248,79 @@ def _http_request(method: str, url: str, *, timeout: tuple[float, float], retrie
 def _redact_jsession(url: str) -> str:
     return re.sub(r"(JSESSIONID=)[^&]+", r"\1<REDACTED>", str(url or ""))
 
-
-def _pid_is_alive(pid: int) -> bool:
-    try:
-        if pid <= 0:
-            return False
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        return False
+_PROFILE_LOCK_FH: Optional[Any] = None
 
 
 def _acquire_profile_lock(profile_dir: str, *, lock_name: str = ".bacopy_executor.lock") -> Path:
+    global _PROFILE_LOCK_FH
     pdir = Path(profile_dir)
     pdir.mkdir(parents=True, exist_ok=True)
     lock_path = pdir / lock_name
     this_pid = os.getpid()
 
-    def _try_create() -> bool:
-        try:
-            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump({"pid": this_pid, "created_at": _utc_now_iso()}, f)
-            return True
-        except FileExistsError:
-            return False
+    try:
+        fh = open(lock_path, "r+", encoding="utf-8")
+    except FileNotFoundError:
+        fh = open(lock_path, "w+", encoding="utf-8")
+    except Exception as e:
+        raise SystemExit(f"failed to open profile lock: {lock_path} ({e})")
 
-    if not _try_create():
-        stale_pid = 0
-        try:
-            info = json.loads(lock_path.read_text(encoding="utf-8"))
-            stale_pid = int(info.get("pid") or 0)
-        except Exception:
-            stale_pid = 0
+    # OS-level lock (auto-released on crash). This prevents the 2nd instance from even reaching Camoufox,
+    # avoiding Stake session conflicts caused by a brief double-start.
+    try:
+        fh.seek(0)
+        if os.name == "nt":
+            import msvcrt  # type: ignore
 
-        if stale_pid and _pid_is_alive(stale_pid):
-            raise SystemExit(f"another executor is already using this profile_dir (pid={stale_pid}): {pdir}")
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl  # type: ignore
 
-        # stale: remove and retry once
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except Exception:
         try:
-            lock_path.unlink(missing_ok=True)
+            fh.close()
         except Exception:
             pass
-        if not _try_create():
-            raise SystemExit(f"failed to acquire profile lock: {lock_path}")
+        raise SystemExit(f"another executor is already using this profile_dir: {pdir}")
+
+    try:
+        fh.seek(0)
+        fh.write(json.dumps({"pid": this_pid, "created_at": _utc_now_iso()}))
+        fh.truncate()
+        fh.flush()
+    except Exception:
+        pass
+
+    _PROFILE_LOCK_FH = fh
 
     def _release() -> None:
-        try:
-            info = json.loads(lock_path.read_text(encoding="utf-8"))
-            if int(info.get("pid") or 0) == this_pid:
-                lock_path.unlink(missing_ok=True)
-        except Exception:
+        global _PROFILE_LOCK_FH
+        if _PROFILE_LOCK_FH is None:
             return
+        try:
+            try:
+                if os.name == "nt":
+                    import msvcrt  # type: ignore
+
+                    _PROFILE_LOCK_FH.seek(0)
+                    msvcrt.locking(_PROFILE_LOCK_FH.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl  # type: ignore
+
+                    fcntl.flock(_PROFILE_LOCK_FH.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                _PROFILE_LOCK_FH.close()
+            except Exception:
+                pass
+        finally:
+            _PROFILE_LOCK_FH = None
+            try:
+                lock_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     atexit.register(_release)
     return lock_path
