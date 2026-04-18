@@ -27,15 +27,15 @@ $('#btnClose').addEventListener('click', () => window.valhalla.windowClose());
 function showSetup(errorMsg) {
   const scr = $('#setupScreen');
   const main = $('#mainContent');
-  if (scr) scr.style.display = 'flex';
-  if (main) main.style.display = 'none';
+  if (scr) scr.classList.remove('hidden');
+  if (main) main.classList.add('hidden');
   const err = $('#setupError');
   if (err) {
     if (errorMsg) {
-      err.style.display = 'block';
+      err.classList.remove('hidden');
       err.textContent = errorMsg;
     } else {
-      err.style.display = 'none';
+      err.classList.add('hidden');
       err.textContent = '';
     }
   }
@@ -44,9 +44,75 @@ function showSetup(errorMsg) {
 function showMain() {
   const scr = $('#setupScreen');
   const main = $('#mainContent');
-  if (scr) scr.style.display = 'none';
-  if (main) main.style.display = 'block';
+  if (scr) scr.classList.add('hidden');
+  if (main) main.classList.remove('hidden');
 }
+
+// --- Master Status ---
+let _masterStatus = {
+  connected: null,
+  active: false,
+  pending: 0,
+  last_ok_at: '',
+  last_error: '',
+  last_decision_id: '',
+  last_decision_action: '',
+  last_decision_at: '',
+};
+
+function _renderMasterStatus() {
+  const pill = $('#masterPill');
+  const textEl = $('#masterPillText');
+  if (!pill || !textEl) return;
+
+  pill.classList.remove('master-online', 'master-active', 'master-offline', 'master-unknown');
+  let label = 'MASTER: --';
+  if (_masterStatus.connected === true) {
+    if (_masterStatus.active) {
+      pill.classList.add('master-active');
+      label = 'MASTER: ACTIVE';
+    } else {
+      pill.classList.add('master-online');
+      label = 'MASTER: ONLINE';
+    }
+  } else if (_masterStatus.connected === false) {
+    pill.classList.add('master-offline');
+    label = 'MASTER: OFFLINE';
+  } else {
+    pill.classList.add('master-unknown');
+  }
+  textEl.textContent = label;
+}
+
+function _renderMasterModal() {
+  const conn = $('#masterConnVal');
+  const act = $('#masterActVal');
+  const pending = $('#masterPendingVal');
+  const lastOk = $('#masterLastOkVal');
+  const lastAction = $('#masterLastActionVal');
+  const lastErr = $('#masterLastErrVal');
+
+  if (conn) conn.textContent = (_masterStatus.connected === true) ? 'ONLINE' : (_masterStatus.connected === false) ? 'OFFLINE' : '--';
+  if (act) act.textContent = _masterStatus.active ? 'ACTIVE' : 'IDLE';
+  if (pending) pending.textContent = Number.isFinite(Number(_masterStatus.pending)) ? String(_masterStatus.pending) : '--';
+  if (lastOk) lastOk.textContent = _masterStatus.last_ok_at || '--';
+  if (lastErr) lastErr.textContent = _masterStatus.last_error || '--';
+  if (lastAction) {
+    if (_masterStatus.last_decision_id) {
+      const a = _masterStatus.last_decision_action || 'DECISION';
+      const t = _masterStatus.last_decision_at || '';
+      lastAction.textContent = t ? `${a} ${_masterStatus.last_decision_id} @ ${t}` : `${a} ${_masterStatus.last_decision_id}`;
+    } else {
+      lastAction.textContent = '--';
+    }
+  }
+}
+
+$('#masterPill')?.addEventListener('click', () => {
+  $('#masterModal')?.classList.remove('hidden');
+  _renderMasterModal();
+});
+$('#masterClose')?.addEventListener('click', () => $('#masterModal')?.classList.add('hidden'));
 
 function _msUntilNextJstMidnight() {
   const now = Date.now();
@@ -1096,6 +1162,14 @@ window.valhalla.onAgentMessage((msg) => {
     case 'phase':
       setPhase(msg.name || 'idle', msg.detail || '');
       break;
+
+    case 'master_status': {
+      _masterStatus = { ..._masterStatus, ...msg };
+      _renderMasterStatus();
+      const modal = $('#masterModal');
+      if (modal && !modal.classList.contains('hidden')) _renderMasterModal();
+      break;
+    }
 
     case 'round_result': {
       const r = msg.result;

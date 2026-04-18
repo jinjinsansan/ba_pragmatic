@@ -26,40 +26,47 @@
     </div>
   </div>
 
-  <!-- Setup Screen (初回 / 認証失敗時) -->
-  <div id="setupScreen" style="display:none;position:fixed;inset:0;background:#0f1117;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px;">
-    <div style="width:100%;max-width:360px;">
-      <div style="font-size:22px;font-weight:800;letter-spacing:0.1em;color:#fff;margin-bottom:4px;">BACOPYRECEIVER</div>
-      <div style="font-size:11px;color:#666;margin-bottom:28px;letter-spacing:0.05em;">SIGN IN</div>
-
-      <div id="setupError" style="display:none;background:#2a1a1a;border:1px solid #5a2a2a;border-radius:6px;padding:10px 14px;font-size:11px;color:#ff7070;margin-bottom:16px;"></div>
-
-      <div style="margin-bottom:14px;">
-        <div style="font-size:10px;color:#888;margin-bottom:5px;letter-spacing:0.08em;text-transform:uppercase;">bafather.uk Email</div>
-        <input id="setupEmail" type="email" placeholder="your@email.com"
-          style="width:100%;box-sizing:border-box;background:#1a1d27;border:1px solid #2a2d3a;border-radius:6px;padding:9px 12px;color:#fff;font-size:13px;outline:none;">
+  <!-- Setup Screen -->
+  <div id="setupScreen" class="modal hidden">
+    <div class="modal-content glass setup-card">
+      <div class="modal-header">
+        <h2>SIGN IN</h2>
+        <button class="modal-close" id="setupClose" style="display:none;">&times;</button>
       </div>
+      <div class="modal-body">
+        <div class="setup-brand">
+          <div class="setup-brand-logo">B</div>
+          <div class="setup-brand-text">
+            <div class="setup-brand-title">BACOPYRECEIVER</div>
+            <div class="setup-brand-sub">bafather.uk account</div>
+          </div>
+        </div>
 
-      <div style="margin-bottom:22px;">
-        <div style="font-size:10px;color:#888;margin-bottom:5px;letter-spacing:0.08em;text-transform:uppercase;">Password</div>
-        <input id="setupPassword" type="password" placeholder="••••••••"
-          style="width:100%;box-sizing:border-box;background:#1a1d27;border:1px solid #2a2d3a;border-radius:6px;padding:9px 12px;color:#fff;font-size:13px;outline:none;">
-      </div>
+        <div id="setupError" class="setup-error hidden"></div>
 
-      <button id="btnActivate"
-        style="width:100%;padding:11px;background:#1e3a5f;color:#7ab3e0;border:1px solid #2a5a8a;border-radius:6px;font-size:13px;font-weight:700;letter-spacing:0.1em;cursor:pointer;text-transform:uppercase;">
-        SIGN IN
-      </button>
-      <div id="setupLoading" style="display:none;text-align:center;margin-top:12px;font-size:11px;color:#555;">Signing in...</div>
+        <div class="form-group">
+          <label>bafather.uk Email</label>
+          <input id="setupEmail" type="email" placeholder="your@email.com">
+        </div>
 
-      <div style="margin-top:20px;text-align:center;font-size:10px;color:#444;">
-        No account? Visit <span style="color:#7ab3e0;cursor:pointer;" id="linkBafather">bafather.uk</span>
+        <div class="form-group" style="margin-bottom:18px;">
+          <label>Password</label>
+          <input id="setupPassword" type="password" placeholder="••••••••">
+        </div>
+
+        <button class="btn btn-start setup-btn" id="btnActivate" style="width:100%;">SIGN IN</button>
+        <div id="setupLoading" class="setup-loading" style="display:none;">Signing in...</div>
+
+        <div class="setup-footer">
+          <span>No account?</span>
+          <button class="setup-link" id="linkBafather" type="button">bafather.uk</button>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- Main -->
-  <div class="main-content" id="mainContent" style="display:none;">
+  <div class="main-content hidden" id="mainContent">
 
     <!-- Live Action Feed -->
     <div class="action-bar" id="actionBar">
@@ -69,6 +76,10 @@
         <span class="phase-badge-dot"></span>
         <span class="phase-badge-text" id="phaseBadgeText">IDLE</span>
       </span>
+      <button class="master-pill master-unknown" id="masterPill" type="button" title="Master connection">
+        <span class="master-dot"></span>
+        <span class="master-pill-text" id="masterPillText">MASTER: --</span>
+      </button>
     </div>
 
     <!-- Stats Row -->
@@ -77,8 +88,8 @@
         <div class="stat-label">BALANCE</div>
         <div class="stat-value" id="balance">$0.00</div>
       </div>
-      <div class="stat-card">
-        <div class="stat-label">CREDIT</div>
+      <div class="stat-card" title="Your bafather.uk service credit. If empty, START is disabled.">
+        <div class="stat-label">SERVICE CREDIT</div>
         <div class="stat-value" id="creditBalance">-</div>
       </div>
       <div class="stat-card accent">
@@ -148,7 +159,10 @@
     <div class="controls">
       <button class="btn btn-start" id="btnStart">START</button>
       <button class="btn btn-stop" id="btnStop" disabled>STOP</button>
-      <button class="btn btn-gear" id="btnSettings">&#x2699;</button>
+      <button class="btn btn-gear" id="btnSettings">
+        <span class="btn-icon">&#x2699;</span>
+        <span class="btn-label">SETTINGS</span>
+      </button>
     </div>
 
     <!-- Continue/Reset Dialog -->
@@ -176,6 +190,44 @@
     </div>
     <div class="log-panel" id="logPanel">
       <div class="log-content" id="logContent"></div>
+    </div>
+  </div>
+
+  <!-- Master Status Modal -->
+  <div class="modal hidden" id="masterModal">
+    <div class="modal-content glass" style="width:420px;max-width:98vw;">
+      <div class="modal-header">
+        <h2>MASTER STATUS</h2>
+        <button class="modal-close" id="masterClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="master-grid">
+          <div class="master-kv">
+            <div class="master-k">Connection</div>
+            <div class="master-v" id="masterConnVal">--</div>
+          </div>
+          <div class="master-kv">
+            <div class="master-k">Activity</div>
+            <div class="master-v" id="masterActVal">--</div>
+          </div>
+          <div class="master-kv">
+            <div class="master-k">Pending</div>
+            <div class="master-v" id="masterPendingVal">--</div>
+          </div>
+          <div class="master-kv">
+            <div class="master-k">Last OK</div>
+            <div class="master-v" id="masterLastOkVal">--</div>
+          </div>
+          <div class="master-kv full">
+            <div class="master-k">Last Action</div>
+            <div class="master-v" id="masterLastActionVal">--</div>
+          </div>
+          <div class="master-kv full">
+            <div class="master-k">Last Error</div>
+            <div class="master-v" id="masterLastErrVal">--</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 

@@ -1179,6 +1179,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     bet_currency = (os.getenv("BACOPY_BET_CURRENCY", "USD") or "USD").strip().upper()
 
+    # Master connection / activity monitor (for GUI)
+    master_last_ok_ts = 0.0
+    master_last_ok_at = ""
+    master_last_err = ""
+    master_last_check_ts = 0.0
+    master_last_decision_id = ""
+    master_last_decision_action = ""
+    master_last_decision_at = ""
+    master_last_active_ts = 0.0
+    master_pending_for_me = 0
+    master_prev_active: Optional[bool] = None
+
     send_log(
         f"Config: chip_base=${chip_base:.2f} profit_target=${float(args.profit_target):.0f} "
         f"(={profit_stop_chips} chips) loss_cut=${float(args.loss_cut):.0f} (={loss_cut_chips} chips)"
@@ -1195,6 +1207,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     def heartbeat(status: str) -> None:
         nonlocal last_hb
+        nonlocal master_last_ok_ts, master_last_ok_at, master_last_err, master_last_check_ts
+        nonlocal master_last_decision_id, master_last_decision_action, master_last_decision_at
+        nonlocal master_last_active_ts, master_pending_for_me, master_prev_active
         now = time.time()
         if now - last_hb < 5.0:
             return
@@ -1206,6 +1221,52 @@ def main(argv: Optional[list[str]] = None) -> int:
             pass
         try:
             send_msg(seq7.status_payload())
+        except Exception:
+            pass
+
+        # Master connectivity check (auth-required endpoint)
+        try:
+            if now - master_last_check_ts >= 5.0:
+                master_last_check_ts = now
+                r = _http_request(
+                    "GET",
+                    f"{_api_url()}/api/status",
+                    headers=_headers(),
+                    timeout=(_api_connect_timeout_sec(), 5.0),
+                    retries=1,
+                )
+                r.raise_for_status()
+                master_last_ok_ts = now
+                master_last_ok_at = _utc_now_iso()
+                master_last_err = ""
+        except Exception as e:
+            master_last_err = str(e)[:200]
+
+        connected = bool(master_last_ok_ts and (now - master_last_ok_ts) < 20.0)
+        active = connected and (master_pending_for_me > 0 or (master_last_active_ts and (now - master_last_active_ts) < 30.0))
+        if master_prev_active is None:
+            master_prev_active = active
+        elif master_prev_active != active:
+            master_prev_active = active
+            try:
+                send_log("Master control started." if active else "Master control stopped.")
+            except Exception:
+                pass
+
+        try:
+            send_msg(
+                {
+                    "type": "master_status",
+                    "connected": bool(connected),
+                    "active": bool(active),
+                    "pending": int(master_pending_for_me),
+                    "last_ok_at": master_last_ok_at,
+                    "last_error": master_last_err,
+                    "last_decision_id": master_last_decision_id,
+                    "last_decision_action": master_last_decision_action,
+                    "last_decision_at": master_last_decision_at,
+                }
+            )
         except Exception:
             pass
         _post_heartbeat(
@@ -1479,6 +1540,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return _winner() if ok else None
 
         while True:
+            master_pending_for_me = 0
             heartbeat("running")
             try:
                 _pump_ws_events(page, game_frame, state)
@@ -1516,6 +1578,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     # refuse silently to avoid acting on wrong table if multiple masters exist
                     continue
 
+                master_pending_for_me += 1
+
                 ack = {
                     "mode": "live_ws",
                     "acked_at": _utc_now_iso(),
@@ -1532,6 +1596,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "snapshot_before": decision_snapshot,
                 }
                 _post_ack(did, ack, status="processing")
+                master_last_decision_id = did
+                master_last_decision_action = action
+                master_last_decision_at = ack.get("acked_at") or _utc_now_iso()
+                master_last_active_ts = time.time()
 
                 if action == "SWITCH_TABLE":
                     if not args.allow_switch_table:
