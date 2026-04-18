@@ -1540,8 +1540,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return _winner() if ok else None
 
         while True:
-            master_pending_for_me = 0
             heartbeat("running")
+            master_pending_for_me = 0
             try:
                 _pump_ws_events(page, game_frame, state)
             except Exception:
