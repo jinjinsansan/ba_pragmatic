@@ -903,9 +903,28 @@ class _PragmaticState:
     session_elsewhere_unresolved: bool = False
     session_elsewhere_last_at: float = 0.0
     session_elsewhere_resolved_at: float = 0.0
+    session_elsewhere_unresolved_since: float = 0.0
+    session_elsewhere_reload_at: float = 0.0
+    session_elsewhere_dumped_at: float = 0.0
+    session_elsewhere_relogin_at: float = 0.0
+    session_elsewhere_relogin_count: int = 0
     recover_exhausted: bool = False
     recover_attempts: int = 0
     recover_exhausted_at: float = 0.0
+
+    # 自動復旧: Stake の「無操作による一時停止」モーダルの検知/dismiss 回数.
+    inactivity_modal_observed: bool = False
+    inactivity_modal_unresolved: bool = False
+    inactivity_modal_last_at: float = 0.0
+    inactivity_dismissed_count: int = 0
+    inactivity_dumped_at: float = 0.0
+    inactivity_reload_at: float = 0.0
+    # Keep-alive: 最終ジェスチャー (mousemove) を送った時刻.
+    keep_alive_last_at: float = 0.0
+    # 自動復旧状態 (Master 画面にリアルタイム通知するフラグ).
+    recovering: bool = False
+    recovering_reason: str = ""
+    recovering_started_at: float = 0.0
 
     def __post_init__(self) -> None:
         if self.winners_by_table_game_id is None:
@@ -1337,11 +1356,409 @@ def _dismiss_stake_loader(page) -> None:
         pass
 
 
+_SESSION_ELSEWHERE_DISMISS_JS = r"""
+(opts) => {
+  const doClick = !(opts && opts.click === false);
+  const TEXT = [/他の場所でセッション/, /セッションが開始/, /session.*elsewhere/i, /session.*another/i, /logged.*in.*elsewhere/i];
+  // 厳密マッチ: 短い語は ^...$ 固定、"Continue" 単体は禁止 (社会ログインと衝突)
+  // 実際の Stake Pragmatic ボタン: 「ここに残る」(残す) / 「ロビーに移動」(去る).
+  // 残す方だけ包括, 去る方は EXCLUDE で禁止.
+  const BTN = [
+    /ここに残る/, /このまま残る/, /このまま続ける/, /ここで続ける/,
+    /このデバイスで.*続/, /この端末.*続/,
+    /^続行$/, /^続ける$/, /残る$/,
+    /^Stay\b/i, /^Stay here\b/i, /^Stay on this device/i,
+    /^Keep (using|playing) here/i,
+    /^Continue here$/i, /^Use this device/i,
+    /^OK$/i, /^はい$/
+  ];
+  // 絶対クリック禁止ボタン: SNS ログイン + 「ロビーに移動」(セッション自ら切断)
+  const EXCLUDE = /(with\s+)?(facebook|google|passkey|apple|twitter|metamask|telegram|line|yahoo)|another\s+way|forgot|register|sign\s*up|\u65b0\u898f|\u767b\u9332|\u30d1\u30b9\u30ef\u30fc\u30c9|\u30ed\u30d3\u30fc\u306b\u79fb\u52d5|go\s+to\s+lobby|leave/i;
+
+  function* walk(root){
+    if (!root) return;
+    const it = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let n;
+    while ((n = it.nextNode())) {
+      yield n;
+      if (n.shadowRoot) {
+        for (const x of walk(n.shadowRoot)) yield x;
+      }
+    }
+  }
+  function vis(el){
+    try{
+      const c = getComputedStyle(el);
+      if (c.display === 'none' || c.visibility === 'hidden' || c.opacity === '0') return false;
+      const r = el.getBoundingClientRect();
+      if ((r.width <= 1 || r.height <= 1) && (!el.getClientRects || el.getClientRects().length === 0)) return false;
+      return true;
+    }catch(_){ return false; }
+  }
+  function textOf(el){
+    return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+  function ownText(el){
+    let s = '';
+    for (const ch of el.childNodes) if (ch.nodeType === 3) s += ch.textContent || '';
+    return s.replace(/\s+/g, ' ').trim();
+  }
+  function findModalContainer(el){
+    // 検知テキスト要素の最近傍 dialog / modal 祖先を探す
+    let cur = el;
+    for (let i=0; i<20 && cur; i++) {
+      try{
+        if (cur.nodeType === 1) {
+          const role = cur.getAttribute && cur.getAttribute('role');
+          const am = cur.getAttribute && cur.getAttribute('aria-modal');
+          const tag = (cur.tagName || '').toUpperCase();
+          const cls = (cur.className && typeof cur.className === 'string') ? cur.className : '';
+          if (tag === 'DIALOG' || role === 'dialog' || role === 'alertdialog' || am === 'true' ||
+              /modal|dialog|popup|overlay/i.test(cls)) {
+            return cur;
+          }
+        }
+      }catch(_){}
+      cur = cur.parentElement || (cur.getRootNode && cur.getRootNode().host);
+    }
+    return null;
+  }
+  function dispatchClick(el){
+    try{ el.focus(); }catch(_){}
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const base = { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, view: window };
+    try{
+      if (window.PointerEvent) {
+        el.dispatchEvent(new PointerEvent('pointerdown', base));
+        el.dispatchEvent(new PointerEvent('pointerup', base));
+      }
+      el.dispatchEvent(new MouseEvent('mousedown', base));
+      el.dispatchEvent(new MouseEvent('mouseup', base));
+      el.dispatchEvent(new MouseEvent('click', base));
+    }catch(_){}
+    try{ el.click(); }catch(_){}
+  }
+
+  // 1) テキスト検知 — 自身のテキストノードのみ (ownText) で判定 (誤検知削減)
+  let foundEl = null;
+  let foundText = '';
+  for (const el of walk(document)) {
+    if (!vis(el)) continue;
+    const t = ownText(el);
+    if (!t) continue;
+    for (const p of TEXT) {
+      if (p.test(t)) { foundEl = el; foundText = t.slice(0, 100); break; }
+    }
+    if (foundEl) break;
+  }
+  if (!foundEl) return { found: false };
+
+  // 2) モーダル container をスコープとして確定 (無ければ直親から 4 階層)
+  let scope = findModalContainer(foundEl);
+  if (!scope) {
+    scope = foundEl;
+    for (let i=0; i<4 && scope.parentElement; i++) scope = scope.parentElement;
+  }
+
+  // 3) scope 内だけでボタン探索 + EXCLUDE 除外 + 最大 1 クリック
+  const buttons = [];
+  let clicked = 0;
+  for (const el of walk(scope)) {
+    if (!vis(el)) continue;
+    const tag = (el.tagName || '').toUpperCase();
+    const role = el.getAttribute ? el.getAttribute('role') : '';
+    if (tag !== 'BUTTON' && tag !== 'A' && role !== 'button') continue;
+    const t = textOf(el);
+    if (!t) continue;
+    if (EXCLUDE.test(t)) { buttons.push({ tag, text: t.slice(0,80), skipped: 'exclude' }); continue; }
+    for (const p of BTN) {
+      if (p.test(t)) {
+        buttons.push({ tag, text: t.slice(0, 80) });
+        if (doClick && clicked === 0) { dispatchClick(el); clicked += 1; }
+        break;
+      }
+    }
+    if (buttons.length >= 8) break;
+  }
+  return { found: true, text: foundText, scope: scope.tagName, clicked, buttons };
+}
+"""
+
+_SESSION_ELSEWHERE_DUMP_JS = r"""
+() => {
+  const TEXT = [/他の場所でセッション/, /セッションが開始/, /session.*elsewhere/i, /session.*another/i, /logged.*in.*elsewhere/i];
+  const BTN  = [/ここで続ける/, /このデバイスで/, /この端末/, /続行/, /続ける/, /Continue\s+here/i, /Keep\s+(using|playing)\s+here/i, /Continue/i, /^OK$/i];
+  function* walk(root){
+    if (!root) return;
+    const it = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let n;
+    while ((n = it.nextNode())) {
+      yield n;
+      if (n.shadowRoot) {
+        for (const x of walk(n.shadowRoot)) yield x;
+      }
+    }
+  }
+  function vis(el){
+    try{
+      const c = getComputedStyle(el);
+      if (c.display === 'none' || c.visibility === 'hidden' || c.opacity === '0') return false;
+      const r = el.getBoundingClientRect();
+      if ((r.width <= 1 || r.height <= 1) && (!el.getClientRects || el.getClientRects().length === 0)) return false;
+      return true;
+    }catch(_){ return false; }
+  }
+  function textOf(el){
+    return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+  const matches = [];
+  for (const el of walk(document)) {
+    if (!vis(el)) continue;
+    const t = textOf(el);
+    if (!t) continue;
+    for (const p of TEXT) {
+      if (p.test(t)) {
+        matches.push({
+          tag: el.tagName,
+          text: t.slice(0, 160),
+          html: (el.outerHTML || '').slice(0, 2000),
+        });
+        break;
+      }
+    }
+    if (matches.length >= 8) break;
+  }
+  const buttons = [];
+  for (const el of walk(document)) {
+    if (!vis(el)) continue;
+    const tag = (el.tagName || '').toUpperCase();
+    const role = el.getAttribute ? el.getAttribute('role') : '';
+    if (tag !== 'BUTTON' && tag !== 'A' && role !== 'button') continue;
+    const t = textOf(el);
+    if (!t) continue;
+    for (const p of BTN) {
+      if (p.test(t)) {
+        buttons.push({ tag, text: t.slice(0, 80), html: (el.outerHTML || '').slice(0, 1200) });
+        break;
+      }
+    }
+    if (buttons.length >= 8) break;
+  }
+  return {
+    found: matches.length > 0,
+    url: location.href,
+    title: document.title,
+    matches,
+    buttons,
+  };
+}
+"""
+
+
+def _dump_session_elsewhere_dom(roots, state: Optional[_PragmaticState]) -> None:
+    if state is None:
+        return
+    now = time.time()
+    if state.session_elsewhere_dumped_at and now - state.session_elsewhere_dumped_at < 60.0:
+        return
+    results: list[dict[str, Any]] = []
+    for root in roots:
+        try:
+            res = root.evaluate(_SESSION_ELSEWHERE_DUMP_JS)
+        except Exception:
+            continue
+        if isinstance(res, dict) and res.get("found"):
+            try:
+                loc = getattr(root, "url", "page")
+            except Exception:
+                loc = "page"
+            results.append({"loc": loc, "data": res})
+    if not results:
+        return
+    state.session_elsewhere_dumped_at = now
+    try:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        dump_path = Path(__file__).parent / f"session_elsewhere_dom_{ts}.json"
+        with open(dump_path, "w", encoding="utf-8") as f:
+            json.dump({"results": results}, f, ensure_ascii=False, indent=2)
+        try:
+            send_log(f"[session] session elsewhere DOM dumped to {dump_path}")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _force_relogin(page, state: Optional[_PragmaticState], reason: str = "") -> None:
+    """Soft recovery: reload the lobby page ONLY.
+
+    過去の実装は clear_cookies + localStorage.clear() でログインクレデンシャルを
+    破壊し, Stake に "Sorry, an error has occurred" を出させていた (本日の事故).
+    cookies は絶対に消さない. 単純な goto で十分に session_elsewhere 本体を
+    更新できることが確認されている.
+    """
+    try:
+        send_log(f"[session] soft reload (was force_relogin) {reason}".strip())
+    except Exception:
+        pass
+    try:
+        page.goto(LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
+    except Exception:
+        pass
+    if state is not None:
+        state.session_elsewhere_relogin_at = time.time()
+        state.session_elsewhere_relogin_count += 1
+
+
 def _dismiss_session_elsewhere_modal(page, state: Optional[_PragmaticState] = None) -> bool:
     """Best-effort auto-dismiss for Stake 'session elsewhere' modal.
 
+    Cross-origin iframe + Shadow DOM 対応 (JS TreeWalker ベース).
     Returns True if the modal was observed (dismissal may or may not succeed).
     """
+    roots = []
+    try:
+        pages = list(getattr(getattr(page, "context", None), "pages", []) or [])
+    except Exception:
+        pages = []
+    if page not in pages:
+        pages = [page] + pages
+    for p in pages:
+        if p not in roots:
+            roots.append(p)
+        try:
+            for fr in list(getattr(p, "frames", []) or []):
+                if fr not in roots:
+                    roots.append(fr)
+        except Exception:
+            continue
+    observed_any = False
+    clicked_any = 0
+    detected_text = ""
+    detected_buttons: list[dict] = []
+    still_observed = False
+    eval_errors = 0
+    prev_unresolved = bool(state.session_elsewhere_unresolved) if state is not None else False
+    for _ in range(3):
+        attempt_observed = False
+        attempt_clicked = 0
+        for root in roots:
+            try:
+                res = root.evaluate(_SESSION_ELSEWHERE_DISMISS_JS, {"click": True})
+            except Exception:
+                eval_errors += 1
+                continue
+            if not isinstance(res, dict) or not res.get("found"):
+                continue
+            attempt_observed = True
+            observed_any = True
+            attempt_clicked += int(res.get("clicked") or 0)
+            clicked_any += int(res.get("clicked") or 0)
+            detected_text = res.get("text") or detected_text
+            detected_buttons = res.get("buttons") or detected_buttons
+        if not attempt_observed:
+            break
+        if attempt_clicked > 0:
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                time.sleep(0.5)
+            still_observed = False
+            for root in roots:
+                try:
+                    chk = root.evaluate(_SESSION_ELSEWHERE_DISMISS_JS, {"click": False})
+                except Exception:
+                    eval_errors += 1
+                    continue
+                if isinstance(chk, dict) and chk.get("found"):
+                    still_observed = True
+                    detected_text = chk.get("text") or detected_text
+                    detected_buttons = chk.get("buttons") or detected_buttons
+                    break
+            if not still_observed:
+                break
+        else:
+            still_observed = True
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                time.sleep(0.5)
+    # NOTE: 旧 Playwright-locator フォールバックは削除済.
+    # `a:has-text('Continue')` が "Continue with Facebook" に誤爆し
+    # フッター SNS リンクがクリックされる重大バグの原因だった.
+    # JS DISMISS が clicked_any=0 のときは reload/force_relogin エスカレーションで対応する.
+    if not observed_any:
+        if state is not None and state.session_elsewhere_unresolved:
+            state.session_elsewhere_unresolved = False
+            state.session_elsewhere_resolved_at = time.time()
+            state.session_elsewhere_unresolved_since = 0.0
+            try:
+                send_log("[session] session elsewhere resolved (modal gone)")
+            except Exception:
+                pass
+        if eval_errors:
+            try:
+                send_log(f"[session] session elsewhere detect failed on {eval_errors} roots (eval error)")
+            except Exception:
+                pass
+        return False
+    if state is not None:
+        now = time.time()
+        unresolved = not (clicked_any > 0 and not still_observed)
+        state.session_elsewhere_observed = True
+        state.session_elsewhere_unresolved = unresolved
+        state.session_elsewhere_last_at = now
+        if unresolved:
+            if not prev_unresolved or not state.session_elsewhere_unresolved_since:
+                state.session_elsewhere_unresolved_since = now
+        else:
+            state.session_elsewhere_unresolved_since = 0.0
+    try:
+        if clicked_any > 0 and not still_observed:
+            send_log(f"[session] auto-dismissed session elsewhere (clicks={clicked_any}) text='{detected_text[:60]}'")
+        elif clicked_any > 0 and still_observed:
+            send_log(f"[session] dismiss attempted but modal persists text='{detected_text[:60]}'")
+        else:
+            send_log(f"[session] DETECTED but no clickable button — text='{detected_text[:60]}' buttons={detected_buttons[:5]}")
+    except Exception:
+        pass
+    if eval_errors:
+        try:
+            send_log(f"[session] session elsewhere evaluate failed on {eval_errors} roots")
+        except Exception:
+            pass
+    if state is not None and state.session_elsewhere_unresolved:
+        _dump_session_elsewhere_dom(roots, state)
+    if state is not None and state.session_elsewhere_unresolved and state.session_elsewhere_unresolved_since:
+        now = time.time()
+        # 以前は 5s で reload → click が間に合わず暴走. 20s まで余裕を与える.
+        if now - state.session_elsewhere_unresolved_since >= 20.0 and now - float(state.session_elsewhere_reload_at or 0) >= 60.0:
+            try:
+                send_log("[session] session elsewhere unresolved >20s — reloading once")
+            except Exception:
+                pass
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=15000)
+            except Exception as e:
+                try:
+                    send_log(f"[session] reload failed after session-elsewhere (err={e})")
+                except Exception:
+                    pass
+            state.session_elsewhere_reload_at = now
+        # force_relogin は cookies 削除しない soft reload 版 (defanged). 発火条件も緩和.
+        if (
+            now - state.session_elsewhere_unresolved_since >= 90.0
+            and now - float(state.session_elsewhere_relogin_at or 0) >= 180.0
+        ):
+            _dump_session_elsewhere_dom(roots, state)
+            _force_relogin(page, state, reason="(unresolved >90s)")
+    return True
+
+
+def _legacy_dismiss_session_elsewhere(page, state=None) -> bool:
+    """Old Playwright-locator-based dismiss (kept as reference / fallback)."""
     observed_pats = [
         r"他の場所でセッション",
         r"セッションが開始",
@@ -1457,6 +1874,543 @@ def _dismiss_session_elsewhere_modal(page, state: Optional[_PragmaticState] = No
     return True
 
 
+_INACTIVITY_DISMISS_JS = r"""
+(opts) => {
+  const doClick = !(opts && opts.click === false);
+  const TEXT_PATTERNS = [
+    /無操作/, /一時停止/, /タイムアウト/,
+    /inactivity|inactive/i, /paused/i, /still\s+there/i,
+    /are\s+you\s+still/i, /session\s+timed?\s+out/i,
+    /still\s+with\s+us/i, /still\s+playing/i,
+  ];
+  // 厳密マッチ: "Continue" / "continue" 単体を禁止 (社会ログイン誤爆防止)
+  const BTN_PATTERNS = [
+    /^続ける$/, /^続行$/, /^再開$/, /^プレイ続行$/, /^プレイを再開$/, /^はい$/,
+    /^OK$/i, /^Continue$/i, /^Continue playing$/i, /^Keep playing$/i,
+    /^Resume$/i, /^I'?m here$/i, /^Still here$/i, /^I'?m still here$/i,
+    /^Yes,?\s*I'?m here$/i, /^Yes$/i, /^Play on$/i,
+  ];
+  const EXCLUDE = /(with\s+)?(facebook|google|passkey|apple|twitter|metamask|telegram|line|yahoo)|another\s+way|forgot|register|sign\s*up|\u65b0\u898f|\u767b\u9332|\u30d1\u30b9\u30ef\u30fc\u30c9/i;
+
+  function* walk(root){
+    if (!root) return;
+    const it = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let node;
+    while ((node = it.nextNode())) {
+      yield node;
+      if (node.shadowRoot) {
+        for (const n of walk(node.shadowRoot)) yield n;
+      }
+    }
+  }
+  function visible(el){
+    try{
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+      const r = el.getBoundingClientRect();
+      if ((r.width <= 1 || r.height <= 1) && (!el.getClientRects || el.getClientRects().length === 0)) return false;
+      return true;
+    }catch(e){ return false; }
+  }
+  function textOf(el){
+    return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+  function ownText(el){
+    let s = '';
+    for (const ch of el.childNodes) if (ch.nodeType === 3) s += ch.textContent || '';
+    return s.replace(/\s+/g, ' ').trim();
+  }
+  function findModalContainer(el){
+    let cur = el;
+    for (let i=0; i<20 && cur; i++) {
+      try{
+        if (cur.nodeType === 1) {
+          const role = cur.getAttribute && cur.getAttribute('role');
+          const am = cur.getAttribute && cur.getAttribute('aria-modal');
+          const tag = (cur.tagName || '').toUpperCase();
+          const cls = (cur.className && typeof cur.className === 'string') ? cur.className : '';
+          if (tag === 'DIALOG' || role === 'dialog' || role === 'alertdialog' || am === 'true' ||
+              /modal|dialog|popup|overlay/i.test(cls)) {
+            return cur;
+          }
+        }
+      }catch(_){}
+      cur = cur.parentElement || (cur.getRootNode && cur.getRootNode().host);
+    }
+    return null;
+  }
+  function dispatchClick(el){
+    try{ el.focus(); }catch(_){}
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const base = { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, view: window };
+    try{
+      if (window.PointerEvent) {
+        el.dispatchEvent(new PointerEvent('pointerdown', base));
+        el.dispatchEvent(new PointerEvent('pointerup', base));
+      }
+      el.dispatchEvent(new MouseEvent('mousedown', base));
+      el.dispatchEvent(new MouseEvent('mouseup', base));
+      el.dispatchEvent(new MouseEvent('click', base));
+    }catch(_){}
+    try{ el.click(); }catch(_){}
+  }
+  let foundEl = null;
+  let foundText = '';
+  for (const el of walk(document)) {
+    if (!visible(el)) continue;
+    const own = ownText(el);
+    if (!own) continue;
+    for (const pat of TEXT_PATTERNS) {
+      if (pat.test(own)) { foundEl = el; foundText = own.slice(0, 120); break; }
+    }
+    if (foundEl) break;
+  }
+  if (!foundEl) return { found: false };
+  let scope = findModalContainer(foundEl);
+  if (!scope) {
+    scope = foundEl;
+    for (let i=0; i<4 && scope.parentElement; i++) scope = scope.parentElement;
+  }
+  const buttons = [];
+  let clicked = 0;
+  for (const el of walk(scope)) {
+    if (!visible(el)) continue;
+    const tag = (el.tagName || '').toUpperCase();
+    if (tag !== 'BUTTON' && tag !== 'A' && el.getAttribute && el.getAttribute('role') !== 'button') continue;
+    const t = textOf(el);
+    if (!t) continue;
+    if (EXCLUDE.test(t)) { buttons.push({ tag, text: t.slice(0,80), skipped: 'exclude' }); continue; }
+    for (const pat of BTN_PATTERNS) {
+      if (pat.test(t)) {
+        buttons.push({ tag, text: t.slice(0, 80) });
+        if (doClick && clicked === 0) { dispatchClick(el); clicked += 1; }
+        break;
+      }
+    }
+    if (buttons.length >= 8) break;
+  }
+  return { found: true, text: foundText, scope: scope.tagName, clicked, buttons };
+}
+"""
+
+_INACTIVITY_DUMP_JS = r"""
+() => {
+  const TEXT_PATTERNS = [
+    /無操作/, /一時停止/, /タイムアウト/,
+    /inactivity|inactive/i, /paused/i, /still\s+there/i,
+    /are\s+you\s+still/i, /session\s+timed?\s+out/i,
+    /still\s+with\s+us/i, /still\s+playing/i,
+  ];
+  const BTN_PATTERNS = [
+    /続ける/, /続行/, /再開/, /プレイ続行/, /プレイを再開/, /はい/,
+    /^OK$/i, /continue/i, /resume/i, /keep\s+playing/i, /i'?m\s+here/i,
+    /still\s+here/i, /yes,?\s*i'?m/i, /^yes$/i,
+  ];
+  function* walk(root){
+    if (!root) return;
+    const it = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let node;
+    while ((node = it.nextNode())) {
+      yield node;
+      if (node.shadowRoot) {
+        for (const n of walk(node.shadowRoot)) yield n;
+      }
+    }
+  }
+  function visible(el){
+    try{
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+      const r = el.getBoundingClientRect();
+      if ((r.width <= 1 || r.height <= 1) && (!el.getClientRects || el.getClientRects().length === 0)) return false;
+      return true;
+    }catch(e){ return false; }
+  }
+  function textOf(el){
+    return (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+  const matches = [];
+  for (const el of walk(document)) {
+    if (!visible(el)) continue;
+    const t = textOf(el);
+    if (!t) continue;
+    for (const pat of TEXT_PATTERNS) {
+      if (pat.test(t)) {
+        matches.push({ tag: el.tagName, text: t.slice(0, 160), html: (el.outerHTML || '').slice(0, 2000) });
+        break;
+      }
+    }
+    if (matches.length >= 8) break;
+  }
+  const buttons = [];
+  for (const el of walk(document)) {
+    if (!visible(el)) continue;
+    const tag = (el.tagName || '').toUpperCase();
+    if (tag !== 'BUTTON' && tag !== 'A' && el.getAttribute && el.getAttribute('role') !== 'button') continue;
+    const t = textOf(el);
+    if (!t) continue;
+    for (const pat of BTN_PATTERNS) {
+      if (pat.test(t)) {
+        buttons.push({ tag, text: t.slice(0, 80), html: (el.outerHTML || '').slice(0, 1200) });
+        break;
+      }
+    }
+    if (buttons.length >= 8) break;
+  }
+  return { found: matches.length > 0, url: location.href, title: document.title, matches, buttons };
+}
+"""
+
+
+def _dump_inactivity_dom(roots, state: Optional[_PragmaticState]) -> None:
+    if state is None:
+        return
+    now = time.time()
+    if state.inactivity_dumped_at and now - state.inactivity_dumped_at < 60.0:
+        return
+    results: list[dict[str, Any]] = []
+    for root in roots:
+        try:
+            res = root.evaluate(_INACTIVITY_DUMP_JS)
+        except Exception:
+            continue
+        if isinstance(res, dict) and res.get("found"):
+            try:
+                loc = getattr(root, "url", "page")
+            except Exception:
+                loc = "page"
+            results.append({"loc": loc, "data": res})
+    if not results:
+        return
+    state.inactivity_dumped_at = now
+    try:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        dump_path = Path(__file__).parent / f"inactivity_modal_dom_{ts}.json"
+        with open(dump_path, "w", encoding="utf-8") as f:
+            json.dump({"results": results}, f, ensure_ascii=False, indent=2)
+        try:
+            send_log(f"[inactivity] modal DOM dumped to {dump_path}")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _dismiss_inactivity_modal(page, state: Optional[_PragmaticState] = None) -> bool:
+    """Best-effort auto-dismiss for Stake 'inactivity paused' modal.
+
+    Cross-origin iframe (qpidreoxcc.net) 対応:
+    page + 全 frame に対して JS TreeWalker (Shadow DOM 含む) で無操作系テキスト検知、
+    マッチする clickable を data-attribute 印 → evaluate 内で click() 実行.
+
+    Returns True if modal observed (regardless of successful click).
+    """
+    roots = []
+    try:
+        pages = list(getattr(getattr(page, "context", None), "pages", []) or [])
+    except Exception:
+        pages = []
+    if page not in pages:
+        pages = [page] + pages
+    for p in pages:
+        if p not in roots:
+            roots.append(p)
+        try:
+            for fr in list(getattr(p, "frames", []) or []):
+                if fr not in roots:
+                    roots.append(fr)
+        except Exception:
+            continue
+
+    observed_any = False
+    clicked_any = 0
+    detected_text = ""
+    detected_buttons = []
+    still_observed = False
+    for _ in range(3):
+        attempt_observed = False
+        attempt_clicked = 0
+        for root in roots:
+            try:
+                res = root.evaluate(_INACTIVITY_DISMISS_JS, {"click": True})
+            except Exception:
+                continue
+            if not isinstance(res, dict) or not res.get("found"):
+                continue
+            attempt_observed = True
+            observed_any = True
+            attempt_clicked += int(res.get("clicked") or 0)
+            clicked_any += int(res.get("clicked") or 0)
+            detected_text = res.get("text") or detected_text
+            detected_buttons = res.get("buttons") or detected_buttons
+        if not attempt_observed:
+            break
+        if attempt_clicked > 0:
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                time.sleep(0.5)
+            still_observed = False
+            for root in roots:
+                try:
+                    chk = root.evaluate(_INACTIVITY_DISMISS_JS, {"click": False})
+                except Exception:
+                    continue
+                if isinstance(chk, dict) and chk.get("found"):
+                    still_observed = True
+                    detected_text = chk.get("text") or detected_text
+                    detected_buttons = chk.get("buttons") or detected_buttons
+                    break
+            if not still_observed:
+                break
+        else:
+            still_observed = True
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                time.sleep(0.5)
+    # NOTE: 旧 Playwright-locator フォールバックは削除済 (Facebook 誤爆の原因).
+    # 新フォールバック: Stake の inactivity 表示は動画プレイヤー内をクリックで解除できる.
+    # iframe / canvas / video 領域の中心を 1 回だけ click する (ボタン検索なし = SNS 誤爆ゼロ).
+    if observed_any and (clicked_any == 0 or still_observed):
+        try:
+            clicked_video = _click_live_video_center(page)
+            if clicked_video:
+                clicked_any += 1
+                try:
+                    page.wait_for_timeout(600)
+                except Exception:
+                    time.sleep(0.6)
+                # 再検知
+                still_observed = False
+                try:
+                    chk = page.evaluate(_INACTIVITY_DISMISS_JS, {"click": False})
+                    if isinstance(chk, dict) and chk.get("found"):
+                        still_observed = True
+                except Exception:
+                    pass
+                try:
+                    send_log(f"[inactivity] dismissed by video-center click (still_observed={still_observed})")
+                except Exception:
+                    pass
+        except Exception as _e:
+            try: send_log(f"[inactivity] video-center click err={_e}")
+            except Exception: pass
+
+    if not observed_any:
+        if state is not None and state.inactivity_modal_unresolved:
+            state.inactivity_modal_unresolved = False
+            try:
+                send_log("[inactivity] modal gone (resolved)")
+            except Exception:
+                pass
+        return False
+
+    if state is not None:
+        now = time.time()
+        unresolved = not (clicked_any > 0 and not still_observed)
+        state.inactivity_modal_observed = True
+        state.inactivity_modal_unresolved = unresolved
+        state.inactivity_modal_last_at = now
+        if clicked_any > 0 and not still_observed:
+            state.inactivity_dismissed_count += 1
+
+    try:
+        if clicked_any > 0 and not still_observed:
+            send_log(f"[inactivity] auto-dismissed (clicks={clicked_any}) text='{detected_text[:60]}' buttons={detected_buttons[:3]}")
+        elif clicked_any > 0 and still_observed:
+            send_log(f"[inactivity] dismiss attempted but modal persists text='{detected_text[:60]}'")
+        else:
+            send_log(f"[inactivity] DETECTED but no clickable button found — text='{detected_text[:60]}' buttons={detected_buttons[:5]}")
+    except Exception:
+        pass
+    if state is not None and state.inactivity_modal_unresolved:
+        _dump_inactivity_dom(roots, state)
+        now = time.time()
+        # video-center click に十分な機会を与える. 60s 未解消で 1 回だけ reload.
+        if now - state.inactivity_modal_last_at >= 60.0 and now - float(state.inactivity_reload_at or 0) >= 180.0:
+            try:
+                send_log("[inactivity] unresolved >60s — reloading once")
+            except Exception:
+                pass
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=15000)
+            except Exception:
+                pass
+            state.inactivity_reload_at = now
+    return True
+
+
+_LIVE_VIDEO_LOCATE_JS = r"""
+() => {
+  // Pragmatic Live の動画再生領域の中心を安全に返す.
+  // iframe / video / canvas / ゲーム container を優先順位付きで探索.
+  function visible(el){
+    try{
+      const r = el.getBoundingClientRect();
+      if (r.width < 200 || r.height < 150) return false;
+      const cs = getComputedStyle(el);
+      return cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0';
+    }catch(_){ return false; }
+  }
+  function centerOf(el){
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), w: r.width, h: r.height };
+  }
+  // 優先: iframe[src*=pragmatic] / game container / canvas / video
+  const sels = [
+    'iframe[src*="pragmatic"]',
+    'iframe[src*="dga"]',
+    'iframe[title*="game" i]',
+    'div[class*="game-container"]',
+    'div[class*="live-table"]',
+    'div[class*="GameArea"]',
+    'canvas',
+    'video',
+    'iframe',
+  ];
+  for (const sel of sels) {
+    const list = document.querySelectorAll(sel);
+    for (const el of list) {
+      if (visible(el)) return centerOf(el);
+    }
+  }
+  // フォールバック: viewport 中心
+  return { x: Math.round(window.innerWidth / 2), y: Math.round(window.innerHeight / 2), w: window.innerWidth, h: window.innerHeight };
+}
+"""
+
+
+def _click_live_video_center(page) -> bool:
+    """Live 動画プレイヤー領域の中心を 1 回だけクリック.
+
+    Stake の inactivity モーダル (動画プレイヤー上にオーバーレイ) は,
+    プレイヤー内 任意クリックで解除される. SNS ボタン誤爆を避けるため
+    テキストマッチではなく 座標クリック を採用.
+    """
+    try:
+        pos = page.evaluate(_LIVE_VIDEO_LOCATE_JS)
+        if not isinstance(pos, dict):
+            return False
+        x = int(pos.get("x") or 0)
+        y = int(pos.get("y") or 0)
+        if x <= 0 or y <= 0:
+            return False
+        try:
+            page.mouse.click(x, y, delay=40)
+        except Exception:
+            # クリックが何らかの理由で拒否された場合は move + click の順で再試行
+            try:
+                page.mouse.move(x, y)
+                page.mouse.down()
+                page.mouse.up()
+            except Exception:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _send_keep_alive(page, state: Optional[_PragmaticState] = None) -> None:
+    """Send a tiny synthetic user gesture to prevent Stake's inactivity timer.
+
+    Stake は約 3-5 分無操作で inactivity modal を出す。
+    60-90秒毎にマウス微動 / window focus 風のイベントを送ることで inactive 判定を回避。
+    """
+    try:
+        now = time.time()
+        if state is not None and state.keep_alive_last_at and (now - state.keep_alive_last_at) < 60.0:
+            return
+        # Try mouse move first (cheap, non-intrusive).
+        try:
+            # page 座標 (10,10) 近辺で微小動 → inactive タイマーリセット
+            page.mouse.move(10, 10)
+            page.mouse.move(12, 11)
+        except Exception:
+            pass
+        # Additionally dispatch a keep-alive event for iframe content.
+        try:
+            page.evaluate(
+                """() => {
+                  try {
+                    window.dispatchEvent(new Event('focus'));
+                    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 10, clientY: 10 }));
+                  } catch (_) {}
+                }"""
+            )
+        except Exception:
+            pass
+        if state is not None:
+            state.keep_alive_last_at = now
+    except Exception:
+        pass
+
+
+def _translate_en_to_ja(en: str) -> str:
+    """Master UI の toJaTableName と同じ変換 (Stake ja ロケール表記に合わせる)."""
+    if not en:
+        return en
+    n = str(en).strip()
+    OVERRIDES = {
+        "BACCARAT_MULTIPLAY": "BACCARAT_MULTIPLAY",
+        "STAKE SPEED BACCARAT": "STAKE スピードバカラ",
+        "Mega Sic Bac": "Mega Sic Bac",
+        "MEGA BACCARAT": "メガバカラ",
+    }
+    if n in OVERRIDES:
+        return OVERRIDES[n]
+    if n == n.upper() and "_" in n:
+        return n
+    patterns = [
+        (r"Priv[e\u00e9]\s*Lounge\s*Baccarat\s*Squeeze", "プライベラウンジ・スクイーズバカラ"),
+        (r"Priv[e\u00e9]\s*Lounge\s*Baccarat", "プライベラウンジバカラ"),
+        (r"Korean\s+Priv[e\u00e9]\s*Lounge\s*Baccarat", "韓国プライベラウンジバカラ"),
+        (r"Korean\s+Turbo\s+Baccarat", "韓国ターボバカラ"),
+        (r"Korean\s+Speed\s+Baccarat", "韓国スピードバカラ"),
+        (r"Korean\s+Baccarat", "韓国バカラ"),
+        (r"Japanese\s+Speed\s+Baccarat", "日本語スピードバカラ"),
+        (r"Japanese\s+Baccarat", "日本語バカラ"),
+        (r"Chinese\s+Speed\s+Baccarat", "中国スピードバカラ"),
+        (r"Chinese\s+Baccarat", "中国バカラ"),
+        (r"Thai\s+Speed\s+Baccarat", "タイスピードバカラ"),
+        (r"Thai\s+Baccarat", "タイバカラ"),
+        (r"Vietnamese\s+Speed\s+Baccarat", "ベトナムスピードバカラ"),
+        (r"Vietnamese\s+Baccarat", "ベトナムバカラ"),
+        (r"Indonesian\s+Speed\s+Baccarat", "インドネシアスピードバカラ"),
+        (r"Indonesian\s+Baccarat", "インドネシアバカラ"),
+        (r"Fortune\s*6\s+Baccarat", "フォーチュン6バカラ"),
+        (r"Super\s*8\s+Baccarat", "スーパー8バカラ"),
+        (r"Speed\s+Baccarat", "スピードバカラ"),
+        (r"Turbo\s+Baccarat", "ターボバカラ"),
+        (r"Squeeze\s+Baccarat", "スクイーズバカラ"),
+        (r"Baccarat\s+Squeeze", "バカラスクイーズ"),
+        (r"Baccarat\s+Lobby", "バカラロビー"),
+        (r"Mega\s+Baccarat", "メガバカラ"),
+        (r"\bBaccarat\b", "バカラ"),
+    ]
+    for pat, rep in patterns:
+        n = re.sub(pat, rep, n, flags=re.I)
+    return re.sub(r"\s+", " ", n).strip()
+
+
+def _build_substr_candidates(user_input: str) -> list[str]:
+    """Accept pipe/comma-separated substrings, auto-add JA translation for EN terms."""
+    raw = (user_input or "").replace(",", "|")
+    parts = [p.strip() for p in raw.split("|") if p.strip()]
+    out: list[str] = []
+    for p in parts:
+        if p not in out:
+            out.append(p)
+        # EN → JA auto-add
+        if re.search(r"[A-Za-z]", p):
+            ja = _translate_en_to_ja(p)
+            if ja and ja != p and ja not in out:
+                out.append(ja)
+    return out
+
+
 def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Optional[_PragmaticState] = None, on_tick=None) -> None:
     send_phase("entering", "OPEN STAKE")
     send_action("Opening Stake lobby. If prompted, please log in to Stake.")
@@ -1526,8 +2480,93 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Opt
     clicked = False
     table_substr = (table_substr or "").strip()
 
-    if table_substr:
-        print(f"[Stage 4] wait (<= {auto_click_wait_sec}s) for '{table_substr}' then click ...", flush=True)
+    # 診断: Stake lobby の DOM を一度ダンプ (テキスト一致失敗の原因特定用).
+    def _dump_lobby_diag(label: str) -> None:
+        try:
+            js = r"""
+            () => {
+              const out = { anchors: 0, baccarat_anchors: [], buttons: [], texts_with_baccarat: [], iframe_count: 0 };
+              const anchors = document.querySelectorAll('a[href]');
+              out.anchors = anchors.length;
+              for (const a of anchors) {
+                const h = a.getAttribute('href') || '';
+                if (/baccarat/i.test(h) || /バカラ/.test(h)) {
+                  out.baccarat_anchors.push({
+                    href: h.slice(0, 100),
+                    text: (a.textContent||'').replace(/\s+/g,' ').trim().slice(0, 80),
+                    aria: a.getAttribute('aria-label') || '',
+                  });
+                }
+                if (out.baccarat_anchors.length >= 30) break;
+              }
+              const btns = document.querySelectorAll('[role="button"], button, [role="link"]');
+              let bi = 0;
+              for (const b of btns) {
+                const t = (b.textContent||'').replace(/\s+/g,' ').trim();
+                if (!t) continue;
+                if (/baccarat|バカラ/i.test(t)) {
+                  out.buttons.push({ tag: b.tagName, text: t.slice(0, 80), role: b.getAttribute('role')||'' });
+                  if (out.buttons.length >= 30) break;
+                }
+                bi++; if (bi > 500) break;
+              }
+              // XPath で baccarat テキストを含むノード探索
+              const xp = "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'baccarat') or contains(text(),'バカラ')]";
+              const it = document.evaluate(xp, document, null, XPathResult.UNORDERED_NODE_ITERATOR_TYPE, null);
+              let n; let step = 0;
+              while ((n = it.iterateNext()) && step < 200) {
+                step++;
+                const t = (n.textContent||'').replace(/\s+/g,' ').trim();
+                if (t && out.texts_with_baccarat.length < 20) {
+                  out.texts_with_baccarat.push({ tag: n.tagName, text: t.slice(0, 80), cls: (n.className||'').toString().slice(0, 60) });
+                }
+              }
+              out.iframe_count = document.querySelectorAll('iframe').length;
+              out.url = location.href;
+              out.title = document.title;
+              return out;
+            }
+            """
+            # Try both page and all frames
+            results = []
+            try:
+                r = page.evaluate(js)
+                results.append(("page", r))
+            except Exception as _e:
+                pass
+            try:
+                for fr in (getattr(page, "frames", []) or []):
+                    try:
+                        r = fr.evaluate(js)
+                        if r and (r.get("baccarat_anchors") or r.get("buttons") or r.get("texts_with_baccarat")):
+                            results.append((fr.url[:80], r))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            # ファイル出力 (私が読めるように).
+            try:
+                import json as _j
+                dump_path = Path(__file__).parent / f"debug_lobby_dom_{label}.json"
+                with open(dump_path, "w", encoding="utf-8") as f:
+                    _j.dump({"results": [{"loc": loc, "data": r} for (loc, r) in results]}, f, ensure_ascii=False, indent=2)
+                print(f"[lobby DIAG {label}] saved to {dump_path}", flush=True)
+            except Exception as _e2:
+                pass
+            for (loc, r) in results[:4]:
+                try:
+                    import json as _j
+                    print(f"[lobby DIAG {label}] loc={loc} {_j.dumps(r, ensure_ascii=False)[:1500]}", flush=True)
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[lobby DIAG {label}] failed: {e}", flush=True)
+
+    # 候補文字列 (EN + JA + ユーザー指定) を列挙.
+    candidates = _build_substr_candidates(table_substr) or []
+    if candidates:
+        print(f"[Stage 4] wait (<= {auto_click_wait_sec}s) candidates={candidates}", flush=True)
+        _dump_lobby_diag("initial")
         deadline = time.time() + float(max(auto_click_wait_sec, 1))
         while time.time() < deadline and not clicked:
             _dismiss_stake_loader(page)
@@ -1537,32 +2576,33 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Opt
                     on_tick()
                 except Exception:
                     pass
-            # テキスト一致（日本語/英語両対応）
-            try:
-                locator = shell.get_by_text(re.compile(re.escape(table_substr), re.I))
-                if locator.count() > 0:
-                    first = locator.first
-                    first.scroll_into_view_if_needed(timeout=3000)
-                    try:
-                        shell.locator(f"[role='button']:has-text('{table_substr}')").first.click(timeout=3000, force=True)
-                    except Exception:
-                        try:
-                            shell.locator(f"button:has-text('{table_substr}')").first.click(timeout=3000, force=True)
-                        except Exception:
-                            first.click(timeout=3000, force=True)
-                    clicked = True
-                    print(f"[Stage 4] clicked '{table_substr}' via text match", flush=True)
+            # 候補の各文字列で順に試行 (EN → JA → ユーザー指定).
+            for cand in candidates:
+                if clicked:
                     break
-            except Exception:
-                pass
-
-            # フォールバック: テキスト付きセレクタ
-            if not clicked:
+                try:
+                    locator = shell.get_by_text(re.compile(re.escape(cand), re.I))
+                    if locator.count() > 0:
+                        first = locator.first
+                        first.scroll_into_view_if_needed(timeout=3000)
+                        try:
+                            shell.locator(f"[role='button']:has-text('{cand}')").first.click(timeout=3000, force=True)
+                        except Exception:
+                            try:
+                                shell.locator(f"button:has-text('{cand}')").first.click(timeout=3000, force=True)
+                            except Exception:
+                                first.click(timeout=3000, force=True)
+                        clicked = True
+                        print(f"[Stage 4] clicked '{cand}' via text match", flush=True)
+                        break
+                except Exception:
+                    pass
+                # フォールバック: テキスト付きセレクタ
                 for sel in [
-                    f"[role='button']:has-text('{table_substr}')",
-                    f"button:has-text('{table_substr}')",
-                    f"a:has-text('{table_substr}')",
-                    f"div:has-text('{table_substr}')",
+                    f"[role='button']:has-text('{cand}')",
+                    f"button:has-text('{cand}')",
+                    f"a:has-text('{cand}')",
+                    f"div:has-text('{cand}')",
                 ]:
                     try:
                         loc = shell.locator(sel)
@@ -1933,10 +2973,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                 and state.user_id
                 and state.game_ws_url
                 and not state.session_elsewhere_unresolved
+                and not state.inactivity_modal_unresolved
                 and not ws_dead
                 and not state.recover_exhausted
             ),
             "session_elsewhere_unresolved": bool(state.session_elsewhere_unresolved),
+            "inactivity_modal_unresolved": bool(state.inactivity_modal_unresolved),
+            "inactivity_dismissed_count": int(state.inactivity_dismissed_count or 0),
+            "recovering": bool(state.recovering),
+            "recovering_reason": str(state.recovering_reason or ""),
+            "recovering_started_at": float(state.recovering_started_at or 0),
+            "keep_alive_last_at": float(state.keep_alive_last_at or 0),
             "ws": {
                 "last_recv_at": state.last_ws_recv_at,
                 "silence_sec": ws_silence_sec,
@@ -2025,6 +3072,32 @@ def main(argv: Optional[list[str]] = None) -> int:
         persistent_context=True,
         user_data_dir=str(Path(args.profile_dir)),
     ) as ctx:
+        # SIGTERM/SIGINT で Camoufox を clean close (orphan camoufox プロセス防止).
+        def _clean_shutdown(signum=None, frame=None):
+            print(f"[exec] shutdown signal {signum} - closing camoufox ...", flush=True)
+            try:
+                ctx.close()
+            except Exception:
+                pass
+            try:
+                hb_stop.set()
+            except Exception:
+                pass
+            try:
+                stop_fetcher.set()
+            except Exception:
+                pass
+            # os._exit で残存スレッドを強制終了 (atexit もここで発火).
+            os._exit(0)
+        try:
+            import signal as _signal
+            _signal.signal(_signal.SIGTERM, _clean_shutdown)
+            _signal.signal(_signal.SIGINT, _clean_shutdown)
+            # Windows で CTRL_BREAK も拾う
+            if hasattr(_signal, "SIGBREAK"):
+                _signal.signal(_signal.SIGBREAK, _clean_shutdown)
+        except Exception as _e:
+            print(f"[exec] signal handler install failed: {_e}", flush=True)
         # persistent_context=True creates a default Page; using ctx.new_page() would open a 2nd window.
         # Keep a single window to avoid Stake session conflicts / user confusion.
         try:
@@ -2037,6 +3110,88 @@ def main(argv: Optional[list[str]] = None) -> int:
                 p.close()
             except Exception:
                 pass
+
+        # ==== 最終安全網: Stake 以外のドメインへ遷移した tab/page は即閉じる ====
+        # (誤クリックで Facebook/Google ログインページが開くのを物理的に遮断)
+        _FOREIGN_HOSTS = re.compile(
+            r"(^|\.)(facebook\.com|accounts\.google\.com|appleid\.apple\.com|"
+            r"twitter\.com|x\.com|metamask\.io|telegram\.me|t\.me|yahoo\.co\.jp)$",
+            re.IGNORECASE,
+        )
+
+        def _is_foreign(url: str) -> bool:
+            try:
+                from urllib.parse import urlparse
+                host = (urlparse(url).hostname or "").lower()
+                return bool(_FOREIGN_HOSTS.search(host))
+            except Exception:
+                return False
+
+        def _on_new_page(new_page):
+            try:
+                url = new_page.url or ""
+            except Exception:
+                url = ""
+            if _is_foreign(url):
+                try:
+                    send_log(f"[safety] foreign new tab blocked url={url[:120]}")
+                except Exception:
+                    pass
+                try: new_page.close()
+                except Exception: pass
+                return
+            # Wait briefly for initial navigation then recheck
+            def _recheck():
+                try:
+                    new_page.wait_for_load_state("domcontentloaded", timeout=3000)
+                except Exception:
+                    pass
+                try:
+                    u = new_page.url or ""
+                except Exception:
+                    u = ""
+                if _is_foreign(u):
+                    try:
+                        send_log(f"[safety] foreign nav detected on new tab — closing url={u[:120]}")
+                    except Exception:
+                        pass
+                    try: new_page.close()
+                    except Exception: pass
+            import threading as _t
+            _t.Thread(target=_recheck, daemon=True).start()
+
+        def _on_framenavigated(frame):
+            try:
+                if frame != getattr(frame, "page", None) and frame.parent_frame is not None:
+                    return  # child frame — ignore
+            except Exception:
+                pass
+            try:
+                u = frame.url or ""
+            except Exception:
+                u = ""
+            if _is_foreign(u):
+                try:
+                    send_log(f"[safety] main-frame foreign nav — go_back url={u[:120]}")
+                except Exception:
+                    pass
+                try:
+                    frame.page.go_back(timeout=5000)
+                except Exception:
+                    try:
+                        frame.page.goto("https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat", timeout=15000)
+                    except Exception:
+                        pass
+
+        try:
+            ctx.on("page", _on_new_page)
+        except Exception as _e:
+            try: send_log(f"[safety] ctx.on(page) install failed: {_e}")
+            except Exception: pass
+        try:
+            page.on("framenavigated", _on_framenavigated)
+        except Exception:
+            pass
         try:
             page.add_init_script(_WS_BRIDGE_INIT)
         except Exception:
@@ -2336,7 +3491,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             nonlocal last_error, consecutive_hard_errors
             nonlocal last_recover_at, recover_attempts, recover_exhausted, max_recover_attempts
 
+            # Master 画面に「復旧中」を即時反映
+            state.recovering = True
+            state.recovering_reason = str(reason or "recover_session")
+            state.recovering_started_at = time.time()
+            try:
+                heartbeat("running")
+            except Exception:
+                pass
             if recover_exhausted:
+                state.recovering = False
                 return False
             if max_recover_attempts > 0 and recover_attempts >= max_recover_attempts:
                 recover_exhausted = True
@@ -2448,6 +3612,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 recover_exhausted = False
                 state.recover_exhausted = False
                 state.recover_attempts = 0
+                state.recovering = False
+                state.recovering_reason = ""
                 state.recover_exhausted_at = 0.0
                 send_phase("idle", "ARMED")
                 send_action("Recovered. Waiting for master signal...")
@@ -2455,6 +3621,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return True
             except Exception as e:
                 last_error = f"recover failed: {e}"
+                state.recovering = False
                 heartbeat("error")
                 try:
                     send_action(last_error)
@@ -2466,6 +3633,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             heartbeat("running")
             try:
                 _dismiss_session_elsewhere_modal(page, state)
+            except Exception:
+                pass
+            # 自動復旧: 無操作モーダル (Stake のタイムアウト) を検出してクリック.
+            try:
+                _dismiss_inactivity_modal(page, state)
+            except Exception:
+                pass
+            # 予防: 一定間隔で微小 gesture を送り inactivity 判定を回避.
+            try:
+                _send_keep_alive(page, state)
             except Exception:
                 pass
             try:

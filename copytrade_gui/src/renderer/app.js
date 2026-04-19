@@ -196,6 +196,9 @@ async function initAuth() {
       showSetup();
       return;
     }
+    // Remember the authenticated user (used for master UI grouping / audit).
+    window.__authEmail = sess.email || '';
+    window.__authUserId = sess.user_id || '';
     const b = await refreshBilling({ silent: true });
     if (!b.ok) {
       showSetup(b.reason || 'Credit is not active');
@@ -204,9 +207,9 @@ async function initAuth() {
     showMain();
     startBillingMonitors();
     // Auto-arm unless user explicitly stopped
-    if (!isManualStop()) {
-      startBotFlow({ auto: true });
-    }
+    // NOTE: auto-start は廃止。START ボタンをユーザーが明示的に押すまで executor を起動しない.
+    // これで orphan camoufox / session_elsewhere 連発を防ぐ。
+    // (SEQ7 の続きから再開するか新規セッションにするかは START 時のダイアログで選ぶ)
   } catch (e) {
     showSetup(`Sign-in check failed: ${e.message || e}`);
   }
@@ -229,6 +232,8 @@ async function handleSignIn() {
       showSetup(res && res.reason ? res.reason : 'Sign-in failed');
       return;
     }
+    window.__authEmail = res.email || email || '';
+    window.__authUserId = res.user_id || '';
     const b = await refreshBilling({ silent: true });
     if (!b.ok) {
       showSetup(b.reason || 'Credit is not active');
@@ -236,9 +241,9 @@ async function handleSignIn() {
     }
     showMain();
     startBillingMonitors();
-    if (!isManualStop()) {
-      startBotFlow({ auto: true });
-    }
+    // NOTE: auto-start は廃止。START ボタンをユーザーが明示的に押すまで executor を起動しない.
+    // これで orphan camoufox / session_elsewhere 連発を防ぐ。
+    // (SEQ7 の続きから再開するか新規セッションにするかは START 時のダイアログで選ぶ)
   } catch (e) {
     showSetup(`Sign-in failed: ${e.message || e}`);
   } finally {
@@ -337,6 +342,8 @@ function buildStartConfig() {
   const s = loadSettings();
   return {
     ...s,
+    user_email: (window.__authEmail || ''),
+    user_id: (window.__authUserId || ''),
     bet_mode: 'counter_seq7',
     resume_results: Array.isArray(results) ? results.slice() : [],
   };
@@ -360,11 +367,54 @@ async function startBotFlow({ auto = false } = {}) {
   }
 
   if (!config.resume) {
+    // NEW SESSION: UI も履歴もセッション起点も完全リセット.
     _sessionOpenBalance = null;
     sessionTotal = 0;
     _persistBalanceSnapshot();
     updateSessionDisplay();
     resetFeed();
+    // ログストリーム (terminal風の #logContent) を完全クリア.
+    try {
+      const logEl = document.getElementById('logContent');
+      if (logEl) logEl.innerHTML = '';
+    } catch (_) {}
+    // SIGNAL PANEL の O/X ストリーム (#sigStream) もクリア.
+    try {
+      const sig = document.getElementById('sigStream');
+      if (sig) sig.innerHTML = '';
+      _streamSetIdx = 0;
+      _streamTurnsInSet = 0;
+      _lastRoundWon = null;
+    } catch (_) {}
+    // CYCLE / RATIO / DRIFT / ROUND 表示もリセット.
+    try {
+      ['sigCycle','sigRatio','sigDrift','sigRound'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) { el.textContent = '--'; el.style.color = ''; }
+      });
+    } catch (_) {}
+    // LIVE FEED / dev sets なども.
+    try {
+      const lf = document.getElementById('feedList') || document.getElementById('liveFeed');
+      if (lf) lf.innerHTML = '';
+    } catch (_) {}
+    // 直近結果 / セット履歴なども localStorage に残っていたら消す.
+    try {
+      localStorage.removeItem('valhalla_session_state');
+      localStorage.removeItem('valhalla_recent_results');
+      localStorage.removeItem('valhalla_set_history');
+    } catch (_) {}
+    // Phase / Action 表示を armed 待機に戻す.
+    try {
+      setPhase('idle', 'new session — waiting for master signal');
+      setAction('NEW SESSION started');
+    } catch (_) {}
+    // Flash overlay などが残っていれば消す.
+    try {
+      const fl = document.getElementById('flashOverlay');
+      if (fl) fl.className = 'flash-overlay';
+    } catch (_) {}
+    addLog('=== NEW SESSION — history cleared ===', 'info');
   }
 
   config.resume_results = Array.isArray(results) ? results.slice() : [];
@@ -495,6 +545,9 @@ const DEFAULT_SETTINGS = {
   table_name_substr: 'Speed Baccarat',
   auto_click_wait_sec: 90,
   allow_switch_table: true,
+  allow_banker: false,
+  allow_tie: false,
+  assume_bc_012: false,
   headless: false,
   dry_run: false,
   bet_mode: 'counter_seq7',
@@ -706,6 +759,9 @@ $('#btnSettings')?.addEventListener('click', () => {
   $('#inputAutoClickWaitSec').value = s.auto_click_wait_sec || 90;
 
   $('#inputAllowSwitchTable').checked = !!s.allow_switch_table;
+  if ($('#inputAllowBanker')) $('#inputAllowBanker').checked = !!s.allow_banker;
+  if ($('#inputAllowTie')) $('#inputAllowTie').checked = !!s.allow_tie;
+  if ($('#inputAssumeBc012')) $('#inputAssumeBc012').checked = !!s.assume_bc_012;
   $('#inputHeadless').checked = !!s.headless;
 });
 $('#settingsClose')?.addEventListener('click', () => $('#settingsModal')?.classList.add('hidden'));
@@ -728,6 +784,9 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     table_name_substr: $('#inputTableNameSubstr').value.trim(),
     auto_click_wait_sec: parseInt($('#inputAutoClickWaitSec').value, 10) || 90,
     allow_switch_table: $('#inputAllowSwitchTable').checked,
+    allow_banker: $('#inputAllowBanker')?.checked,
+    allow_tie: $('#inputAllowTie')?.checked,
+    assume_bc_012: $('#inputAssumeBc012')?.checked,
     headless: $('#inputHeadless').checked,
   };
 
@@ -748,6 +807,9 @@ function loadSettings() {
     merged.table_name_substr = String(merged.table_name_substr || DEFAULT_SETTINGS.table_name_substr);
     merged.auto_click_wait_sec = Number.isFinite(Number(merged.auto_click_wait_sec)) ? Math.max(10, Math.floor(Number(merged.auto_click_wait_sec))) : DEFAULT_SETTINGS.auto_click_wait_sec;
     merged.allow_switch_table = !!merged.allow_switch_table;
+    merged.allow_banker = !!merged.allow_banker;
+    merged.allow_tie = !!merged.allow_tie;
+    merged.assume_bc_012 = !!merged.assume_bc_012;
     merged.headless = !!merged.headless;
     return merged;
   } catch {

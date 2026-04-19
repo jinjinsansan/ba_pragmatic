@@ -128,6 +128,10 @@ def init_db() -> None:
               daily_pnl REAL,
               daily_pnl_date TEXT,
               os TEXT,
+              recovering INTEGER,
+              recovering_reason TEXT,
+              inactivity_dismissed_count INTEGER,
+              inactivity_modal_unresolved INTEGER,
               status TEXT,
               error TEXT,
               updated_at TEXT NOT NULL
@@ -147,6 +151,10 @@ def init_db() -> None:
             "ALTER TABLE executors ADD COLUMN daily_pnl REAL",
             "ALTER TABLE executors ADD COLUMN daily_pnl_date TEXT",
             "ALTER TABLE executors ADD COLUMN os TEXT",
+            "ALTER TABLE executors ADD COLUMN recovering INTEGER",
+            "ALTER TABLE executors ADD COLUMN recovering_reason TEXT",
+            "ALTER TABLE executors ADD COLUMN inactivity_dismissed_count INTEGER",
+            "ALTER TABLE executors ADD COLUMN inactivity_modal_unresolved INTEGER",
         ]:
             try:
                 cur.execute(ddl)
@@ -388,9 +396,9 @@ def upsert_executor(executor_id: str, payload: dict[str, Any]) -> None:
         cur.execute(
             """
             INSERT INTO executors
-              (executor_id, label, username, user_email, user_id, provider, table_id, table_name, balance, seq_json, gui_json, phase_json, caps_json, ws_json, bettable, session_elsewhere_unresolved, daily_pnl, daily_pnl_date, os, status, error, updated_at)
+              (executor_id, label, username, user_email, user_id, provider, table_id, table_name, balance, seq_json, gui_json, phase_json, caps_json, ws_json, bettable, session_elsewhere_unresolved, daily_pnl, daily_pnl_date, os, recovering, recovering_reason, inactivity_dismissed_count, inactivity_modal_unresolved, status, error, updated_at)
             VALUES
-              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(executor_id) DO UPDATE SET
               label=excluded.label,
               username=excluded.username,
@@ -410,6 +418,10 @@ def upsert_executor(executor_id: str, payload: dict[str, Any]) -> None:
               daily_pnl=excluded.daily_pnl,
               daily_pnl_date=excluded.daily_pnl_date,
               os=excluded.os,
+              recovering=excluded.recovering,
+              recovering_reason=excluded.recovering_reason,
+              inactivity_dismissed_count=excluded.inactivity_dismissed_count,
+              inactivity_modal_unresolved=excluded.inactivity_modal_unresolved,
               status=excluded.status,
               error=excluded.error,
               updated_at=excluded.updated_at
@@ -434,6 +446,10 @@ def upsert_executor(executor_id: str, payload: dict[str, Any]) -> None:
                 float(payload.get("daily_pnl")) if payload.get("daily_pnl") is not None else None,
                 str(payload.get("daily_pnl_date") or ""),
                 str(payload.get("os") or ""),
+                int(bool(payload.get("recovering"))) if payload.get("recovering") is not None else 0,
+                str(payload.get("recovering_reason") or ""),
+                int(payload.get("inactivity_dismissed_count") or 0),
+                int(bool(payload.get("inactivity_modal_unresolved"))) if payload.get("inactivity_modal_unresolved") is not None else 0,
                 str(payload.get("status") or ""),
                 str(payload.get("error") or ""),
                 _utc_now_iso(),
@@ -450,7 +466,7 @@ def list_executors(limit: int = 200) -> list[dict[str, Any]]:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT executor_id, label, username, user_email, user_id, provider, table_id, table_name, balance, seq_json, gui_json, phase_json, caps_json, ws_json, bettable, session_elsewhere_unresolved, daily_pnl, daily_pnl_date, os, status, error, updated_at
+            SELECT executor_id, label, username, user_email, user_id, provider, table_id, table_name, balance, seq_json, gui_json, phase_json, caps_json, ws_json, bettable, session_elsewhere_unresolved, daily_pnl, daily_pnl_date, os, recovering, recovering_reason, inactivity_dismissed_count, inactivity_modal_unresolved, status, error, updated_at
             FROM executors
             ORDER BY updated_at DESC
             LIMIT ?
@@ -480,6 +496,10 @@ def list_executors(limit: int = 200) -> list[dict[str, Any]]:
                 daily_pnl,
                 daily_pnl_date,
                 os_name,
+                recovering,
+                recovering_reason,
+                inactivity_dismissed_count,
+                inactivity_modal_unresolved,
                 status,
                 error,
                 updated_at,
@@ -525,6 +545,10 @@ def list_executors(limit: int = 200) -> list[dict[str, Any]]:
                     "daily_pnl": daily_pnl,
                     "daily_pnl_date": daily_pnl_date or "",
                     "os": os_name or "",
+                    "recovering": bool(recovering) if recovering is not None else False,
+                    "recovering_reason": recovering_reason or "",
+                    "inactivity_dismissed_count": int(inactivity_dismissed_count or 0),
+                    "inactivity_modal_unresolved": bool(inactivity_modal_unresolved) if inactivity_modal_unresolved is not None else False,
                     "status": status or "",
                     "error": error or "",
                     "updated_at": updated_at,

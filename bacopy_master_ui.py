@@ -177,6 +177,7 @@ input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 
 .table-cell.flash-new{animation:newHandFlash 1.5s ease-out}
 @keyframes switchPulse{0%,100%{box-shadow:0 0 22px rgba(255,204,0,0.3)}50%{box-shadow:0 0 36px rgba(255,204,0,0.6)}}
 .table-cell.switching{animation:switchPulse 1.2s ease-in-out infinite}
+@keyframes pulseWarn{0%,100%{opacity:0.7}50%{opacity:1}}
 
 /* ======= 詳細情報セクション (折りたたみ可) ======= */
 details{margin-bottom:18px}
@@ -453,6 +454,54 @@ loadState();
 
 function fmt(o){ try{return JSON.stringify(o)}catch(e){return String(o)} }
 function escHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// --- Pragmatic Play テーブル名 英→日 変換 (Stake ja ロケール表記に合わせる) ---
+// dga WS は英語のみ返すので、表示レイヤで翻訳する.
+// executor 側のテーブル判定は internal な operator_table_id を使うので、
+// この翻訳は UI 表示専用で bet payload には影響しない。
+const _TABLE_OVERRIDES = {
+  // コード的な名前は翻訳しない
+  'BACCARAT_MULTIPLAY': 'BACCARAT_MULTIPLAY',
+  'STAKE SPEED BACCARAT': 'STAKE スピードバカラ',
+  'Mega Sic Bac': 'Mega Sic Bac',
+  'MEGA BACCARAT': 'メガバカラ',
+};
+function toJaTableName(en){
+  if(en == null) return '';
+  let n = String(en).trim();
+  if(!n) return n;
+  if(_TABLE_OVERRIDES[n]) return _TABLE_OVERRIDES[n];
+  // 全大文字 + underscore = 内部コード (翻訳対象外)
+  if(n === n.toUpperCase() && n.includes('_')) return n;
+  // 連続パターンから先に置換 (長いマッチ優先)
+  n = n.replace(/Priv[e\u00e9]\s*Lounge\s*Baccarat\s*Squeeze/gi, 'プライベラウンジ・スクイーズバカラ');
+  n = n.replace(/Priv[e\u00e9]\s*Lounge\s*Baccarat/gi, 'プライベラウンジバカラ');
+  n = n.replace(/Korean\s+Priv[e\u00e9]\s*Lounge\s*Baccarat/gi, '韓国プライベラウンジバカラ');
+  n = n.replace(/Korean\s+Turbo\s+Baccarat/gi, '韓国ターボバカラ');
+  n = n.replace(/Korean\s+Speed\s+Baccarat/gi, '韓国スピードバカラ');
+  n = n.replace(/Korean\s+Baccarat/gi, '韓国バカラ');
+  n = n.replace(/Japanese\s+Speed\s+Baccarat/gi, '日本語スピードバカラ');
+  n = n.replace(/Japanese\s+Baccarat/gi, '日本語バカラ');
+  n = n.replace(/Chinese\s+Speed\s+Baccarat/gi, '中国スピードバカラ');
+  n = n.replace(/Chinese\s+Baccarat/gi, '中国バカラ');
+  n = n.replace(/Thai\s+Speed\s+Baccarat/gi, 'タイスピードバカラ');
+  n = n.replace(/Thai\s+Baccarat/gi, 'タイバカラ');
+  n = n.replace(/Vietnamese\s+Speed\s+Baccarat/gi, 'ベトナムスピードバカラ');
+  n = n.replace(/Vietnamese\s+Baccarat/gi, 'ベトナムバカラ');
+  n = n.replace(/Indonesian\s+Speed\s+Baccarat/gi, 'インドネシアスピードバカラ');
+  n = n.replace(/Indonesian\s+Baccarat/gi, 'インドネシアバカラ');
+  n = n.replace(/Fortune\s*6\s+Baccarat/gi, 'フォーチュン6バカラ');
+  n = n.replace(/Super\s*8\s+Baccarat/gi, 'スーパー8バカラ');
+  n = n.replace(/Speed\s+Baccarat/gi, 'スピードバカラ');
+  n = n.replace(/Turbo\s+Baccarat/gi, 'ターボバカラ');
+  n = n.replace(/Squeeze\s+Baccarat/gi, 'スクイーズバカラ');
+  n = n.replace(/Baccarat\s+Squeeze/gi, 'バカラスクイーズ');
+  n = n.replace(/Baccarat\s+Lobby/gi, 'バカラロビー');
+  n = n.replace(/Mega\s+Baccarat/gi, 'メガバカラ');
+  n = n.replace(/\bBaccarat\b/gi, 'バカラ');
+  // 余分なスペースを整理
+  return n.replace(/\s+/g, ' ').replace(/\s*バカラ\s*/g, 'バカラ').trim();
+}
 function ageSecFromIso(iso){ if(!iso) return 99999; try{ return Math.max(0,(Date.now()-Date.parse(iso))/1000); }catch(e){ return 99999; } }
 function fmtAge(sec){ if(sec==null||!isFinite(sec)) return '-'; if(sec<60) return Math.floor(sec)+'s'; if(sec<3600) return Math.floor(sec/60)+'m'; return Math.floor(sec/3600)+'h'; }
 function decisionId(){ const a=crypto.getRandomValues(new Uint8Array(8)); return 'dec_'+Array.from(a).map(x=>x.toString(16).padStart(2,'0')).join(''); }
@@ -558,7 +607,9 @@ function renderStatsBar(){
   const last = all[0];
   document.getElementById('sbLast').textContent = last ? `${(last.friend_action||{}).action||''} ${fmtAge(ageSecFromIso(last.received_at))}前` : '-';
   // 選択テーブル
-  document.getElementById('sbTable').textContent = selected.table_name || '未選択';
+  const sbT = document.getElementById('sbTable');
+  sbT.textContent = selected.table_name ? toJaTableName(selected.table_name) : '未選択';
+  sbT.title = selected.table_name || '';
 }
 
 // ---------- 受け子 GUI 接続パネル ----------
@@ -607,10 +658,13 @@ function renderPilots(){
       const online = ageSec < 60;
       const busy = Array.isArray(_state.decisions.processing) && _state.decisions.processing.some(d=>(d.target_executor_id||'')===exec.executor_id);
       if(!online) pillHtml='<span class="pill offline">オフライン</span>';
+      else if(exec.recovering) pillHtml='<span class="pill warn">復旧中</span>';
       else if(busy) pillHtml='<span class="pill active">処理中</span>';
       else if(exec.bettable && exec.table_name) pillHtml='<span class="pill ok">待機中</span>';
       else pillHtml='<span class="pill warn">準備未完</span>';
-      if(!exec.bettable) pillHtml += ' <span class="pill err">BET不可</span>';
+      if(exec.recovering && exec.recovering_reason) pillHtml += ' <span class="pill warn">'+escHtml(exec.recovering_reason.slice(0,40))+'</span>';
+      if(exec.inactivity_modal_unresolved) pillHtml += ' <span class="pill err">無操作モーダル</span>';
+      if(!exec.bettable && !exec.recovering) pillHtml += ' <span class="pill err">BET不可</span>';
       if(exec.session_elsewhere_unresolved) pillHtml += ' <span class="pill err">セッション奪取</span>';
       execLine = `GUI: ${escHtml(exec.label||exec.executor_id)} &middot; OS: ${escHtml(exec.os||'-')} &middot; 最終通信: ${fmtAge(ageSec)}前`;
     }
@@ -664,8 +718,11 @@ function renderExecutors(){
     const capsStr = [caps.allow_banker?'B':'-', caps.allow_tie?'T':'-', caps.allow_switch_table?'SW':'-'].join('/');
     let pills='';
     pills += online ? '<span class="pill ok">オンライン</span>' : '<span class="pill offline">オフライン</span>';
+    if(e.recovering) pills += ' <span class="pill warn" style="animation:pulseWarn 1s ease-in-out infinite">復旧中</span>';
     pills += e.bettable ? ' <span class="pill ok">BET可</span>' : ' <span class="pill err">BET不可</span>';
     if(recExh) pills += ' <span class="pill err">復旧失敗</span>';
+    if(e.inactivity_modal_unresolved) pills += ' <span class="pill err">無操作モーダル検知</span>';
+    if((e.inactivity_dismissed_count||0) > 0) pills += ` <span class="pill">モーダル自動解除×${e.inactivity_dismissed_count}</span>`;
     if(e.session_elsewhere_unresolved) pills += ' <span class="pill err">セッション奪取</span>';
     const errHtml = e.error ? `<div class="err">${escHtml(e.error)}</div>` : '';
     c.innerHTML = `
@@ -747,7 +804,7 @@ function renderLearning(){
     else if(side && out && out===side) cls='win';
     else if(side && out) cls='lose';
     row.className='bet-row '+cls;
-    const tname=escHtml(r.d.table_name||r.d.table_id||'-');
+    const tname=escHtml(toJaTableName(r.d.table_name||r.d.table_id||'-'));
     const deltaRaw = r.res.stake_delta;
     let delta='';
     if(deltaRaw!=null){ const n=Number(deltaRaw); delta = (n>=0?'+':'') + '$'+n.toFixed(2); }
@@ -823,13 +880,17 @@ function renderTables(){
     }
     const players = (it.s.players!=null) ? it.s.players : '-';
     const hands = (it.s.hands!=null) ? it.s.hands : '-';
+    const displayName = toJaTableName(name || it.tid);
     btn.innerHTML = `
-      <div class="tname">${escHtml(name||it.tid)}</div>
+      <div class="tname" title="${escHtml(name||it.tid)}">${escHtml(displayName)}</div>
       <div class="roadmap">${roadHtml||'<span style="color:var(--text-muted)">罫線データなし</span>'}</div>
       <div class="tmeta"><span>${escHtml(players)}人</span><span>${escHtml(hands)}ハンド</span></div>`;
     btn.onclick = () => {
       const wasSame = selected.table_id === String(it.tid);
       selected = { provider, table_id:String(it.tid), table_name:name };
+      // UI には日本語表示を優先.
+      const selT = document.getElementById('selectedTable');
+      if(selT){ selT.textContent = toJaTableName(name||it.tid); selT.title = name||''; }
       document.getElementById('selectedMeta').textContent='provider='+provider+' table_id='+it.tid;
       persistState();
       renderTables();
@@ -870,19 +931,30 @@ function renderDetailPanel(){
   panel.classList.remove('empty');
   const list = (_state.snapshots && _state.snapshots.snapshots && _state.snapshots.snapshots[selected.provider]) || {};
   const s = list[selected.table_id] || {};
-  document.getElementById('detailTableName').textContent = s.table_name || selected.table_name || selected.table_id;
-  // 大きな罫線
+  const detailEn = s.table_name || selected.table_name || selected.table_id;
+  const detailEl = document.getElementById('detailTableName');
+  detailEl.textContent = toJaTableName(detailEn);
+  detailEl.title = detailEn;  // 元の英語名を tooltip で確認可
+  // 大きな罫線は直近 20 を表示
   const lastArr = s.last_results || s.last_10 || '';
   const str = (Array.isArray(lastArr) ? lastArr.join('') : String(lastArr||'')).slice(-20);
   let roadHtml = '';
-  let p=0,b=0,t=0;
   for(const ch of str){
     const u = ch.toUpperCase();
-    if(u==='B'){ roadHtml+=`<span class="dot-B">${escHtml(ch)}</span>`; b++; }
-    else if(u==='P'){ roadHtml+=`<span class="dot-P">${escHtml(ch)}</span>`; p++; }
-    else if(u==='T'){ roadHtml+=`<span class="dot-T">${escHtml(ch)}</span>`; t++; }
+    if(u==='B') roadHtml+=`<span class="dot-B">${escHtml(ch)}</span>`;
+    else if(u==='P') roadHtml+=`<span class="dot-P">${escHtml(ch)}</span>`;
+    else if(u==='T') roadHtml+=`<span class="dot-T">${escHtml(ch)}</span>`;
   }
   document.getElementById('detailRoadmap').innerHTML = roadHtml||'<span style="color:var(--text-muted);font-size:14px">まだ罫線データなし</span>';
+  // P/B/T カウントは シュー全体 (sequence) を数える → ハンド数と一致させる
+  const fullSeq = String(s.sequence || str || '');
+  let p=0, b=0, t=0;
+  for(const ch of fullSeq){
+    const u = ch.toUpperCase();
+    if(u==='B') b++;
+    else if(u==='P') p++;
+    else if(u==='T') t++;
+  }
   document.getElementById('detailP').textContent = p;
   document.getElementById('detailB').textContent = b;
   document.getElementById('detailT').textContent = t;
@@ -917,7 +989,7 @@ function renderHistory(){
     const fa = x.friend_action||{}, r = x.result||{};
     const out = r.outcome||r.error||'';
     const time = (x.received_at||'').split('T')[1]?.slice(0,8)||'';
-    return `[${time}] ${statusJa(x.status)} ${x.table_name||x.table_id||''} ${fa.action||''} ${fa.side||''} -> ${out} (${(x.decision_id||'').slice(-10)})`;
+    return `[${time}] ${statusJa(x.status)} ${toJaTableName(x.table_name||x.table_id||'')} ${fa.action||''} ${fa.side||''} -> ${out} (${(x.decision_id||'').slice(-10)})`;
   };
   document.getElementById('histPending').textContent = p.map(fmtRow).join('\n')||'(なし)';
   document.getElementById('histDone').textContent = d.map(fmtRow).join('\n')||'(なし)';
@@ -943,6 +1015,8 @@ function getStandbyExecutors(){
     const ageSec = ageSecFromIso(e.updated_at);
     if(ageSec >= 60) return false;
     if(e.session_elsewhere_unresolved) return false;
+    if(e.inactivity_modal_unresolved) return false;
+    if(e.recovering) return false;
     return !!e.bettable;
   });
 }

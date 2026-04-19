@@ -23,10 +23,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 BA_ROOT = Path(__file__).parent.parent / "ba"
@@ -34,7 +35,10 @@ sys.path.insert(0, str(BA_ROOT))
 
 from camoufox.sync_api import Camoufox  # type: ignore
 
+import requests
+
 from analytics_pragmatic_db import init_db, save_shoe, log_raw, stats
+from snapshot_store import update_snapshot
 
 LOBBY_URL = "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat"
 # 収集器専用のCamoufoxプロファイル (LAPLACE Evolution側と競合しないよう分離)
@@ -54,6 +58,26 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("pragmatic.collector")
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _make_snapshot(table_id: str, buf: "ShoeBuffer") -> dict:
+    last_hand = buf.hands[-1] if buf.hands else None
+    return {
+        "captured_at": _utc_now_iso(),
+        "table_id": table_id,
+        "table_name": buf.table_name or "",
+        "table_type": buf.table_type,
+        "hands": len(buf.hands or []),
+        "fresh_start": bool(buf.fresh_start),
+        "statistics": buf.last_statistics,
+        "shoe_summary": buf.last_shoe_summary,
+        "good_roads_map": buf.last_good_roads,
+        "last_hand": last_hand,
+    }
 
 
 class ShoeBuffer:
@@ -115,6 +139,38 @@ class Collector:
         self.stats_msg = 0
         self.stats_save = 0
         self.stats_shuffle = 0
+        self.snapshot_push = (os.getenv("BACOPY_PUSH_SNAPSHOTS", "") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        self.snapshot_api_url = (os.getenv("BACOPY_API_URL", "") or "").rstrip("/")
+        self.snapshot_api_key = (os.getenv("BACOPY_API_KEY", "") or "").strip()
+        self.snapshot_last_at: dict[str, float] = {}
+
+    def _push_snapshot(self, table_id: str, snap: dict) -> None:
+        if not (self.snapshot_push and self.snapshot_api_url and self.snapshot_api_key):
+            return
+        try:
+            requests.post(
+                f"{self.snapshot_api_url}/api/snapshots/update",
+                headers={"Authorization": f"Bearer {self.snapshot_api_key}", "Content-Type": "application/json"},
+                json={"provider": "pragmatic", "table_id": table_id, "snapshot": snap},
+                timeout=5,
+            )
+        except Exception:
+            return
+
+    def _emit_snapshot(self, table_id: str, buf: ShoeBuffer) -> None:
+        now = time.time()
+        last = self.snapshot_last_at.get(table_id, 0.0)
+        if now - last < 1.0:
+            return
+        snap = _make_snapshot(table_id, buf)
+        update_snapshot("pragmatic", table_id, snap)
+        self._push_snapshot(table_id, snap)
+        self.snapshot_last_at[table_id] = now
 
     def on_ws_frame(self, payload):
         """WSフレーム受信コールバック。payload は bytes/str の可能性あり。"""
@@ -166,6 +222,8 @@ class Collector:
         gr = msg.get("gameResult")
         if isinstance(gr, list) and gr:
             buf.add_hands(gr)
+
+        self._emit_snapshot(table_id, buf)
 
         if self.raw_log:
             log_raw(

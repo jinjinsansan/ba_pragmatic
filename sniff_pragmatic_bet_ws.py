@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime
@@ -84,6 +85,7 @@ def dump_frames(out_dir: Path, page, stage: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("table_substr", nargs="?", default="speed baccarat 1")
+    ap.add_argument("--side", default="player", help="Which side you will bet manually: player|banker|tie (for bc labeling)")
     ap.add_argument("--seconds", type=int, default=240)
     ap.add_argument("--auto-click-wait-sec", type=int, default=60)
     ap.add_argument("--no-auto-click", action="store_true", help="Do not auto-click table; operate manually.")
@@ -274,6 +276,31 @@ def main(argv: list[str] | None = None) -> int:
 
     # Quick summary for operator
     sends = [m for m in ws_msgs if m.get("dir") == "send"]
+    # Extract bc="<n>" from outgoing lpbet XML (redacted summary; safe to share).
+    bc_codes: list[str] = []
+    for m in sends:
+        p = str(m.get("payload") or "")
+        if "<lpbet" not in p or 'bc="' not in p:
+            continue
+        mm = re.search(r'bc="([^"]+)"', p)
+        if mm:
+            bc_codes.append(mm.group(1))
+    bc_unique = sorted(set(bc_codes), key=lambda x: (len(x), x))
+    bc_summary = {
+        "side": str(args.side or "").strip().lower(),
+        "bc_codes": bc_unique,
+        "count": len(bc_codes),
+        "note": "This is a redacted analyzer output (no session tokens).",
+    }
+    if len(bc_unique) != 1:
+        bc_summary["warning"] = (
+            f"expected exactly 1 bc code for side={args.side!r}, got {bc_unique}. "
+            "Re-run sniff and bet ONE side ONCE."
+        )
+    (out_dir / "bc_summary.json").write_text(json.dumps(bc_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[sniff] bc_summary side={bc_summary['side']} bc_codes={bc_unique} (n={len(bc_codes)})", flush=True)
+    if bc_summary.get("warning"):
+        print(f"[sniff][WARN] {bc_summary['warning']}", flush=True)
     (out_dir / "send_pragmatic_samples.txt").write_text(
         "\n\n".join(f"{m.get('url')}\n{m.get('payload')}" for m in sends[:60]),
         encoding="utf-8",

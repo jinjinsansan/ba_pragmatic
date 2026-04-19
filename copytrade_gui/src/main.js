@@ -2,10 +2,72 @@ const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
+const os = require('os');
 
 let mainWindow = null;
 let botProcess = null;
+let watchdogProcess = null;
+
+// ===== Process hygiene: PID 永続化 + orphan camoufox 掃除 =====
+// GUI 起動時・stopBot 時・auto-restart 前に必ず呼ばれる。
+// 前回 run が SIGKILL で落ちて Camoufox がゾンビになるのを防ぐ。
+function _pidFilePath() {
+  try { return path.join(app.getPath('userData'), 'bacopy_process_tree.json'); }
+  catch (_) { return path.join(os.tmpdir(), 'bacopy_process_tree.json'); }
+}
+function savePidTree(obj) {
+  try {
+    const p = _pidFilePath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(obj, null, 2), 'utf-8');
+  } catch (e) { console.warn('[Main] savePidTree failed:', e.message); }
+}
+function loadPidTree() {
+  try {
+    const p = _pidFilePath();
+    if (!fs.existsSync(p)) return null;
+    return JSON.parse(fs.readFileSync(p, 'utf-8'));
+  } catch (_) { return null; }
+}
+function killTreeWin(pid) {
+  if (!pid) return;
+  try {
+    execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' });
+    console.log(`[Main] killTreeWin pid=${pid}`);
+  } catch (_) { /* process already dead — fine */ }
+}
+function killAllByImage(imageName) {
+  if (!imageName) return;
+  try {
+    execSync(`taskkill /F /T /IM "${imageName}"`, { stdio: 'ignore' });
+    console.log(`[Main] killAllByImage ${imageName}`);
+  } catch (_) { /* no process — fine */ }
+}
+function cleanupOrphanCamoufox() {
+  // Called before each startBot + on app quit. Kills any stray camoufox/firefox.
+  if (process.platform !== 'win32') return;
+  const prev = loadPidTree();
+  if (prev && Array.isArray(prev.camoufox_pids)) {
+    for (const pid of prev.camoufox_pids) killTreeWin(pid);
+  }
+  if (prev && prev.executor_pid) killTreeWin(prev.executor_pid);
+  // Safety net: kill ALL camoufox.exe before spawn.
+  killAllByImage('camoufox.exe');
+  try { fs.unlinkSync(_pidFilePath()); } catch (_) {}
+}
+function listCamoufoxPids() {
+  if (process.platform !== 'win32') return [];
+  try {
+    const out = execSync('tasklist /FI "IMAGENAME eq camoufox.exe" /FO CSV /NH', { encoding: 'utf-8' });
+    const pids = [];
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.match(/^"camoufox\.exe","(\d+)"/i);
+      if (m) pids.push(parseInt(m[1], 10));
+    }
+    return pids;
+  } catch (_) { return []; }
+}
 
 // === Auto-Restart on Engine Crash ===
 // userInitiatedStop=false (= 予期しない終了) かつ lastStartConfig がある場合のみ自動再開。
@@ -29,6 +91,69 @@ process.on('uncaughtException', (err) => {
 function repoRoot() {
   // copytrade_gui/src -> bacopy repo root
   return path.join(__dirname, '..', '..');
+}
+
+// ===== Watchdog helpers =====
+// 外部 Python プロセスで executor / camoufox / engine.log を監視。
+// scripts/watchdog_bacopy.py を spawn。GUI 停止時に確実に kill。
+function startWatchdog() {
+  if (app.isPackaged) {
+    // Packaged では watchdog スクリプトが無い可能性 — skip.
+    console.log('[Main] watchdog skipped (packaged build)');
+    return;
+  }
+  if (watchdogProcess) {
+    console.log('[Main] watchdog already running');
+    return;
+  }
+  const root = repoRoot();
+  const script = path.join(root, 'scripts', 'watchdog_bacopy.py');
+  if (!fs.existsSync(script)) {
+    console.warn('[Main] watchdog script missing:', script);
+    return;
+  }
+  const venvPython = process.platform === 'win32'
+    ? path.join(root, 'venv', 'Scripts', 'python.exe')
+    : path.join(root, 'venv', 'bin', 'python');
+  const py = fs.existsSync(venvPython) ? venvPython : 'python';
+  try {
+    watchdogProcess = spawn(py, ['-X', 'utf8', '-u', script], {
+      cwd: root,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    console.log('[Main] watchdog spawned pid=' + watchdogProcess.pid);
+    watchdogProcess.stdout.on('data', (d) => {
+      const s = String(d || '').trim();
+      if (s) console.log('[watchdog]', s);
+    });
+    watchdogProcess.stderr.on('data', (d) => {
+      const s = String(d || '').trim();
+      if (s) console.warn('[watchdog:err]', s);
+    });
+    watchdogProcess.on('exit', (code) => {
+      console.log('[Main] watchdog exited code=' + code);
+      watchdogProcess = null;
+    });
+  } catch (e) {
+    console.error('[Main] startWatchdog failed:', e && e.message);
+    watchdogProcess = null;
+  }
+}
+
+function stopWatchdog() {
+  if (!watchdogProcess) return;
+  const pid = watchdogProcess.pid;
+  try {
+    if (process.platform === 'win32') {
+      killTreeWin(pid);
+    } else {
+      watchdogProcess.kill('SIGTERM');
+    }
+  } catch (_) {}
+  watchdogProcess = null;
+  console.log('[Main] watchdog stopped pid=' + pid);
 }
 
 function resolveEnvPath() {
@@ -238,6 +363,25 @@ function startBot(config) {
 }
 
 function _doStartBot(config) {
+  // Clean any orphan camoufox / executor before spawning a fresh one.
+  // Stake session conflicts (session elsewhere) をこれで抑制.
+  try { cleanupOrphanCamoufox(); } catch (_) {}
+
+  // NEW SESSION (config.resume === false): executor 側の seq7 state を消して
+  // Stream / SEQ7 を真にリセット. これをしないと Python が過去の history
+  // を shoe_history として client に再送してしまう。
+  if (config && config.resume === false) {
+    try {
+      const profileDir = path.join(app.getPath('userData'), 'profiles', 'executor_pragmatic');
+      const stateFile = path.join(profileDir, 'seq7_state.json');
+      if (fs.existsSync(stateFile)) {
+        fs.unlinkSync(stateFile);
+        console.log('[Main] NEW SESSION — removed seq7_state.json');
+      }
+    } catch (e) {
+      console.warn('[Main] seq7 state reset failed:', e.message);
+    }
+  }
   if (autoRestartTimer) {
     clearTimeout(autoRestartTimer);
     autoRestartTimer = null;
@@ -265,8 +409,22 @@ function _doStartBot(config) {
     windowsHide: true,
   });
 
+  // PID tree 記録: 次回 cleanupOrphanCamoufox で確実に kill するため.
+  // Camoufox は spawn 後数秒遅れて launch するので、10 秒後にスナップショットを取る.
+  savePidTree({ executor_pid: botProcess.pid, camoufox_pids: [], started_at: Date.now() });
+  setTimeout(() => {
+    try {
+      const camPids = listCamoufoxPids();
+      savePidTree({ executor_pid: botProcess ? botProcess.pid : null, camoufox_pids: camPids, started_at: Date.now() });
+    } catch (_) {}
+  }, 10000);
+
   botProcess.stdout.on('data', _emitStdoutLines);
   botProcess.stderr.on('data', _emitStderr);
+
+  // ===== watchdog spawn (外部監視) =====
+  // botProcess と同時に起動。GUI 停止時に自動 kill される (stopBot/before-quit)。
+  startWatchdog();
 
   const thisProcess = botProcess;
   const thisSpawnAt = lastSpawnAt;
@@ -323,16 +481,25 @@ function _doStartBot(config) {
 }
 
 function stopBot() {
-  if (!botProcess) return;
+  if (!botProcess) {
+    stopWatchdog();
+    return;
+  }
   userInitiatedStop = true;
   autoRestartCount = 0;
   if (autoRestartTimer) {
     clearTimeout(autoRestartTimer);
     autoRestartTimer = null;
   }
+  // tree kill: executor + Camoufox children を一発で終了 (orphan 防止).
+  const pid = botProcess.pid;
+  if (process.platform === 'win32' && pid) {
+    try { killTreeWin(pid); } catch (_) {}
+  }
   try {
     botProcess.kill();
   } catch (_) {}
+  stopWatchdog();
 }
 
 // === Supabase Auth (bafather.uk) ===
@@ -659,6 +826,10 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // 起動時: 前回 run が SIGKILL 等で落ちて残した orphan camoufox を掃除.
+  // これをやらないと Stake が複数セッション検知 → session_elsewhere 連発.
+  try { cleanupOrphanCamoufox(); } catch (e) { console.warn('[Main] startup cleanup failed:', e.message); }
+
   createWindow();
 
   ipcMain.handle('window-minimize', () => { if (mainWindow) mainWindow.minimize(); return { ok: true }; });
@@ -718,4 +889,13 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   stopBot();
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', () => {
+  try {
+    userInitiatedStop = true;
+    stopWatchdog();
+    if (botProcess && botProcess.pid) killTreeWin(botProcess.pid);
+    cleanupOrphanCamoufox();
+  } catch (_) {}
 });
