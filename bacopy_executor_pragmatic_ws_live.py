@@ -856,6 +856,52 @@ def find_shell_app_frame(page, attempts: int = 60):
     return None
 
 
+def _is_lobby_frame_url(url: str) -> bool:
+    u = str(url or "")
+    return (
+        "pragmaticplaylive" in u
+        and ("desktop/lobby" in u or "lobby2" in u or "apps/lobby" in u)
+    )
+
+
+def find_lobby_frames(page) -> list[Any]:
+    frames: list[Any] = []
+    try:
+        for f in page.frames:
+            try:
+                if _is_lobby_frame_url(f.url) or f.name == "shell-app":
+                    if f not in frames:
+                        frames.append(f)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    if not frames:
+        frames.append(page)
+    return frames
+
+
+def _refresh_game_frame(page, game_frame):
+    try:
+        if game_frame and not game_frame.is_detached():
+            u = game_frame.url or ""
+            if "pragmaticplaylive" in u or "qpidreoxcc.net" in u:
+                return game_frame
+    except Exception:
+        pass
+    gf = find_game_frame(page, attempts=1)
+    if gf and gf != game_frame:
+        try:
+            gf.evaluate(_WS_BRIDGE_INIT)
+        except Exception:
+            pass
+        try:
+            send_log(f"[session] game frame updated: {gf.url[:120]}")
+        except Exception:
+            pass
+    return gf or game_frame
+
+
 @dataclass
 class _PragmaticState:
     # table mapping
@@ -2098,6 +2144,96 @@ def _dump_inactivity_dom(roots, state: Optional[_PragmaticState]) -> None:
         pass
 
 
+_SESSION_ENDED_DETECT_JS = r"""
+() => {
+  // Pragmatic Play の "セッションが終了しました" ハードタイムアウト.
+  // OK を押すと TOP に戻されるので検知のみ (処理側で goto lobby する).
+  const TEXT = [
+    /セッションが終了しました/,
+    /セッションの有効期限が切れました/,
+    /session\s+has\s+ended/i,
+    /session\s+expired/i,
+    /session\s+ended/i,
+  ];
+  function* walk(root){
+    if (!root) return;
+    const it = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let n; while ((n = it.nextNode())) { yield n; if (n.shadowRoot) for (const x of walk(n.shadowRoot)) yield x; }
+  }
+  function visible(el){
+    try{
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 20 && r.height > 10;
+    }catch(_){ return false; }
+  }
+  function ownText(el){
+    let s = '';
+    for (const ch of el.childNodes) if (ch.nodeType === 3) s += ch.textContent || '';
+    return s.replace(/\s+/g, ' ').trim();
+  }
+  for (const el of walk(document)) {
+    if (!visible(el)) continue;
+    const t = ownText(el);
+    if (!t) continue;
+    for (const p of TEXT) if (p.test(t)) return { found: true, text: t.slice(0, 120) };
+  }
+  return { found: false };
+}
+"""
+
+
+def _dismiss_session_ended_modal(page, state: Optional[_PragmaticState] = None) -> bool:
+    """Pragmatic の「セッションが終了しました」ハードタイムアウトを検出.
+
+    OK ボタンを押すと Stake TOP に戻されセッション完全ロストするので,
+    OK は絶対に押さず lobby URL に直接 goto することで復旧する.
+    goto 後は main loop の _join_table が target テーブルに再入場する.
+    """
+    try:
+        roots = [page] + list(getattr(page, "frames", []) or [])
+    except Exception:
+        roots = [page]
+    try:
+        ctx_pages = list(getattr(getattr(page, "context", None), "pages", []) or [])
+    except Exception:
+        ctx_pages = []
+    for p in ctx_pages:
+        if p not in roots:
+            roots.append(p)
+            try:
+                for fr in list(getattr(p, "frames", []) or []):
+                    if fr not in roots:
+                        roots.append(fr)
+            except Exception:
+                continue
+    detected = False
+    detected_text = ""
+    for root in roots:
+        try:
+            res = root.evaluate(_SESSION_ENDED_DETECT_JS)
+        except Exception:
+            continue
+        if isinstance(res, dict) and res.get("found"):
+            detected = True
+            detected_text = (res.get("text") or detected_text)
+            break
+    if not detected:
+        return False
+    try:
+        send_log(f"[session-ended] detected text='{detected_text[:80]}' — navigating to lobby (skip OK)")
+    except Exception:
+        pass
+    # OK を押さず lobby に直接戻す (TOP ページ行きを回避).
+    try:
+        page.goto(LOBBY_URL, wait_until="domcontentloaded", timeout=30000)
+    except Exception as e:
+        try: send_log(f"[session-ended] goto lobby err={e}")
+        except Exception: pass
+    return True
+
+
 def _dismiss_inactivity_modal(page, state: Optional[_PragmaticState] = None) -> bool:
     """Best-effort auto-dismiss for Stake 'inactivity paused' modal.
 
@@ -2396,19 +2532,118 @@ def _translate_en_to_ja(en: str) -> str:
 
 
 def _build_substr_candidates(user_input: str) -> list[str]:
-    """Accept pipe/comma-separated substrings, auto-add JA translation for EN terms."""
+    """Accept pipe/comma-separated substrings, auto-add JA translation for EN terms.
+
+    Pragmatic lobby の実際のボタンは "スピードバカラ18$ 0.2" のように
+    バカラ名と数字間にスペースがない. さらにチップ範囲が連結されるので,
+    EN → JA 変換時に「space あり / なし」両バリアントを候補化する.
+    """
     raw = (user_input or "").replace(",", "|")
     parts = [p.strip() for p in raw.split("|") if p.strip()]
     out: list[str] = []
+
+    def _push(val: str) -> None:
+        if val and val not in out:
+            out.append(val)
+
     for p in parts:
-        if p not in out:
-            out.append(p)
+        _push(p)
         # EN → JA auto-add
         if re.search(r"[A-Za-z]", p):
             ja = _translate_en_to_ja(p)
-            if ja and ja != p and ja not in out:
-                out.append(ja)
+            if ja and ja != p:
+                _push(ja)
+                # space なし版 (Pragmatic lobby の実表記). 例: "スピードバカラ 18" → "スピードバカラ18"
+                ja_nospace = re.sub(r"([\u3040-\u30FF\u4E00-\u9FAF])\s+(\d)", r"\1\2", ja)
+                _push(ja_nospace)
+                # 同上を EN 側にも適用 (Speed Baccarat 18 → SpeedBaccarat18 等はここでは不要)
+        else:
+            # 既に JA の場合, space なし版も追加
+            ja_nospace = re.sub(r"([\u3040-\u30FF\u4E00-\u9FAF])\s+(\d)", r"\1\2", p)
+            _push(ja_nospace)
     return out
+
+
+_LOBBY_TRY_CLICK_JS = r"""
+(args) => {
+  const candidates = (args && args.candidates) || [];
+  const maxScroll = (args && args.maxScroll) || 10;
+  const scrollRatio = (args && args.scrollRatio) || 0.85;
+  function norm(s){
+    return (s || '')
+      .replace(/\s+/g, '')
+      .replace(/[\$￥¥]/g, '')
+      .toLowerCase();
+  }
+  function match(text){
+    const t = norm(text);
+    if (!t) return '';
+    for (const c of candidates) {
+      const n = norm(c);
+      if (n && t.includes(n)) return c;
+    }
+    return '';
+  }
+  function clickEl(el){
+    try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch(_) {}
+    try { el.focus(); } catch(_) {}
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const base = { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, view: window };
+    try {
+      if (window.PointerEvent) {
+        el.dispatchEvent(new PointerEvent('pointerdown', base));
+        el.dispatchEvent(new PointerEvent('pointerup', base));
+      }
+      el.dispatchEvent(new MouseEvent('mousedown', base));
+      el.dispatchEvent(new MouseEvent('mouseup', base));
+      el.dispatchEvent(new MouseEvent('click', base));
+    } catch (_) {}
+    try { el.click(); } catch(_) {}
+  }
+  function findAndClick(){
+    const nodes = [
+      ...document.querySelectorAll('[role="button"], button, a, div[role="button"], [data-testid*="table"], [data-testid*="lobby"]')
+    ];
+    for (const el of nodes) {
+      const t = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+      const m = match(t);
+      if (m) {
+        clickEl(el);
+        return { clicked: true, match: m, text: t.slice(0, 120), nodes: nodes.length };
+      }
+    }
+    return { clicked: false, nodes: nodes.length };
+  }
+  function scrollables(){
+    const out = [];
+    const root = document.scrollingElement || document.documentElement || document.body;
+    if (root) out.push(root);
+    const all = document.querySelectorAll('*');
+    for (const el of all) {
+      try {
+        const cs = getComputedStyle(el);
+        if (!/(auto|scroll)/.test(cs.overflowY)) continue;
+        if (el.scrollHeight - el.clientHeight > 50) out.push(el);
+      } catch(_) {}
+    }
+    return out;
+  }
+  const scrollers = scrollables();
+  for (let i = 0; i <= maxScroll; i++) {
+    const res = findAndClick();
+    if (res.clicked) return { ...res, attempts: i, scrollers: scrollers.length };
+    for (const sc of scrollers) {
+      try {
+        const next = sc.scrollTop + sc.clientHeight * scrollRatio;
+        sc.scrollTop = next >= sc.scrollHeight ? 0 : next;
+      } catch(_) {}
+    }
+  }
+  return { clicked: false, attempts: maxScroll, scrollers: scrollers.length };
+}
+"""
 
 
 def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Optional[_PragmaticState] = None, on_tick=None) -> None:
@@ -2461,12 +2696,28 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Opt
                 except Exception:
                     print(f"[INFO] waiting for shell-app (login) elapsed={time.time()-t0:.0f}s", flush=True)
 
+    def _pick_lobby_frame() -> Any:
+        frames = find_lobby_frames(page)
+        best = frames[0] if frames else page
+        best_cnt = 0
+        for fr in frames:
+            try:
+                cnt = fr.locator('[role="button"]').count()
+            except Exception:
+                cnt = 0
+            if cnt > best_cnt:
+                best_cnt = cnt
+                best = fr
+        return best
+
+    lobby_frame = _pick_lobby_frame()
     # SPA 描画待ち: [role="button"] が出現するまで最大30秒待機
     print("[Stage 3b] waiting for SPA render (role=button elements) ...", flush=True)
     for _w in range(30):
         try:
-            if shell.locator('[role="button"]').count() > 0:
-                print(f"[Stage 3b] SPA rendered ({shell.locator('[role=\"button\"]').count()} buttons) after {_w}s", flush=True)
+            cnt = lobby_frame.locator('[role="button"]').count()
+            if cnt > 0:
+                print(f"[Stage 3b] SPA rendered ({cnt} buttons) after {_w}s", flush=True)
                 break
         except Exception:
             pass
@@ -2576,58 +2827,67 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Opt
                     on_tick()
                 except Exception:
                     pass
-            # 候補の各文字列で順に試行 (EN → JA → ユーザー指定).
-            for cand in candidates:
-                if clicked:
-                    break
+            lobby_frames = find_lobby_frames(page)
+            clicked_info = None
+            for fr in lobby_frames:
                 try:
-                    locator = shell.get_by_text(re.compile(re.escape(cand), re.I))
-                    if locator.count() > 0:
-                        first = locator.first
-                        first.scroll_into_view_if_needed(timeout=3000)
-                        try:
-                            shell.locator(f"[role='button']:has-text('{cand}')").first.click(timeout=3000, force=True)
-                        except Exception:
-                            try:
-                                shell.locator(f"button:has-text('{cand}')").first.click(timeout=3000, force=True)
-                            except Exception:
-                                first.click(timeout=3000, force=True)
-                        clicked = True
-                        print(f"[Stage 4] clicked '{cand}' via text match", flush=True)
-                        break
+                    res = fr.evaluate(_LOBBY_TRY_CLICK_JS, {"candidates": candidates, "maxScroll": 10})
                 except Exception:
-                    pass
-                # フォールバック: テキスト付きセレクタ
-                for sel in [
-                    f"[role='button']:has-text('{cand}')",
-                    f"button:has-text('{cand}')",
-                    f"a:has-text('{cand}')",
-                    f"div:has-text('{cand}')",
-                ]:
+                    continue
+                if isinstance(res, dict) and res.get("clicked"):
+                    clicked_info = res
                     try:
-                        loc = shell.locator(sel)
-                        cnt = loc.count()
-                        if cnt > 0:
-                            loc.first.scroll_into_view_if_needed(timeout=3000)
-                            loc.first.click(timeout=3000, force=True)
+                        send_log(f"[lobby] clicked via JS frame={getattr(fr,'url','')[:120]} match='{res.get('match')}' text='{str(res.get('text') or '')[:60]}'")
+                    except Exception:
+                        pass
+                    clicked = True
+                    break
+            if not clicked:
+                lobby_frame = _pick_lobby_frame()
+                for cand in candidates:
+                    if clicked:
+                        break
+                    try:
+                        locator = lobby_frame.get_by_text(re.compile(re.escape(cand), re.I))
+                        if locator.count() > 0:
+                            first = locator.first
+                            first.scroll_into_view_if_needed(timeout=3000)
+                            try:
+                                lobby_frame.locator(f"[role='button']:has-text('{cand}')").first.click(timeout=3000, force=True)
+                            except Exception:
+                                try:
+                                    lobby_frame.locator(f"button:has-text('{cand}')").first.click(timeout=3000, force=True)
+                                except Exception:
+                                    first.click(timeout=3000, force=True)
                             clicked = True
-                            print(f"[Stage 4] clicked via filtered fallback '{sel}' (count={cnt})", flush=True)
+                            print(f"[Stage 4] clicked '{cand}' via text match", flush=True)
                             break
                     except Exception:
-                        continue
+                        pass
+                    # フォールバック: テキスト付きセレクタ
+                    for sel in [
+                        f"[role='button']:has-text('{cand}')",
+                        f"button:has-text('{cand}')",
+                        f"a:has-text('{cand}')",
+                        f"div:has-text('{cand}')",
+                    ]:
+                        try:
+                            loc = lobby_frame.locator(sel)
+                            cnt = loc.count()
+                            if cnt > 0:
+                                loc.first.scroll_into_view_if_needed(timeout=3000)
+                                loc.first.click(timeout=3000, force=True)
+                                clicked = True
+                                print(f"[Stage 4] clicked via filtered fallback '{sel}' (count={cnt})", flush=True)
+                                break
+                        except Exception:
+                            continue
 
-            # 最終フォールバック: テーブルカード [role="button"] (60秒経過後のみ)
-            if not clicked and (time.time() - deadline + float(auto_click_wait_sec)) > 60:
-                try:
-                    btns = shell.locator('[role="button"]')
-                    cnt = btns.count()
-                    if cnt >= 10:
-                        # Skip first (Multi-Baccarat), click 2nd or later
-                        btns.nth(1).click(timeout=3000, force=True)
-                        clicked = True
-                        print(f"[Stage 4] clicked via [role=button] nth(1) (total={cnt})", flush=True)
-                except Exception:
-                    pass
+            # NOTE: 旧フォールバック「60s 経過後 nth(1) 無条件 click」を削除.
+            # 候補が 1 つも match しない場合に lobby の 2 番目ボタン (= Speed Baccarat 6)
+            # を誤クリックして SWITCH_TABLE を破綻させる主因だった.
+            # 代わりに候補が match しないまま timeout したらエラーで返し,
+            # 上位の SWITCH_TABLE が明示的に失敗として扱う.
 
             if not clicked:
                 new_shell = find_shell_app_frame(page, attempts=2)
@@ -3162,14 +3422,19 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         def _on_framenavigated(frame):
             try:
-                if frame != getattr(frame, "page", None) and frame.parent_frame is not None:
-                    return  # child frame — ignore
-            except Exception:
-                pass
-            try:
                 u = frame.url or ""
             except Exception:
                 u = ""
+            if "pragmaticplaylive" in u or "qpidreoxcc.net" in u:
+                try:
+                    frame.evaluate(_WS_BRIDGE_INIT)
+                except Exception:
+                    pass
+            try:
+                if frame != getattr(frame, "page", None) and frame.parent_frame is not None:
+                    return  # child frame — ignore for navigation safety checks
+            except Exception:
+                pass
             if _is_foreign(u):
                 try:
                     send_log(f"[safety] main-frame foreign nav — go_back url={u[:120]}")
@@ -3247,13 +3512,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         while not (state.game_ws_url and state.table_id and state.user_id and state.jsession_id):
             _dismiss_session_elsewhere_modal(page, state)
             try:
-                if not game_frame:
-                    game_frame = find_game_frame(page, attempts=1)
-                    if game_frame:
-                        try:
-                            game_frame.evaluate(_WS_BRIDGE_INIT)
-                        except Exception:
-                            pass
+                game_frame = _refresh_game_frame(page, game_frame)
             except Exception:
                 pass
             try:
@@ -3344,6 +3603,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             prev_at = state.last_bets_open_at
 
             def _pred() -> bool:
+                nonlocal game_frame
+                game_frame = _refresh_game_frame(page, game_frame)
                 try:
                     if state.game_ws_url:
                         page.evaluate("(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)", state.game_ws_url)
@@ -3550,6 +3811,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         pass
 
                 def _pred_ids() -> bool:
+                    nonlocal game_frame
+                    game_frame = _refresh_game_frame(page, game_frame)
                     _pump_ws_events(page, game_frame, state)
                     return bool(state.game_ws_url and state.table_id and state.user_id and state.jsession_id)
 
@@ -3635,6 +3898,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 _dismiss_session_elsewhere_modal(page, state)
             except Exception:
                 pass
+            # ハードセッションタイムアウト (OK 押すと TOP に飛ぶ危険) を検出して lobby goto.
+            try:
+                _dismiss_session_ended_modal(page, state)
+            except Exception:
+                pass
             # 自動復旧: 無操作モーダル (Stake のタイムアウト) を検出してクリック.
             try:
                 _dismiss_inactivity_modal(page, state)
@@ -3646,6 +3914,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             except Exception:
                 pass
             try:
+                game_frame = _refresh_game_frame(page, game_frame)
                 _pump_ws_events(page, game_frame, state)
             except Exception:
                 pass
@@ -3857,6 +4126,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                             except Exception:
                                 pass
                         def _pred_ids2() -> bool:
+                            nonlocal game_frame
+                            game_frame = _refresh_game_frame(page, game_frame)
                             _pump_ws_events(page, game_frame, state)
                             return bool(state.game_ws_url and state.table_id and state.user_id and state.jsession_id)
 
@@ -3866,6 +4137,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         # If numeric table_id provided, wait for operator table id match too (best-effort).
                         if decision_table_id:
                             def _pred_op_match() -> bool:
+                                nonlocal game_frame
+                                game_frame = _refresh_game_frame(page, game_frame)
                                 _pump_ws_events(page, game_frame, state)
                                 return bool(state.operator_table_id and state.operator_table_id == decision_table_id)
 
