@@ -7,6 +7,17 @@ const { spawn } = require('child_process');
 let mainWindow = null;
 let botProcess = null;
 
+// === Auto-Restart on Engine Crash ===
+// userInitiatedStop=false (= 予期しない終了) かつ lastStartConfig がある場合のみ自動再開。
+let userInitiatedStop = false;
+let lastStartConfig = null;
+let autoRestartCount = 0;
+let lastSpawnAt = 0;
+let autoRestartTimer = null;
+const MAX_AUTO_RESTARTS = 10;
+const AUTO_RESTART_DELAY = 5000;
+const STABLE_RUN_THRESHOLD = 5 * 60 * 1000; // 5分以上動いたら成功扱いでカウンタリセット
+
 process.on('uncaughtException', (err) => {
   if (err && (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED')) {
     console.error('[Main] Suppressed EPIPE:', err.message);
@@ -124,6 +135,14 @@ function buildSpawnSpec(config) {
   if (config && config.executor_id) childEnv.BACOPY_EXECUTOR_ID = String(config.executor_id);
   if (config && config.executor_label) childEnv.BACOPY_EXECUTOR_LABEL = String(config.executor_label);
   if (config && config.stake_username) childEnv.BACOPY_EXECUTOR_USERNAME = String(config.stake_username);
+  if (config && config.user_email) childEnv.BACOPY_USER_EMAIL = String(config.user_email);
+  if (config && config.user_email) childEnv.BACOPY_BAFATHER_EMAIL = String(config.user_email);
+  if (config && config.user_id) childEnv.BACOPY_USER_ID = String(config.user_id);
+  // OS info for Master UI display
+  try {
+    const osName = `${process.platform} ${process.arch}`;
+    childEnv.BACOPY_OS = osName;
+  } catch (_) {}
 
   const args = [];
   if (engine.mode === 'packaged') {
@@ -132,6 +151,9 @@ function buildSpawnSpec(config) {
 
   // SEQ7 config
   if (config && config.allow_switch_table) args.push('--allow-switch-table');
+  if (config && config.allow_banker) args.push('--allow-banker');
+  if (config && config.allow_tie) args.push('--allow-tie');
+  if (config && config.assume_bc_012) args.push('--assume-bc-012');
   const chipBase = (config && typeof config.chip_base === 'number') ? config.chip_base : 1;
   args.push('--chip-base', String(chipBase));
 
@@ -162,10 +184,78 @@ function buildSpawnSpec(config) {
   return { exe: engine.exe, cwd: engine.cwd, args: [...engine.baseArgs, ...args], env: childEnv };
 }
 
-function startBot(config) {
-  if (botProcess) return;
+function _mergedEnvForValidation() {
+  // Keep consistent with buildSpawnSpec() merge order: .env wins over process.env
+  const envFile = loadDotEnv();
+  return { ...process.env, ...envFile };
+}
 
-  const spec = buildSpawnSpec(config || {});
+function _validateConfigForSpawn(cfg) {
+  const c = cfg || {};
+  const assume = !!c.assume_bc_012;
+  if (assume) return null;
+  const env = _mergedEnvForValidation();
+  if (c.allow_banker && !env.BACOPY_PRAGMATIC_BC_BANKER) {
+    return 'BANKER is enabled but BACOPY_PRAGMATIC_BC_BANKER is not set. Run sniff_pragmatic_bet_ws.py (banker) or enable "Assume bc 0/1/2" (unsafe).';
+  }
+  if (c.allow_tie && !env.BACOPY_PRAGMATIC_BC_TIE) {
+    return 'TIE is enabled but BACOPY_PRAGMATIC_BC_TIE is not set. Run sniff_pragmatic_bet_ws.py (tie) or enable "Assume bc 0/1/2" (unsafe).';
+  }
+  return null;
+}
+
+function startBot(config) {
+  const cfg = config || {};
+  const verr = _validateConfigForSpawn(cfg);
+  if (verr) {
+    sendToRenderer('agent-message', { type: 'error', message: verr });
+    return;
+  }
+
+  if (botProcess) {
+    // Restart requested while engine is still running.
+    const old = botProcess;
+    botProcess = null;
+    try { old.removeAllListeners('exit'); } catch (_) {}
+    try { old.removeAllListeners('error'); } catch (_) {}
+    try { old.stdout?.removeAllListeners?.('data'); } catch (_) {}
+    try { old.stderr?.removeAllListeners?.('data'); } catch (_) {}
+    let started = false;
+    old.once('exit', () => {
+      if (started) return;
+      started = true;
+      _doStartBot(cfg);
+    });
+    try { old.kill(); } catch (_) {
+      if (!started) {
+        started = true;
+        _doStartBot(cfg);
+      }
+    }
+    return;
+  }
+  _doStartBot(cfg);
+}
+
+function _doStartBot(config) {
+  if (autoRestartTimer) {
+    clearTimeout(autoRestartTimer);
+    autoRestartTimer = null;
+  }
+
+  const cfg = config || {};
+  const verr = _validateConfigForSpawn(cfg);
+  if (verr) {
+    sendToRenderer('agent-message', { type: 'error', message: verr });
+    return;
+  }
+  const spec = buildSpawnSpec(cfg);
+
+  // Commit config for auto-restart only after validation passes.
+  lastStartConfig = cfg;
+  userInitiatedStop = false;
+  lastSpawnAt = Date.now();
+
   sendToRenderer('agent-message', { type: 'log', message: `[spawn] exe=${spec.exe} cwd=${spec.cwd} args=${JSON.stringify(spec.args)}` });
 
   botProcess = spawn(spec.exe, spec.args, {
@@ -178,23 +268,68 @@ function startBot(config) {
   botProcess.stdout.on('data', _emitStdoutLines);
   botProcess.stderr.on('data', _emitStderr);
 
+  const thisProcess = botProcess;
+  const thisSpawnAt = lastSpawnAt;
+
   botProcess.on('exit', (code) => {
     // flush remainder
     const rem = _stdoutRemainder.trim();
     if (rem) sendToRenderer('agent-message', { type: 'log', message: rem });
     _stdoutRemainder = '';
 
-    sendToRenderer('agent-message', { type: 'stopped', code });
-    botProcess = null;
+    if (botProcess === thisProcess || botProcess === null) {
+      sendToRenderer('agent-message', { type: 'stopped', code });
+      botProcess = null;
+
+      // === 自動再起動: ユーザーの STOP でない場合のみ ===
+      const ranDuration = Date.now() - thisSpawnAt;
+      if (!userInitiatedStop && lastStartConfig) {
+        if (ranDuration > STABLE_RUN_THRESHOLD) {
+          console.log(`[Main] Stable run detected (${Math.round(ranDuration/1000)}s) — reset auto-restart counter`);
+          autoRestartCount = 0;
+        }
+        if (autoRestartCount < MAX_AUTO_RESTARTS) {
+          autoRestartCount++;
+          const msg = `🔄 Auto-restart (${autoRestartCount}/${MAX_AUTO_RESTARTS}) — retry in ${AUTO_RESTART_DELAY/1000}s`;
+          console.log('[Main]', msg);
+          sendToRenderer('agent-message', { type: 'log', message: msg });
+          autoRestartTimer = setTimeout(() => {
+            autoRestartTimer = null;
+            if (!botProcess && !userInitiatedStop && lastStartConfig) {
+              sendToRenderer('agent-message', { type: 'log', message: '🔄 Auto-restart: restarting engine...' });
+              _doStartBot(lastStartConfig);
+            }
+          }, AUTO_RESTART_DELAY);
+        } else {
+          const msg = `❌ Auto-restart failed ${MAX_AUTO_RESTARTS} times — manual START required`;
+          console.error('[Main]', msg);
+          sendToRenderer('agent-message', { type: 'log', message: msg });
+          autoRestartCount = 0;
+        }
+      }
+    } else {
+      console.log('[Main] Ignoring exit from old process (new process already running)');
+    }
   });
 
   botProcess.on('error', (err) => {
     sendToRenderer('agent-message', { type: 'error', message: err && err.message ? err.message : String(err) });
   });
+
+  // 自動再起動の場合は renderer に "started" を送信して UI 状態を再同期
+  if (autoRestartCount > 0) {
+    sendToRenderer('agent-message', { type: 'started' });
+  }
 }
 
 function stopBot() {
   if (!botProcess) return;
+  userInitiatedStop = true;
+  autoRestartCount = 0;
+  if (autoRestartTimer) {
+    clearTimeout(autoRestartTimer);
+    autoRestartTimer = null;
+  }
   try {
     botProcess.kill();
   } catch (_) {}

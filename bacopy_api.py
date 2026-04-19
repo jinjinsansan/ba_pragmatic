@@ -24,8 +24,11 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request as _UrlRequest, urlopen as _urlopen
+from urllib.error import URLError as _UrlError, HTTPError as _HttpError
 
 from bacopy_db import (
     get_by_status,
@@ -39,12 +42,63 @@ from bacopy_db import (
     upsert_executor,
 )
 
-from decision_logger import append_decision_event
+from decision_logger import (
+    append_decision_event,
+    append_ack_event,
+    append_result_event,
+    reconstruct_decisions,
+)
 from snapshot_store import get_snapshot, load_snapshots, update_snapshot
 
 
 _DECISION_WAIT_COND = threading.Condition()
 _DECISION_WAIT_TICK = 0
+
+# bafather approved-users cache (5 min TTL).
+_APPROVED_CACHE: dict[str, Any] = {"at": 0.0, "data": None, "error": ""}
+_APPROVED_CACHE_LOCK = threading.Lock()
+_APPROVED_CACHE_TTL_SEC = 300
+
+def _fetch_approved_users() -> dict[str, Any]:
+    """Fetch approved users from bafather, cached 5 minutes.
+
+    Returns: {"ok": bool, "users": [...], "error": str, "fetched_at": str, "cached": bool}
+    """
+    now = time.time()
+    with _APPROVED_CACHE_LOCK:
+        cached = _APPROVED_CACHE.get("data")
+        cached_at = float(_APPROVED_CACHE.get("at") or 0)
+        if cached is not None and (now - cached_at) < _APPROVED_CACHE_TTL_SEC:
+            return {"ok": True, **cached, "cached": True}
+    base = (os.getenv("BACOPY_BAFATHER_URL", "") or "https://www.bafather.uk").rstrip("/")
+    api_key = (os.getenv("LAPLACE_API_KEY", "") or "").strip()
+    if not api_key:
+        return {"ok": False, "error": "LAPLACE_API_KEY not set", "users": []}
+    url = f"{base}/api/admin/approved-users"
+    body = json.dumps({"api_key": api_key}).encode("utf-8")
+    req = _UrlRequest(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with _urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {"ok": False, "error": "unexpected response shape", "users": []}
+        if not data.get("ok"):
+            return {"ok": False, "error": str(data.get("reason") or "bafather_returned_false"), "users": []}
+        users = data.get("users") or []
+        fetched_at = data.get("fetched_at") or datetime.now(timezone.utc).isoformat()
+        payload = {"users": users, "fetched_at": fetched_at, "error": ""}
+        with _APPROVED_CACHE_LOCK:
+            _APPROVED_CACHE["at"] = now
+            _APPROVED_CACHE["data"] = payload
+            _APPROVED_CACHE["error"] = ""
+        return {"ok": True, **payload, "cached": False}
+    except _HttpError as e:
+        return {"ok": False, "error": f"http_error {e.code}", "users": []}
+    except _UrlError as e:
+        return {"ok": False, "error": f"url_error {e.reason}", "users": []}
+    except Exception as e:
+        return {"ok": False, "error": f"exception {e!r}", "users": []}
 
 
 def _notify_decision_waiters() -> None:
@@ -186,6 +240,17 @@ def _send_html(handler: BaseHTTPRequestHandler, status: int, html: str) -> None:
     body = html.encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+    handler.send_header("Pragma", "no-cache")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _send_text(handler: BaseHTTPRequestHandler, status: int, text: str, *, content_type: str = "text/plain; charset=utf-8") -> None:
+    body = text.encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
@@ -219,389 +284,41 @@ def _master_login_page(*, error: str = "") -> str:
     err = f"<div class='err'>{error}</div>" if error else ""
     return f"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>bacopy master login</title>
+<title>BACOPYMASTER — sign in</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
-body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Yu Gothic UI',sans-serif;background:#0f1419;color:#e0e6ed;margin:0;padding:24px}}
-.card{{max-width:420px;margin:64px auto;background:#141c26;border:1px solid #243040;border-radius:10px;padding:18px}}
-label{{display:block;margin:8px 0 6px;color:#9fb0c5;font-size:13px}}
-input{{width:100%;padding:12px;border-radius:8px;border:1px solid #2a3441;background:#0f1419;color:#e0e6ed}}
-button{{width:100%;margin-top:14px;padding:12px;border-radius:8px;border:0;background:#3b82f6;color:#fff;font-weight:700}}
-.err{{margin:10px 0;color:#fca5a5}}
+:root{{--bg:#05080f;--bg-card:rgba(15,20,35,0.85);--bg-glass:rgba(20,28,50,0.60);--accent:#00e5ff;--win:#00ff88;--lose:#ff3366;--text:#e0e8f0;--text-muted:#7888a0;--border:rgba(0,229,255,0.12);--border-h:rgba(0,229,255,0.38);--font-hud:'Orbitron',sans-serif;--font-mono:'Share Tech Mono',monospace;--font-body:'Inter',sans-serif}}
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:var(--font-body);background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;overflow:hidden}}
+body::before{{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(0,229,255,0.035) 1px,transparent 1px),linear-gradient(90deg,rgba(0,229,255,0.035) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0;opacity:0.5}}
+body::after{{content:'';position:fixed;top:-100px;left:50%;transform:translateX(-50%);width:600px;height:360px;background:radial-gradient(ellipse at center,rgba(0,229,255,0.08) 0%,transparent 70%);pointer-events:none;z-index:0}}
+.card{{position:relative;z-index:1;width:100%;max-width:440px;background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:32px;backdrop-filter:blur(10px);box-shadow:0 0 40px rgba(0,229,255,0.15)}}
+.brand{{font-family:var(--font-hud);font-weight:900;font-size:22px;letter-spacing:8px;color:var(--accent);text-align:center;margin-bottom:4px;text-shadow:0 0 18px rgba(0,229,255,0.5)}}
+.sub{{font-family:var(--font-mono);text-align:center;font-size:11px;color:var(--text-muted);letter-spacing:2px;margin-bottom:28px}}
+label{{display:block;margin:16px 0 8px;color:var(--text-muted);font-family:var(--font-hud);font-size:10px;letter-spacing:3px;text-transform:uppercase}}
+input{{width:100%;padding:14px 16px;border-radius:10px;border:1px solid var(--border);background:var(--bg-glass);color:var(--text);font-family:var(--font-mono);font-size:14px;letter-spacing:2px}}
+input:focus{{outline:none;border-color:var(--accent);box-shadow:0 0 12px rgba(0,229,255,0.3)}}
+button{{width:100%;margin-top:20px;padding:14px;border-radius:10px;border:1px solid var(--border-h);background:linear-gradient(180deg,rgba(0,229,255,0.18),rgba(0,229,255,0.04));color:var(--accent);font-family:var(--font-hud);font-weight:700;letter-spacing:4px;font-size:14px;cursor:pointer;transition:all .2s}}
+button:hover{{background:linear-gradient(180deg,rgba(0,229,255,0.3),rgba(0,229,255,0.1));box-shadow:0 0 20px rgba(0,229,255,0.35)}}
+.err{{margin:12px 0;color:var(--lose);font-family:var(--font-mono);font-size:12px;padding:10px;background:rgba(255,51,102,0.08);border:1px solid rgba(255,51,102,0.28);border-radius:8px}}
+.hint{{color:var(--text-muted);font-size:11px;line-height:1.6;margin-top:18px;padding-top:14px;border-top:1px dashed var(--border);font-family:var(--font-mono)}}
 </style></head>
 <body><div class="card">
-<h2 style="margin:0 0 10px 0">bacopy Master</h2>
+<div class="brand">BACOPYMASTER</div>
+<div class="sub">operator console</div>
 {err}
 <form method="POST" action="/master/login">
-  <label>パスワード</label>
+  <label>Password</label>
   <input name="password" type="password" autofocus/>
-  <button type="submit">ログイン</button>
+  <button type="submit">SIGN IN</button>
 </form>
-<p style="color:#9fb0c5;font-size:12px;line-height:1.5;margin:12px 0 0 0;">
-※ VPS公開の場合は HTTPS(リバプロ) を推奨します（平文HTTPだとパスワードが漏れます）。</p>
+<p class="hint">※ VPS 公開時は HTTPS (リバプロ) 必須（平文 HTTP はパスワード漏洩リスクあり）。</p>
 </div></body></html>"""
 
 
 def _master_app_page(csrf: str) -> str:
-    # Single-file UI: HTML + CSS + JS
-    return f"""<!doctype html>
-<html lang="ja"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
-<meta name="csrf" content="{csrf}"/>
-<title>bacopy master</title>
-<style>
-body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Yu Gothic UI',sans-serif;background:#0f1419;color:#e0e6ed;margin:0}}
-header{{position:sticky;top:0;background:#0f1419;border-bottom:1px solid #223044;padding:12px 14px;z-index:5}}
-main{{padding:14px}}
-.row{{display:flex;gap:10px;flex-wrap:wrap}}
-.card{{background:#141c26;border:1px solid #243040;border-radius:10px;padding:12px}}
-.k{{color:#9fb0c5;font-size:12px}}
-.v{{font-size:16px;font-weight:700}}
-select,input,button{{font-size:14px}}
-input,select{{padding:10px;border-radius:8px;border:1px solid #2a3441;background:#0f1419;color:#e0e6ed}}
-button{{padding:10px 12px;border-radius:10px;border:0;background:#1f2937;color:#e0e6ed;font-weight:700}}
-button.primary{{background:#3b82f6}}
-button.warn{{background:#f59e0b;color:#111827}}
-button.danger{{background:#ef4444}}
-button:disabled{{opacity:.45}}
-.pill{{display:inline-block;padding:3px 8px;border-radius:999px;background:#1f2937;color:#9fb0c5;font-size:12px}}
-.list{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}}
-.tablebtn{{text-align:left;width:100%;background:#0f1419;border:1px solid #243040}}
-.tablebtn.active{{border-color:#3b82f6}}
-.small{{font-size:12px;color:#9fb0c5}}
-.err{{color:#fca5a5;white-space:pre-wrap}}
-.ok{{color:#86efac}}
-</style></head>
-<body>
-<header>
-  <div class="row" style="align-items:center;justify-content:space-between;">
-    <div style="display:flex;gap:10px;align-items:center;">
-      <strong>bacopy Master</strong>
-      <span id="statusPill" class="pill">loading...</span>
-    </div>
-    <form method="POST" action="/master/logout"><button type="submit">ログアウト</button></form>
-  </div>
-</header>
-<main>
-  <div class="row">
-    <div class="card" style="flex:1;min-width:260px">
-      <div class="k">Snapshots updated_at</div><div id="snapUpdatedAt" class="v">-</div>
-      <div class="k" style="margin-top:10px">Decisions (db counts)</div><div id="dbCounts" class="small">-</div>
-      <div class="k" style="margin-top:10px">Winrate (BET only)</div><div id="winrate" class="v">-</div>
-    </div>
-    <div class="card" style="flex:2;min-width:320px">
-      <div class="row" style="align-items:end">
-        <div>
-          <div class="k">Provider</div>
-          <select id="providerSel"><option value="pragmatic">pragmatic</option><option value="evolution">evolution</option></select>
-        </div>
-        <div style="flex:1;min-width:160px">
-          <div class="k">Search</div>
-          <input id="searchBox" placeholder="table name contains..." />
-        </div>
-        <div style="min-width:220px">
-          <div class="k">Target executor</div>
-          <select id="execSel"><option value="">(broadcast)</option></select>
-        </div>
-      </div>
-      <div class="row" style="margin-top:10px;align-items:end">
-        <div style="flex:1;min-width:220px">
-          <div class="k">Selected table</div>
-          <div id="selectedTable" class="v">-</div>
-          <div id="selectedMeta" class="small"></div>
-        </div>
-        <div>
-          <div class="k">Amount</div>
-          <input id="amountBox" type="number" step="1" min="0" value="1" style="width:110px"/>
-        </div>
-        <div style="flex:1;min-width:180px">
-          <div class="k">Note</div>
-          <input id="noteBox" placeholder="optional note"/>
-        </div>
-      </div>
-      <div class="row" style="margin-top:10px">
-        <button id="btnSwitch" class="warn">テーブル切替</button>
-        <button id="btnLook">LOOK</button>
-        <button id="btnP" class="primary">PLAYER</button>
-        <button id="btnB" class="primary">BANKER</button>
-        <button id="btnT" class="primary">TIE</button>
-      </div>
-      <div class="small" style="margin-top:8px">
-        Pragmaticの実BETは現状PLAYERのみ対応（BANKER/TIEは追加スニフ後に解放）。
-      </div>
-      <div id="sendMsg" class="small" style="margin-top:6px"></div>
-    </div>
-  </div>
-
-  <h3>Executors (GUI接続)</h3>
-  <div id="execList" class="list"></div>
-
-  <h3>Tables</h3>
-  <div id="tableList" class="list"></div>
-
-  <h3>History</h3>
-  <div class="row">
-    <div class="card" style="flex:1;min-width:320px">
-      <div class="k">pending / processing</div>
-      <div id="histPending" class="small">-</div>
-    </div>
-    <div class="card" style="flex:1;min-width:320px">
-      <div class="k">done / error (latest)</div>
-      <div id="histDone" class="small">-</div>
-    </div>
-  </div>
-</main>
-<script>
-const csrf = document.querySelector('meta[name=\"csrf\"]').content;
-let selected = {{provider:'pragmatic', table_id:'', table_name:''}};
-const LS = {{
-  provider: 'bacopy_master_provider',
-  exec: 'bacopy_master_exec',
-  tableId: 'bacopy_master_table_id',
-  tableName: 'bacopy_master_table_name',
-  amount: 'bacopy_master_amount',
-  note: 'bacopy_master_note',
-  search: 'bacopy_master_search',
-}};
-
-function persistState() {{
-  try {{ localStorage.setItem(LS.provider, document.getElementById('providerSel').value || ''); }} catch(e) {{}}
-  try {{ localStorage.setItem(LS.exec, document.getElementById('execSel').value || ''); }} catch(e) {{}}
-  try {{ localStorage.setItem(LS.tableId, selected.table_id || ''); }} catch(e) {{}}
-  try {{ localStorage.setItem(LS.tableName, selected.table_name || ''); }} catch(e) {{}}
-  try {{ localStorage.setItem(LS.amount, document.getElementById('amountBox').value || ''); }} catch(e) {{}}
-  try {{ localStorage.setItem(LS.note, document.getElementById('noteBox').value || ''); }} catch(e) {{}}
-  try {{ localStorage.setItem(LS.search, document.getElementById('searchBox').value || ''); }} catch(e) {{}}
-}}
-
-function loadState() {{
-  try {{
-    const prov = localStorage.getItem(LS.provider);
-    if (prov) document.getElementById('providerSel').value = prov;
-  }} catch(e) {{}}
-  try {{
-    const s = localStorage.getItem(LS.search);
-    if (s !== null && s !== undefined) document.getElementById('searchBox').value = s;
-  }} catch(e) {{}}
-  try {{
-    const a = localStorage.getItem(LS.amount);
-    if (a !== null && a !== undefined) document.getElementById('amountBox').value = a;
-  }} catch(e) {{}}
-  try {{
-    const n = localStorage.getItem(LS.note);
-    if (n !== null && n !== undefined) document.getElementById('noteBox').value = n;
-  }} catch(e) {{}}
-  try {{
-    const tid = localStorage.getItem(LS.tableId) || '';
-    const tn = localStorage.getItem(LS.tableName) || '';
-    if (tid) {{
-      selected.table_id = tid;
-      selected.table_name = tn;
-      document.getElementById('selectedTable').textContent = tn || tid;
-      document.getElementById('selectedMeta').textContent = 'provider=' + (document.getElementById('providerSel').value || '') + ' table_id=' + tid;
-    }}
-  }} catch(e) {{}}
-}}
-
-loadState();
-
-function fmt(o){{ try{{return JSON.stringify(o)}}catch(e){{return String(o)}} }}
-function escapeHtml(s){{ return String(s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }}
-
-async function apiGet(path) {{
-  const r = await fetch(path, {{credentials:'same-origin'}});
-  const t = await r.text();
-  try {{ return JSON.parse(t); }} catch(e) {{ return {{ok:false, error:'non_json', raw:t, status:r.status}}; }}
-}}
-async function apiPost(path, body) {{
-  const r = await fetch(path, {{
-    method:'POST',
-    credentials:'same-origin',
-    headers: {{'Content-Type':'application/json', 'X-CSRF-Token': csrf}},
-    body: JSON.stringify(body || {{}})
-  }});
-  const t = await r.text();
-  try {{ return JSON.parse(t); }} catch(e) {{ return {{ok:false, error:'non_json', raw:t, status:r.status}}; }}
-}}
-
-function decisionId() {{
-  const a = crypto.getRandomValues(new Uint8Array(8));
-  return 'dec_' + Array.from(a).map(x=>x.toString(16).padStart(2,'0')).join('');
-}}
-
-function setMsg(msg, isErr=false) {{
-  const el = document.getElementById('sendMsg');
-  el.className = isErr ? 'err' : 'ok';
-  el.textContent = msg;
-}}
-
-async function sendDecision(action, side) {{
-  if(!selected.table_id) {{ setMsg('テーブルを選択してください', true); return; }}
-  const provider = document.getElementById('providerSel').value;
-  const target_executor_id = document.getElementById('execSel').value || '';
-  const amount = Number(document.getElementById('amountBox').value || '0');
-  const note = document.getElementById('noteBox').value || '';
-  persistState();
-  const payload = {{
-    decision_id: decisionId(),
-    provider,
-    table_id: selected.table_id,
-    table_name: selected.table_name,
-    target_executor_id,
-    friend_action: {{action, side: side || '', amount: amount || 0, note}},
-  }};
-  const res = await apiPost('/api/decisions', payload);
-  if(res && res.accepted) setMsg('sent: ' + res.decision_id);
-  else setMsg('send failed: ' + fmt(res), true);
-}}
-
-function renderExecList(executors) {{
-  const now = Date.now();
-  const wrap = document.getElementById('execList');
-  wrap.innerHTML = '';
-  for(const e of (executors||[])) {{
-    const ageSec = e.updated_at ? Math.max(0, (now - Date.parse(e.updated_at))/1000) : 99999;
-    const online = ageSec < 60;
-    const c = document.createElement('div');
-    c.className = 'card';
-    const bal = (e.balance===null || e.balance===undefined) ? '-' : String(e.balance);
-    const err = e.error ? '<div class=\"err\">'+escapeHtml(e.error)+'</div>' : '';
-    c.innerHTML = `
-      <div style=\"display:flex;justify-content:space-between;gap:8px;align-items:center\">
-        <div><strong>${{escapeHtml(e.label||e.executor_id)}}</strong> <span class=\"pill\">${{online?'ONLINE':'OFFLINE'}}</span></div>
-        <div class=\"small\">${{escapeHtml(e.updated_at||'')}}</div>
-      </div>
-      <div class=\"small\">user=${{escapeHtml(e.username||'')}} provider=${{escapeHtml(e.provider||'')}} table=${{escapeHtml(e.table_name||e.table_id||'')}}</div>
-      <div class=\"small\">balance=${{escapeHtml(bal)}} seq=${{escapeHtml(fmt(e.seq||{{}}))}} status=${{escapeHtml(e.status||'')}}</div>
-      ${{err}}
-    `;
-    wrap.appendChild(c);
-  }}
-}}
-
-function renderExecutorSelect(executors) {{
-  const sel = document.getElementById('execSel');
-  let cur = sel.value;
-  if (!cur) {{
-    try {{ cur = localStorage.getItem(LS.exec) || ''; }} catch(e) {{}}
-  }}
-  sel.innerHTML = '<option value=\"\">(broadcast)</option>';
-  for(const e of (executors||[])) {{
-    const opt = document.createElement('option');
-    opt.value = e.executor_id;
-    opt.textContent = (e.label||e.executor_id) + (e.username?(' ['+e.username+']'):'');
-    sel.appendChild(opt);
-  }}
-  sel.value = cur;
-}}
-
-function renderTables(provider, snapshots) {{
-  const search = (document.getElementById('searchBox').value||'').toLowerCase().trim();
-  const list = (snapshots && snapshots.snapshots && snapshots.snapshots[provider]) ? snapshots.snapshots[provider] : {{}};
-  const items = Object.entries(list).map(([tid, s]) => ({{tid, s}}));
-  items.sort((a,b)=> String(a.s.table_name||'').localeCompare(String(b.s.table_name||'')));
-  const wrap = document.getElementById('tableList');
-  wrap.innerHTML = '';
-  for(const it of items) {{
-    const name = String((it.s||{{}}).table_name||'');
-    if(search && !name.toLowerCase().includes(search)) continue;
-    const btn = document.createElement('button');
-    btn.className = 'card tablebtn' + (selected.table_id===String(it.tid) ? ' active':'' );
-    const last10 = (it.s && it.s.last_10) ? it.s.last_10.join('') : '';
-    const players = (it.s && it.s.players!==undefined) ? (' players='+it.s.players) : '';
-    const hands = (it.s && it.s.hands!==undefined) ? (' hands='+it.s.hands) : '';
-    btn.innerHTML = `<div style=\"display:flex;justify-content:space-between;gap:8px\"><div><strong>${{escapeHtml(name||it.tid)}}</strong></div><div class=\"small\">id=${{escapeHtml(it.tid)}}</div></div>
-      <div class=\"small\">${{escapeHtml(last10)}}${{escapeHtml(players)}}${{escapeHtml(hands)}}</div>`;
-    btn.onclick = () => {{
-      selected = {{provider, table_id:String(it.tid), table_name:name}};
-      document.getElementById('selectedTable').textContent = name || it.tid;
-      document.getElementById('selectedMeta').textContent = 'provider='+provider+' table_id='+it.tid;
-      persistState();
-      refreshOnce();
-    }};
-    wrap.appendChild(btn);
-  }}
-}}
-
-function renderHistory(pending, processing, done, error) {{
-  const p = [...(pending||[]), ...(processing||[])].slice(-20);
-  const d = [...(error||[]), ...(done||[])].slice(-20).reverse();
-  const fmtRow = (x) => {{
-    const fa = (x.friend_action||{{}});
-    const r = (x.result||{{}});
-    const out = r.outcome || r.result || r.error || '';
-    const side = fa.side||'';
-    return `${{escapeHtml(x.status||'')}} ${{escapeHtml(x.provider||'')}} ${{escapeHtml(x.table_name||x.table_id||'')}}  ${{escapeHtml(fa.action||'')}} ${{escapeHtml(side)}} -> ${{escapeHtml(out)}}  (${{escapeHtml(x.decision_id||'')}})`;
-  }};
-  document.getElementById('histPending').innerHTML = '<pre style=\"margin:0\">'+ p.map(fmtRow).join('\\n') +'</pre>';
-  document.getElementById('histDone').innerHTML = '<pre style=\"margin:0\">'+ d.map(fmtRow).join('\\n') +'</pre>';
-}}
-
-function computeWinrate(done) {{
-  let bet=0, win=0, lose=0, tie=0;
-  for(const x of (done||[])) {{
-    const fa = x.friend_action||{{}};
-    if(String(fa.action||'').toUpperCase()!=='BET') continue;
-    const side = String(fa.side||'').toLowerCase();
-    const out = String(((x.result||{{}}).outcome)||'').toLowerCase();
-    bet += 1;
-    if(out==='tie') tie += 1;
-    if(out===side) win += 1;
-    else lose += 1;
-  }}
-  const wr = bet ? (win/bet*100).toFixed(2) : '0.00';
-  return {{bet, win, lose, tie, wr}};
-}}
-
-async function refreshOnce() {{
-  const provider = document.getElementById('providerSel').value;
-  selected.provider = provider;
-  const st = await apiGet('/api/status');
-  const snaps = await apiGet('/api/snapshots');
-  const executors = await apiGet('/api/executors');
-  const pending = await apiGet('/api/decisions?status=pending&limit=50');
-  const processing = await apiGet('/api/decisions?status=processing&limit=50');
-  const done = await apiGet('/api/decisions?status=done&limit=1000');
-  const error = await apiGet('/api/decisions?status=error&limit=200');
-
-  document.getElementById('statusPill').textContent = (st && st.ok) ? 'OK' : 'ERR';
-  document.getElementById('snapUpdatedAt').textContent = (st && st.snapshots_updated_at) ? st.snapshots_updated_at : '-';
-  document.getElementById('dbCounts').textContent = st && st.db && st.db.counts ? fmt(st.db.counts) : '-';
-
-  const wr = computeWinrate((done && done.decisions) ? done.decisions : []);
-  document.getElementById('winrate').textContent = `${{wr.wr}}% (win=${{wr.win}} / bet=${{wr.bet}} / tie=${{wr.tie}})`;
-
-  const execArr = executors && executors.executors ? executors.executors : [];
-  renderExecList(execArr);
-  renderExecutorSelect(execArr);
-
-  renderTables(provider, snaps);
-  renderHistory(
-    (pending && pending.decisions) ? pending.decisions : [],
-    (processing && processing.decisions) ? processing.decisions : [],
-    (done && done.decisions) ? done.decisions : [],
-    (error && error.decisions) ? error.decisions : [],
-  );
-
-  // Disable banker/tie buttons for pragmatic until enabled.
-  const isPrag = provider === 'pragmatic';
-  document.getElementById('btnB').disabled = isPrag;
-  document.getElementById('btnT').disabled = isPrag;
-}}
-
-document.getElementById('providerSel').onchange = () => {{ persistState(); refreshOnce(); }};
-document.getElementById('execSel').onchange = () => {{ persistState(); }};
-document.getElementById('amountBox').oninput = () => {{ persistState(); }};
-document.getElementById('noteBox').oninput = () => {{ persistState(); }};
-document.getElementById('searchBox').oninput = () => {{ persistState(); window.clearTimeout(window.__t); window.__t=setTimeout(refreshOnce, 200); }};
-document.getElementById('btnSwitch').onclick = () => sendDecision('SWITCH_TABLE', '');
-document.getElementById('btnLook').onclick = () => sendDecision('LOOK', '');
-document.getElementById('btnP').onclick = () => sendDecision('BET', 'PLAYER');
-document.getElementById('btnB').onclick = () => sendDecision('BET', 'BANKER');
-document.getElementById('btnT').onclick = () => sendDecision('BET', 'TIE');
-
-refreshOnce();
-setInterval(refreshOnce, 2500);
-</script>
-</body></html>"""
+    from bacopy_master_ui import render_master_app
+    return render_master_app(csrf)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -615,6 +332,15 @@ class _Handler(BaseHTTPRequestHandler):
 
         if u.path == "/master/login":
             return _send_html(self, 200, _master_login_page())
+        if u.path == "/master/theme.css":
+            # Share the exact same theme as the Receiver GUI (copytrade_gui).
+            # Not sensitive; allow without auth so CSS loads reliably.
+            css_path = Path(__file__).parent / "copytrade_gui" / "src" / "renderer" / "styles.css"
+            try:
+                css = css_path.read_text(encoding="utf-8") if css_path.exists() else ""
+            except Exception:
+                css = ""
+            return _send_text(self, 200, css, content_type="text/css; charset=utf-8")
         if u.path == "/master":
             s = _get_session(self.headers)
             if not s:
@@ -645,6 +371,26 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception:
                 limit = 200
             return _send_json(self, 200, {"executors": list_executors(limit=limit)})
+        if u.path == "/api/approved-users":
+            res = _fetch_approved_users()
+            if res.get("ok"):
+                return _send_json(self, 200, res)
+            return _send_json(self, 502, res)
+        if u.path == "/api/training/export":
+            # ML 学習データ: event-sourced JSONL を decision_id 毎に集約.
+            # 学習クライアントはこれ 1 本で完全レコードを得られる.
+            qs = parse_qs(u.query or "")
+            complete_only = (qs.get("complete_only") or ["0"])[0] in ("1","true","yes")
+            path = os.getenv("BACOPY_DECISIONS_JSONL", "data/decisions.jsonl")
+            records = reconstruct_decisions(path)
+            if complete_only:
+                records = [r for r in records if r.get("status") == "done" and r.get("result")]
+            return _send_json(self, 200, {
+                "ok": True,
+                "count": len(records),
+                "complete_only": complete_only,
+                "records": records,
+            })
         if u.path == "/api/snapshots":
             qs = parse_qs(u.query or "")
             provider = (qs.get("provider") or [""])[0]
@@ -802,6 +548,8 @@ class _Handler(BaseHTTPRequestHandler):
                     ack = {}
                 status = str(body.get("status") or "processing") if isinstance(body, dict) else "processing"
                 mark_ack(decision_id, ack, status=status)
+                # ML 契約: JSONL にも ack event を追記
+                append_ack_event(decision_id, ack, status=status)
                 _notify_decision_waiters()
                 return _send_json(self, 200, {"ok": True})
             if parts[3] == "result":
@@ -810,6 +558,8 @@ class _Handler(BaseHTTPRequestHandler):
                     result = {}
                 status = str(body.get("status") or "done") if isinstance(body, dict) else "done"
                 mark_result(decision_id, result, status=status)
+                # ML 契約: JSONL にも result event を追記
+                append_result_event(decision_id, result, status=status)
                 _notify_decision_waiters()
                 return _send_json(self, 200, {"ok": True})
 

@@ -17,6 +17,7 @@ import json
 import os
 import queue
 import re
+import sqlite3
 import ssl
 import sys
 import threading
@@ -33,8 +34,10 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 
-from decision_logger import append_decision_event
-from bacopy_db import init_db, try_lock_bet
+# NOTE: ML 契約 JSONL への書き込みは Master 側 (POST /api/decisions, /ack, /result)
+# が担当する。executor から直接 append するとホスト分散/event_type 不整合の原因になる。
+# 旧コードで append_decision_event をここで呼んでいたが削除済 (Master 側で完結).
+from bacopy_db import init_db, try_lock_bet, try_mark_decision_executed
 from marubatsu_strategy import MaruBatsuTracker, SEQ_COUNTER, SetData
 
 BA_ROOT = Path(__file__).parent.parent / "ba"
@@ -261,9 +264,12 @@ class Seq7Session:
             "balance": float(balance) if balance is not None else None,
         }
 
-    def apply_round(self, outcome: str, won: bool | None) -> dict:
-        # outcome: player|banker|tie
-        if outcome == "tie":
+    def apply_round(self, outcome: str, won: bool | None, *, bet_side: str = "") -> dict:
+        # outcome: player|banker|tie (winner)
+        # bet_side: player|banker|tie (our bet)
+        bs = str(bet_side or "").strip().lower()
+        if outcome == "tie" and bs != "tie":
+            # PLAYER/BANKER bet push
             self.total_bets += 1
             self.total_ties += 1
             self._save_state()
@@ -873,6 +879,12 @@ class _PragmaticState:
     dga_subscribed_keys: set[str] = None
     dga_last_subscribe_at: float = 0.0
 
+    # ws activity timestamps (recv) — used to detect SESSION EXPIRED / dead connections
+    last_ws_recv_at: float = 0.0
+    last_lobby_ws_recv_at: float = 0.0
+    last_game_ws_recv_at: float = 0.0
+    last_stake_ws_recv_at: float = 0.0
+
     # result cache from lobby feed
     winners_by_table_game_id: dict[str, dict[str, str]] = None  # tableId -> (gameId -> winner)
     _seen_table_game: set[tuple[str, str]] = None
@@ -891,6 +903,9 @@ class _PragmaticState:
     session_elsewhere_unresolved: bool = False
     session_elsewhere_last_at: float = 0.0
     session_elsewhere_resolved_at: float = 0.0
+    recover_exhausted: bool = False
+    recover_attempts: int = 0
+    recover_exhausted_at: float = 0.0
 
     def __post_init__(self) -> None:
         if self.winners_by_table_game_id is None:
@@ -903,16 +918,36 @@ class _PragmaticState:
             self.stake_balance_delta_by_currency = {}
         if self.dga_subscribed_keys is None:
             self.dga_subscribed_keys = set()
+        if not self.last_ws_recv_at:
+            self.last_ws_recv_at = time.time()
 
 
-def _side_to_bc(side: str) -> Optional[str]:
+def _side_to_bc(side: str, *, assume_012: bool = False) -> Optional[str]:
     s = str(side or "").upper().strip()
-    if s == "PLAYER":
-        return "0"
-    # Not enabled until we confirm via sniff
-    if s in ("BANKER", "TIE"):
-        return None
+    if s in ("P", "PLAYER"):
+        return (os.getenv("BACOPY_PRAGMATIC_BC_PLAYER", "") or ("0" if assume_012 else "0")).strip() or "0"
+    if s in ("B", "BANKER"):
+        v = (os.getenv("BACOPY_PRAGMATIC_BC_BANKER", "") or "").strip()
+        if v:
+            return v
+        return "1" if assume_012 else None
+    if s in ("T", "TIE"):
+        v = (os.getenv("BACOPY_PRAGMATIC_BC_TIE", "") or "").strip()
+        if v:
+            return v
+        return "2" if assume_012 else None
     return None
+
+
+def _normalize_bet_side(side: str) -> str:
+    s = str(side or "").upper().strip()
+    if s in ("", "P", "PLAYER"):
+        return "PLAYER"
+    if s in ("B", "BANKER"):
+        return "BANKER"
+    if s in ("T", "TIE"):
+        return "TIE"
+    return s
 
 
 def _parse_timer_sec(v: str) -> Optional[float]:
@@ -1256,6 +1291,15 @@ def _pump_ws_events(page, game_frame, state: _PragmaticState) -> None:
             ev_dir = str(ev.get("dir") or "").strip().lower()
             is_recv = (ev_dir != "send")
             url = str(ev.get("url") or "")
+            if is_recv:
+                now = time.time()
+                state.last_ws_recv_at = now
+                if "dga.pragmaticplaylive.net/ws" in url:
+                    state.last_lobby_ws_recv_at = now
+                elif "pragmaticplaylive.net/game" in url:
+                    state.last_game_ws_recv_at = now
+                elif "stake.com/_api/websockets" in url:
+                    state.last_stake_ws_recv_at = now
             if "pragmaticplaylive.net/game" in url:
                 _maybe_update_from_game_ws_url(state, url)
             data = ev.get("data")
@@ -1579,6 +1623,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--min-timer-sec", type=float, default=2.0, help="Refuse bets if timer is below this (when available)")
     ap.add_argument("--result-timeout-sec", type=int, default=90)
     ap.add_argument("--allow-switch-table", action="store_true", help="Allow SWITCH_TABLE action to navigate/click table")
+    ap.add_argument(
+        "--ws-silence-sec",
+        type=float,
+        default=float(os.getenv("BACOPY_WS_SILENCE_SEC", "180") or 180),
+        help="Auto-recover if no WS recv frames for this many seconds (0=disabled)",
+    )
+    ap.add_argument(
+        "--ws-recover-cooldown-sec",
+        type=float,
+        default=float(os.getenv("BACOPY_WS_RECOVER_COOLDOWN_SEC", "60") or 60),
+        help="Minimum seconds between auto-recover attempts",
+    )
+    ap.add_argument("--allow-banker", action="store_true", help="Allow BANKER bets (experimental)")
+    ap.add_argument("--allow-tie", action="store_true", help="Allow TIE bets (experimental)")
+    ap.add_argument("--assume-bc-012", action="store_true", help="Assume bc mapping PLAYER=0,BANKER=1,TIE=2 (unsafe; prefer sniff+env)")
     ap.add_argument("--once", action="store_true")
     args = ap.parse_args(argv)
 
@@ -1762,6 +1821,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         if now - last_hb < 5.0:
             return
         last_hb = now
+        user_email = (os.getenv("BACOPY_USER_EMAIL", "") or os.getenv("BACOPY_BAFATHER_EMAIL", "") or "").strip()
+        user_id = (os.getenv("BACOPY_USER_ID", "") or "").strip()
+        os_name = (os.getenv("BACOPY_OS", "") or "").strip() or sys.platform
+        phase_name = ""
+        phase_detail = ""
+        try:
+            ph = str(_LAST_PHASE[0] or "")
+            if "|" in ph:
+                phase_name, phase_detail = ph.split("|", 1)
+        except Exception:
+            pass
         bal = state.stake_balance_by_currency.get(bet_currency)
         if bal is None and state.stake_balance_by_currency and len(state.stake_balance_by_currency) == 1:
             try:
@@ -1772,8 +1842,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             seq7.update_balance(bal)
         except Exception:
             pass
+        seq7_payload: dict[str, Any] = {}
         try:
-            send_msg(seq7.status_payload())
+            seq7_payload = seq7.status_payload()
+            send_msg(seq7_payload)
         except Exception:
             pass
 
@@ -1804,14 +1876,43 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         except Exception:
             pass
+        ws_silence_sec = (now - float(state.last_ws_recv_at or 0)) if state.last_ws_recv_at else None
+        ws_silence_limit = float(args.ws_silence_sec or 0)
+        # Bettable gating should be stricter than full auto-recover threshold.
+        # If WS has been silent for > ~30s, treat as not bettable (prevents "send into dead WS").
+        bettable_silence_sec = 0.0
+        try:
+            bettable_silence_sec = float(os.getenv("BACOPY_BETTABLE_SILENCE_SEC", "") or 0)
+        except Exception:
+            bettable_silence_sec = 0.0
+        if bettable_silence_sec <= 0 and ws_silence_limit > 0:
+            bettable_silence_sec = max(15.0, min(30.0, ws_silence_limit * 0.5))
+        ws_dead = bool(bettable_silence_sec > 0 and ws_silence_sec is not None and ws_silence_sec > bettable_silence_sec)
+        daily_pnl_val = None
+        daily_pnl_date_val = ""
+        try:
+            if isinstance(seq7_payload, dict):
+                if seq7_payload.get("daily_pnl") is not None:
+                    daily_pnl_val = float(seq7_payload.get("daily_pnl") or 0)
+                if seq7_payload.get("daily_open_date"):
+                    daily_pnl_date_val = str(seq7_payload.get("daily_open_date") or "")
+        except Exception:
+            pass
         payload = {
             "executor_id": executor_id,
             "label": executor_label,
             "username": executor_username,
+            "user_email": user_email,
+            "user_id": user_id,
+            "os": os_name,
             "provider": "pragmatic",
             "table_id": state.operator_table_id,
             "table_name": state.table_name,
             "balance": bal,
+            "daily_pnl": daily_pnl_val,
+            "daily_pnl_date": daily_pnl_date_val,
+            "phase": {"name": phase_name, "detail": phase_detail},
+            "gui": seq7_payload,
             "seq": {
                 "mode": "counter_seq7",
                 "chip_base": chip_base,
@@ -1820,6 +1921,32 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "bet_amount": seq7.bet_amount(),
                 "turn": len(seq7.tracker.current_turns) + 1,
                 "overshoot": getattr(seq7.tracker, "prev_overshoot", 0),
+            },
+            "caps": {
+                "allow_switch_table": bool(args.allow_switch_table),
+                "allow_banker": bool(args.allow_banker),
+                "allow_tie": bool(args.allow_tie),
+                "assume_bc_012": bool(args.assume_bc_012),
+            },
+            "bettable": bool(
+                state.table_id
+                and state.user_id
+                and state.game_ws_url
+                and not state.session_elsewhere_unresolved
+                and not ws_dead
+                and not state.recover_exhausted
+            ),
+            "session_elsewhere_unresolved": bool(state.session_elsewhere_unresolved),
+            "ws": {
+                "last_recv_at": state.last_ws_recv_at,
+                "silence_sec": ws_silence_sec,
+                "last_game_recv_at": state.last_game_ws_recv_at,
+                "last_lobby_recv_at": state.last_lobby_ws_recv_at,
+                "last_stake_recv_at": state.last_stake_ws_recv_at,
+                "bettable_silence_sec": bettable_silence_sec,
+                "recover_exhausted": bool(state.recover_exhausted),
+                "recover_attempts": int(state.recover_attempts or 0),
+                "recover_exhausted_at": float(state.recover_exhausted_at or 0),
             },
             "status": status,
             "error": last_error,
@@ -1834,6 +1961,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             state.game_ws_url = url
 
         def on_recv(frame_data):
+            try:
+                now = time.time()
+                state.last_ws_recv_at = now
+                if "dga.pragmaticplaylive.net/ws" in url:
+                    state.last_lobby_ws_recv_at = now
+                elif "pragmaticplaylive.net/game" in url:
+                    state.last_game_ws_recv_at = now
+                elif "stake.com/_api/websockets" in url:
+                    state.last_stake_ws_recv_at = now
+            except Exception:
+                pass
             p = frame_data.payload if hasattr(frame_data, "payload") else frame_data
             obj = _maybe_json(p)
             if not obj:
@@ -1871,6 +2009,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             return
         if direction != "recv":
             return
+        try:
+            now = time.time()
+            state.last_ws_recv_at = now
+            state.last_lobby_ws_recv_at = now
+        except Exception:
+            pass
         p = frame_data.payload if hasattr(frame_data, "payload") else frame_data
         obj = _maybe_json(p)
         if obj:
@@ -2140,14 +2284,183 @@ def main(argv: Optional[list[str]] = None) -> int:
                     return "tie"
                 return None
 
-            ok = _wait_for(
-                lambda: (_pump_ws_events(page, game_frame, state) or True) and _winner() is not None,
-                timeout_sec=timeout_sec,
-                tick_ms=250,
-                page=page,
-                on_tick=lambda: heartbeat("running"),
-            )
+            def _pred() -> bool:
+                _pump_ws_events(page, game_frame, state)
+                return _winner() is not None
+
+            ok = _wait_for(_pred, timeout_sec=timeout_sec, tick_ms=250, page=page, on_tick=lambda: heartbeat("running"))
             return _winner() if ok else None
+
+        desired_table_substr = str(args.table_name_substr or state.table_name or "").strip()
+
+        last_recover_at = 0.0
+        recover_attempts = 0
+        recover_exhausted = False
+        try:
+            max_recover_attempts = int(os.getenv("BACOPY_MAX_RECOVER_ATTEMPTS", "5") or "5")
+        except Exception:
+            max_recover_attempts = 5
+
+        def _clear_pragmatic_session_state() -> None:
+            # identifiers
+            state.operator_table_id = ""
+            state.table_name = ""
+            state.table_id = ""
+            state.user_id = ""
+            state.jsession_id = ""
+            state.game_ws_url = ""
+
+            # betting phase cache
+            state.current_game_id = ""
+            state.bets_open_game_id = ""
+            state.bets_closed_game_id = ""
+            state.last_timer = ""
+            state.last_bets_open_at = 0.0
+            state.last_bets_closed_at = 0.0
+            state.last_bet_confirm = None
+            state.expected_bet_ck = ""
+
+            # dga subscribe cache must be cleared (new WS instance after reload)
+            try:
+                state.dga_subscribed_keys.clear()
+            except Exception:
+                state.dga_subscribed_keys = set()
+            state.dga_last_subscribe_at = 0.0
+            try:
+                state._seen_table_game.clear()
+            except Exception:
+                state._seen_table_game = set()
+
+        def recover_session(reason: str) -> bool:
+            nonlocal game_frame
+            nonlocal last_error, consecutive_hard_errors
+            nonlocal last_recover_at, recover_attempts, recover_exhausted, max_recover_attempts
+
+            if recover_exhausted:
+                return False
+            if max_recover_attempts > 0 and recover_attempts >= max_recover_attempts:
+                recover_exhausted = True
+                state.recover_exhausted = True
+                state.recover_attempts = int(recover_attempts)
+                state.recover_exhausted_at = time.time()
+                last_error = f"recover attempts exhausted ({recover_attempts}) — manual intervention required"
+                try:
+                    send_action(last_error)
+                except Exception:
+                    pass
+                heartbeat("error")
+                return False
+
+            last_recover_at = time.time()
+            started_at = last_recover_at
+            recover_attempts += 1
+            state.recover_attempts = int(recover_attempts)
+
+            target = str(desired_table_substr or state.table_name or "").strip()
+            send_phase("entering", "RECOVER")
+            send_action(
+                f"Recovering session ({reason})... "
+                "If Stake login / table click is required, please operate the opened browser window."
+            )
+            last_error = f"recovering: {reason}"
+            heartbeat("error")
+
+            try:
+                _clear_pragmatic_session_state()
+            except Exception:
+                pass
+
+            try:
+                _join_table(
+                    page,
+                    table_substr=target,
+                    auto_click_wait_sec=int(args.auto_click_wait_sec),
+                    state=state,
+                    on_tick=lambda: heartbeat("running"),
+                )
+                game_frame = find_game_frame(page, attempts=60)
+                if game_frame:
+                    try:
+                        game_frame.evaluate(_WS_BRIDGE_INIT)
+                    except Exception:
+                        pass
+
+                def _pred_ids() -> bool:
+                    _pump_ws_events(page, game_frame, state)
+                    return bool(state.game_ws_url and state.table_id and state.user_id and state.jsession_id)
+
+                ok = _wait_for(_pred_ids, timeout_sec=180, tick_ms=500, page=page, on_tick=lambda: heartbeat("running"))
+                if not ok:
+                    raise RuntimeError("session identifiers not populated (table/user/ws missing)")
+
+                # Keep WS controllable in top + game frame contexts (iframe can reload/detach).
+                if state.game_ws_url:
+                    try:
+                        page.evaluate(_WS_BRIDGE_INIT)
+                    except Exception:
+                        pass
+                    try:
+                        page.evaluate("(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)", state.game_ws_url)
+                    except Exception:
+                        pass
+                    if game_frame:
+                        try:
+                            game_frame.evaluate(_WS_BRIDGE_INIT)
+                        except Exception:
+                            pass
+                        try:
+                            game_frame.evaluate(
+                                "(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)",
+                                state.game_ws_url,
+                            )
+                        except Exception:
+                            pass
+
+                # Do not mark "WS recv" here — only actual framereceived callbacks should bump last_ws_recv_at.
+                # Instead, verify we observed at least one ws recv after starting recovery.
+                ok_ws = False
+                t_ws = time.time()
+                while time.time() - t_ws < 10.0:
+                    try:
+                        _pump_ws_events(page, game_frame, state)
+                    except Exception:
+                        pass
+                    try:
+                        heartbeat("running")
+                    except Exception:
+                        pass
+                    try:
+                        if state.last_ws_recv_at and float(state.last_ws_recv_at) >= started_at:
+                            ok_ws = True
+                            break
+                    except Exception:
+                        pass
+                    try:
+                        page.wait_for_timeout(200)
+                    except Exception:
+                        time.sleep(0.2)
+                if not ok_ws:
+                    raise RuntimeError("ws did not receive frames after recover (still silent)")
+
+                consecutive_hard_errors = 0
+                last_error = ""
+                recover_attempts = 0
+                recover_exhausted = False
+                state.recover_exhausted = False
+                state.recover_attempts = 0
+                state.recover_exhausted_at = 0.0
+                send_phase("idle", "ARMED")
+                send_action("Recovered. Waiting for master signal...")
+                heartbeat("running")
+                return True
+            except Exception as e:
+                last_error = f"recover failed: {e}"
+                heartbeat("error")
+                try:
+                    send_action(last_error)
+                except Exception:
+                    pass
+                return False
 
         while True:
             heartbeat("running")
@@ -2157,6 +2470,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                 pass
             try:
                 _pump_ws_events(page, game_frame, state)
+            except Exception:
+                pass
+
+            # SESSION EXPIRED / WS dead detection: if no recv frames for long, try to reload + re-join.
+            try:
+                ws_silence = time.time() - float(state.last_ws_recv_at or 0)
+                if float(args.ws_silence_sec or 0) > 0 and state.last_ws_recv_at and ws_silence > float(args.ws_silence_sec or 0):
+                    # If Stake explicitly says the session was taken elsewhere, do not thrash recovery.
+                    if state.session_elsewhere_unresolved:
+                        last_error = "ws silent + session taken elsewhere (blocked)"
+                        heartbeat("error")
+                    elif not recover_exhausted and time.time() - float(last_recover_at or 0) >= float(args.ws_recover_cooldown_sec or 60):
+                        recover_session(f"ws silent {int(ws_silence)}s")
+                        continue
             except Exception:
                 pass
 
@@ -2236,6 +2563,38 @@ def main(argv: Optional[list[str]] = None) -> int:
                     # refuse silently to avoid acting on wrong table if multiple masters exist
                     continue
 
+                # Persistent idempotency guard: never execute the same decision_id after restart.
+                # (Safer to skip than to risk betting a different round.)
+                mark_ok: Optional[bool] = None
+                last_exc: Optional[Exception] = None
+                for attempt in range(3):
+                    try:
+                        mark_ok = try_mark_decision_executed(did, executor_id=executor_id)
+                        break
+                    except sqlite3.OperationalError as e:
+                        last_exc = e
+                        time.sleep(0.2 * (attempt + 1))
+                    except Exception as e:
+                        last_exc = e
+                        break
+                if mark_ok is None:
+                    _post_result(did, {"error": "decision_exec_guard_failed", "detail": str(last_exc)[:200] if last_exc else ""}, status="error")
+                    continue
+                if not mark_ok:
+                    err_payload = {"error": "duplicate_decision_retry", "decision_id": did}
+                    if action == "BET":
+                        err_payload["hint"] = (
+                            "A previous attempt was started for this decision_id. "
+                            "If it crashed mid-BET, the actual BET status on Stake is UNKNOWN. "
+                            "Check Stake bet history manually."
+                        )
+                        try:
+                            send_log(f"[bet][WARN] decision {did[-12:]} duplicate — manual Stake history check advised")
+                        except Exception:
+                            pass
+                    _post_result(did, err_payload, status="error")
+                    continue
+
                 master_pending_for_me += 1
 
                 ack = {
@@ -2296,6 +2655,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
                     send_phase("entering", str(target)[:40])
                     send_action(f"Switching table: {target}")
+                    desired_table_substr = str(target)
 
                     # Clear identifiers so we can wait for new mapping.
                     state.operator_table_id = ""
@@ -2319,24 +2679,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                                 game_frame.evaluate(_WS_BRIDGE_INIT)
                             except Exception:
                                 pass
-                        ok = _wait_for(
-                            lambda: bool(state.game_ws_url and state.table_id and state.user_id and state.jsession_id),
-                            timeout_sec=180,
-                            tick_ms=500,
-                            page=page,
-                            on_tick=lambda: heartbeat("running"),
-                        )
+                        def _pred_ids2() -> bool:
+                            _pump_ws_events(page, game_frame, state)
+                            return bool(state.game_ws_url and state.table_id and state.user_id and state.jsession_id)
+
+                        ok = _wait_for(_pred_ids2, timeout_sec=180, tick_ms=500, page=page, on_tick=lambda: heartbeat("running"))
                         if not ok:
                             raise RuntimeError("session identifiers not populated (table/user/ws missing)")
                         # If numeric table_id provided, wait for operator table id match too (best-effort).
                         if decision_table_id:
-                            _wait_for(
-                                lambda: bool(state.operator_table_id and state.operator_table_id == decision_table_id),
-                                timeout_sec=30,
-                                tick_ms=500,
-                                page=page,
-                                on_tick=lambda: heartbeat("running"),
-                            )
+                            def _pred_op_match() -> bool:
+                                _pump_ws_events(page, game_frame, state)
+                                return bool(state.operator_table_id and state.operator_table_id == decision_table_id)
+
+                            _wait_for(_pred_op_match, timeout_sec=30, tick_ms=500, page=page, on_tick=lambda: heartbeat("running"))
                         res = {
                             "mode": "live_ws",
                             "observed_at": _utc_now_iso(),
@@ -2368,11 +2724,26 @@ def main(argv: Optional[list[str]] = None) -> int:
                     _post_result(did, {"error": f"unsupported action: {action}"}, status="error")
                     continue
 
-                # Receiver bets are always PLAYER (master sends only PLAYER BET / LOOK).
-                if side and side not in ("PLAYER", "P"):
-                    send_log(f"[warn] ignoring non-player side from master: {side}")
-                side = "PLAYER"
-                bc = _side_to_bc(side) or "0"
+                bet_side = _normalize_bet_side(side)
+                if bet_side == "BANKER" and not args.allow_banker:
+                    _post_result(did, {"error": "BANKER disabled (start executor with --allow-banker)"}, status="error")
+                    continue
+                if bet_side == "TIE" and not args.allow_tie:
+                    _post_result(did, {"error": "TIE disabled (start executor with --allow-tie)"}, status="error")
+                    continue
+                bc = _side_to_bc(bet_side, assume_012=bool(args.assume_bc_012))
+                if not bc:
+                    _post_result(
+                        did,
+                        {
+                            "error": "unknown_bc_mapping_for_side",
+                            "side": bet_side,
+                            "hint": "Run sniff_pragmatic_bet_ws.py and set BACOPY_PRAGMATIC_BC_BANKER / BACOPY_PRAGMATIC_BC_TIE (or pass --assume-bc-012 at your own risk).",
+                        },
+                        status="error",
+                    )
+                    continue
+                side = bet_side
 
                 if not (state.table_id and state.user_id and state.game_ws_url):
                     _post_result(did, {"error": "pragmatic session not ready (table/user/ws missing)"}, status="error")
@@ -2447,7 +2818,26 @@ def main(argv: Optional[list[str]] = None) -> int:
 
                 # Idempotency guard: at most 1 bet per (table, game) across restarts.
                 key = (str(op_tid), str(game_id))
-                if key in processed_keys or not try_lock_bet(provider=provider, table_id=str(op_tid), game_id=str(game_id), decision_id=did):
+                if key in processed_keys:
+                    _post_result(
+                        did,
+                        {"error": "duplicate_bet_guard", "operator_table_id": op_tid, "game_id": game_id},
+                        status="error",
+                    )
+                    continue
+                try:
+                    locked = try_lock_bet(executor_id=executor_id, provider=provider, table_id=str(op_tid), game_id=str(game_id), decision_id=did)
+                except sqlite3.OperationalError as e:
+                    _post_result(
+                        did,
+                        {"error": "bet_guard_db_busy", "operator_table_id": op_tid, "game_id": game_id, "detail": str(e)[:200]},
+                        status="error",
+                    )
+                    last_error = "bet_guard_db_busy"
+                    consecutive_hard_errors += 1
+                    heartbeat("error")
+                    continue
+                if not locked:
                     _post_result(
                         did,
                         {"error": "duplicate_bet_guard", "operator_table_id": op_tid, "game_id": game_id},
@@ -2457,8 +2847,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 processed_keys.add(key)
 
                 amt = float(seq7.bet_amount())
-                send_phase("betting_player", f"${amt:.0f}")
-                send_action(f"BET PLAYER ${amt:.0f}")
+                send_phase(f"betting_{side.lower()}", f"${amt:.0f}")
+                send_action(f"BET {side} ${amt:.0f}")
                 stake_cur = bet_currency
                 if stake_cur not in state.stake_balance_by_currency and state.stake_balance_by_currency:
                     if len(state.stake_balance_by_currency) == 1:
@@ -2552,22 +2942,26 @@ def main(argv: Optional[list[str]] = None) -> int:
                 except Exception:
                     pass
 
-                won = None if outcome == "tie" else (outcome == "player")
-                rr_meta = seq7.apply_round(outcome, won)
+                bet_side_low = str(side or "").strip().lower()
+                if bet_side_low == "tie":
+                    won = bool(outcome == "tie")
+                else:
+                    won = None if outcome == "tie" else bool(outcome == bet_side_low)
+                rr_meta = seq7.apply_round(outcome, won, bet_side=bet_side_low)
 
                 try:
-                    if outcome == "tie":
+                    if outcome == "tie" and bet_side_low != "tie":
                         send_action("Tie — BET returned")
                     elif won:
                         if after_balance is not None:
-                            send_action(f"WIN PLAYER ${amt:.0f}. Balance: ${after_balance:.2f}")
+                            send_action(f"WIN {side} ${amt:.0f}. Balance: ${after_balance:.2f}")
                         else:
-                            send_action(f"WIN PLAYER ${amt:.0f}")
+                            send_action(f"WIN {side} ${amt:.0f}")
                     else:
                         if after_balance is not None:
-                            send_action(f"LOSE PLAYER ${amt:.0f}. Balance: ${after_balance:.2f}")
+                            send_action(f"LOSE {side} ${amt:.0f}. Balance: ${after_balance:.2f}")
                         else:
-                            send_action(f"LOSE PLAYER ${amt:.0f}")
+                            send_action(f"LOSE {side} ${amt:.0f}")
                     send_phase("idle", "ARMED")
 
                     send_msg(
@@ -2576,6 +2970,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                             "result": outcome,
                             "won": won,
                             "bet_amount": amt,
+                            "bet_side": bet_side_low,
                             "balance": seq7.current_balance if seq7.current_balance is not None else after_balance,
                             "session_open_balance": seq7.session_open_balance,
                             "daily_open_date": seq7.daily_open_date,
@@ -2640,27 +3035,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 }
                 _post_result(did, result_payload, status="done")
 
-                try:
-                    append_decision_event(
-                        {
-                            "schema_version": 1,
-                            "event_type": "decision_resolved",
-                            "decision_id": did,
-                            "captured_at": ack.get("acked_at"),
-                            "provider": provider,
-                            "table_id": decision_table_id,
-                            "table_name": decision_table_name,
-                            "snapshot": decision_snapshot,
-                            "friend_action": fa,
-                            "ack": ack,
-                            "result": outcome,
-                            "execution": {"mode": "live_ws", "game_id": game_id, "bet_confirm": confirm or {}},
-                            "resolved_at": result_payload.get("observed_at"),
-                        }
-                    )
-                except Exception:
-                    pass
-
+                # ML 契約 JSONL は Master 側 (POST /api/decisions/{id}/result) が append_result_event で処理.
+                # executor 側で再度 append するとホスト/event_type が重複して reconstruct が壊れる.
                 print(f"[done] {did} {state.table_name} game={game_id} side={side} -> {outcome}", flush=True)
 
             if args.once:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -30,6 +31,10 @@ def init_db() -> None:
               provider TEXT,
               table_id TEXT,
               table_name TEXT,
+              target_executor_id TEXT,
+              action TEXT,
+              side TEXT,
+              amount REAL,
               game_id TEXT,
               payload_json TEXT NOT NULL,
               ack_json TEXT,
@@ -37,23 +42,69 @@ def init_db() -> None:
             )
             """
         )
+        # Backward-compatible schema migration for decisions table.
+        for ddl in [
+            "ALTER TABLE decisions ADD COLUMN target_executor_id TEXT",
+            "ALTER TABLE decisions ADD COLUMN action TEXT",
+            "ALTER TABLE decisions ADD COLUMN side TEXT",
+            "ALTER TABLE decisions ADD COLUMN amount REAL",
+        ]:
+            try:
+                cur.execute(ddl)
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if "duplicate column name" in msg:
+                    continue
+                raise
         cur.execute("CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_decisions_received_at ON decisions(received_at)")
 
-        # Prevent duplicate BET per (provider, table_id, game_id) across retries/restarts.
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS bet_guard (
-              provider TEXT NOT NULL,
-              table_id TEXT NOT NULL,
-              game_id TEXT NOT NULL,
-              decision_id TEXT,
-              created_at TEXT NOT NULL,
-              PRIMARY KEY (provider, table_id, game_id)
+        # Idempotency guard for BET. PK includes executor_id so that multiple
+        # executors (different Stake accounts) on the same table+game_id can each
+        # lock independently. Old schema (no executor_id) is dropped & recreated.
+        cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='bet_guard'")
+        row = cur.fetchone()
+        needed_bg_pk = "PRIMARY KEY (executor_id, provider, table_id, game_id)"
+        if row and needed_bg_pk not in (row[0] or ""):
+            cur.execute("DROP TABLE bet_guard")
+            row = None
+        if not row:
+            cur.execute(
+                """
+                CREATE TABLE bet_guard (
+                  executor_id TEXT NOT NULL DEFAULT '',
+                  provider TEXT NOT NULL,
+                  table_id TEXT NOT NULL,
+                  game_id TEXT NOT NULL,
+                  decision_id TEXT,
+                  created_at TEXT NOT NULL,
+                  PRIMARY KEY (executor_id, provider, table_id, game_id)
+                )
+                """
             )
-            """
-        )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_bet_guard_created_at ON bet_guard(created_at)")
+
+        # Idempotency guard for decision execution (across executor restarts).
+        # PK is (decision_id, executor_id) so broadcasts let every matching executor
+        # execute exactly once independently.
+        cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='decision_exec_guard'")
+        row = cur.fetchone()
+        needed_deg_pk = "PRIMARY KEY (decision_id, executor_id)"
+        if row and needed_deg_pk not in (row[0] or ""):
+            cur.execute("DROP TABLE decision_exec_guard")
+            row = None
+        if not row:
+            cur.execute(
+                """
+                CREATE TABLE decision_exec_guard (
+                  decision_id TEXT NOT NULL,
+                  executor_id TEXT NOT NULL DEFAULT '',
+                  created_at TEXT NOT NULL,
+                  PRIMARY KEY (decision_id, executor_id)
+                )
+                """
+            )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_decision_exec_guard_created_at ON decision_exec_guard(created_at)")
 
         cur.execute(
             """
@@ -61,17 +112,49 @@ def init_db() -> None:
               executor_id TEXT PRIMARY KEY,
               label TEXT,
               username TEXT,
+              user_email TEXT,
+              user_id TEXT,
               provider TEXT,
               table_id TEXT,
               table_name TEXT,
               balance REAL,
               seq_json TEXT,
+              gui_json TEXT,
+              phase_json TEXT,
+              caps_json TEXT,
+              ws_json TEXT,
+              bettable INTEGER,
+              session_elsewhere_unresolved INTEGER,
+              daily_pnl REAL,
+              daily_pnl_date TEXT,
+              os TEXT,
               status TEXT,
               error TEXT,
               updated_at TEXT NOT NULL
             )
             """
         )
+        # Backward-compatible schema migration (old DB may miss new columns).
+        for ddl in [
+            "ALTER TABLE executors ADD COLUMN user_email TEXT",
+            "ALTER TABLE executors ADD COLUMN user_id TEXT",
+            "ALTER TABLE executors ADD COLUMN caps_json TEXT",
+            "ALTER TABLE executors ADD COLUMN ws_json TEXT",
+            "ALTER TABLE executors ADD COLUMN bettable INTEGER",
+            "ALTER TABLE executors ADD COLUMN session_elsewhere_unresolved INTEGER",
+            "ALTER TABLE executors ADD COLUMN gui_json TEXT",
+            "ALTER TABLE executors ADD COLUMN phase_json TEXT",
+            "ALTER TABLE executors ADD COLUMN daily_pnl REAL",
+            "ALTER TABLE executors ADD COLUMN daily_pnl_date TEXT",
+            "ALTER TABLE executors ADD COLUMN os TEXT",
+        ]:
+            try:
+                cur.execute(ddl)
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if "duplicate column name" in msg:
+                    continue
+                raise
         cur.execute("CREATE INDEX IF NOT EXISTS idx_executors_updated_at ON executors(updated_at)")
         conn.commit()
     finally:
@@ -82,12 +165,22 @@ def insert_decision(decision_id: str, payload: dict[str, Any]) -> None:
     conn = sqlite3.connect(_db_path())
     try:
         cur = conn.cursor()
+        fa = payload.get("friend_action") if isinstance(payload, dict) else None
+        if not isinstance(fa, dict):
+            fa = {}
+        action = str(fa.get("action") or "")
+        side = str(fa.get("side") or "")
+        amt = fa.get("amount")
+        try:
+            amount = float(amt) if amt is not None else None
+        except Exception:
+            amount = None
         cur.execute(
             """
             INSERT OR REPLACE INTO decisions
-              (decision_id, received_at, status, provider, table_id, table_name, game_id, payload_json)
+              (decision_id, received_at, status, provider, table_id, table_name, target_executor_id, action, side, amount, game_id, payload_json)
             VALUES
-              (?, ?, ?, ?, ?, ?, ?, ?)
+              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 decision_id,
@@ -96,6 +189,10 @@ def insert_decision(decision_id: str, payload: dict[str, Any]) -> None:
                 str(payload.get("provider") or ""),
                 str(payload.get("table_id") or ""),
                 str(payload.get("table_name") or ""),
+                str(payload.get("target_executor_id") or ""),
+                action,
+                side,
+                amount,
                 str(payload.get("game_id") or ""),
                 json.dumps(payload, ensure_ascii=False),
             ),
@@ -189,17 +286,79 @@ def get_stats() -> dict[str, Any]:
         counts = {s: int(c) for s, c in cur.fetchall()}
         cur.execute("SELECT MAX(received_at) FROM decisions")
         last_at = cur.fetchone()[0]
-        return {"counts": counts, "last_received_at": last_at}
+        try:
+            cur.execute("SELECT COUNT(*) FROM decisions WHERE action = 'BET'")
+            bet_total = int(cur.fetchone()[0] or 0)
+        except Exception:
+            bet_total = 0
+        try:
+            cur.execute("SELECT COUNT(*) FROM decisions WHERE action = 'BET' AND status = 'done'")
+            bet_done = int(cur.fetchone()[0] or 0)
+        except Exception:
+            bet_done = 0
+        try:
+            cur.execute("SELECT COUNT(*) FROM decisions WHERE action = 'BET' AND status = 'error'")
+            bet_error = int(cur.fetchone()[0] or 0)
+        except Exception:
+            bet_error = 0
+        return {
+            "counts": counts,
+            "last_received_at": last_at,
+            "training": {"bet_goal": 5000, "bets_total": bet_total, "bets_done": bet_done, "bets_error": bet_error},
+        }
     finally:
         conn.close()
 
 
-def try_lock_bet(*, provider: str, table_id: str, game_id: str, decision_id: str = "") -> bool:
-    """Acquire a durable lock for a BET for this (provider, table_id, game_id).
+def try_lock_bet(*, executor_id: str, provider: str, table_id: str, game_id: str, decision_id: str = "") -> bool:
+    """Acquire a durable lock for a BET for this (executor_id, provider, table_id, game_id).
 
-    Returns True if lock acquired, False if already locked.
+    Each executor can lock independently — multiple executors on the same table
+    (different Stake accounts) must each lock their own row so that a broadcast
+    BET can be placed in parallel.
+
+    Returns True if lock acquired, False if already locked by this same executor.
     """
-    if not provider or not table_id or not game_id:
+    if not executor_id or not provider or not table_id or not game_id:
+        return False
+    last_exc: Optional[Exception] = None
+    for attempt in range(3):
+        # Short busy-timeout: betting window is time-sensitive; fail fast and retry.
+        conn = sqlite3.connect(_db_path(), timeout=0.2)
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO bet_guard(executor_id, provider, table_id, game_id, decision_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (executor_id, provider, table_id, game_id, decision_id, _utc_now_iso()),
+                )
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+            except sqlite3.OperationalError as e:
+                last_exc = e
+        finally:
+            conn.close()
+        time.sleep(0.2 * (attempt + 1))
+    raise sqlite3.OperationalError(str(last_exc) if last_exc else "bet_guard: retry exhausted")
+
+
+def try_mark_decision_executed(decision_id: str, executor_id: str = "") -> bool:
+    """Idempotency guard at (decision_id, executor_id) level.
+
+    Each executor reserves its own row for a decision, so broadcasts let every
+    matching executor execute exactly once independently.
+
+    Returns True if newly reserved for this executor, False if this executor
+    already reserved this decision.
+    """
+    did = str(decision_id or "").strip()
+    eid = str(executor_id or "").strip()
+    if not did:
         return False
     conn = sqlite3.connect(_db_path())
     try:
@@ -207,10 +366,10 @@ def try_lock_bet(*, provider: str, table_id: str, game_id: str, decision_id: str
         try:
             cur.execute(
                 """
-                INSERT INTO bet_guard(provider, table_id, game_id, decision_id, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO decision_exec_guard(decision_id, executor_id, created_at)
+                VALUES (?, ?, ?)
                 """,
-                (provider, table_id, game_id, decision_id, _utc_now_iso()),
+                (did, eid, _utc_now_iso()),
             )
             conn.commit()
             return True
@@ -229,17 +388,28 @@ def upsert_executor(executor_id: str, payload: dict[str, Any]) -> None:
         cur.execute(
             """
             INSERT INTO executors
-              (executor_id, label, username, provider, table_id, table_name, balance, seq_json, status, error, updated_at)
+              (executor_id, label, username, user_email, user_id, provider, table_id, table_name, balance, seq_json, gui_json, phase_json, caps_json, ws_json, bettable, session_elsewhere_unresolved, daily_pnl, daily_pnl_date, os, status, error, updated_at)
             VALUES
-              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(executor_id) DO UPDATE SET
               label=excluded.label,
               username=excluded.username,
+              user_email=excluded.user_email,
+              user_id=excluded.user_id,
               provider=excluded.provider,
               table_id=excluded.table_id,
               table_name=excluded.table_name,
               balance=excluded.balance,
               seq_json=excluded.seq_json,
+              gui_json=excluded.gui_json,
+              phase_json=excluded.phase_json,
+              caps_json=excluded.caps_json,
+              ws_json=excluded.ws_json,
+              bettable=excluded.bettable,
+              session_elsewhere_unresolved=excluded.session_elsewhere_unresolved,
+              daily_pnl=excluded.daily_pnl,
+              daily_pnl_date=excluded.daily_pnl_date,
+              os=excluded.os,
               status=excluded.status,
               error=excluded.error,
               updated_at=excluded.updated_at
@@ -248,11 +418,22 @@ def upsert_executor(executor_id: str, payload: dict[str, Any]) -> None:
                 executor_id,
                 str(payload.get("label") or ""),
                 str(payload.get("username") or ""),
+                str(payload.get("user_email") or ""),
+                str(payload.get("user_id") or ""),
                 str(payload.get("provider") or ""),
                 str(payload.get("table_id") or ""),
                 str(payload.get("table_name") or ""),
                 float(payload.get("balance")) if payload.get("balance") is not None else None,
                 json.dumps(payload.get("seq") or {}, ensure_ascii=False) if payload.get("seq") is not None else None,
+                json.dumps(payload.get("gui") or {}, ensure_ascii=False) if payload.get("gui") is not None else None,
+                json.dumps(payload.get("phase") or {}, ensure_ascii=False) if payload.get("phase") is not None else None,
+                json.dumps(payload.get("caps") or {}, ensure_ascii=False) if payload.get("caps") is not None else None,
+                json.dumps(payload.get("ws") or {}, ensure_ascii=False) if payload.get("ws") is not None else None,
+                int(bool(payload.get("bettable"))) if payload.get("bettable") is not None else None,
+                int(bool(payload.get("session_elsewhere_unresolved"))) if payload.get("session_elsewhere_unresolved") is not None else None,
+                float(payload.get("daily_pnl")) if payload.get("daily_pnl") is not None else None,
+                str(payload.get("daily_pnl_date") or ""),
+                str(payload.get("os") or ""),
                 str(payload.get("status") or ""),
                 str(payload.get("error") or ""),
                 _utc_now_iso(),
@@ -269,7 +450,7 @@ def list_executors(limit: int = 200) -> list[dict[str, Any]]:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT executor_id, label, username, provider, table_id, table_name, balance, seq_json, status, error, updated_at
+            SELECT executor_id, label, username, user_email, user_id, provider, table_id, table_name, balance, seq_json, gui_json, phase_json, caps_json, ws_json, bettable, session_elsewhere_unresolved, daily_pnl, daily_pnl_date, os, status, error, updated_at
             FROM executors
             ORDER BY updated_at DESC
             LIMIT ?
@@ -283,11 +464,22 @@ def list_executors(limit: int = 200) -> list[dict[str, Any]]:
                 executor_id,
                 label,
                 username,
+                user_email,
+                user_id,
                 provider,
                 table_id,
                 table_name,
                 balance,
                 seq_json,
+                gui_json,
+                phase_json,
+                caps_json,
+                ws_json,
+                bettable,
+                session_elsewhere_unresolved,
+                daily_pnl,
+                daily_pnl_date,
+                os_name,
                 status,
                 error,
                 updated_at,
@@ -296,16 +488,43 @@ def list_executors(limit: int = 200) -> list[dict[str, Any]]:
                 seq = json.loads(seq_json) if seq_json else {}
             except Exception:
                 seq = {}
+            try:
+                gui = json.loads(gui_json) if gui_json else {}
+            except Exception:
+                gui = {}
+            try:
+                phase = json.loads(phase_json) if phase_json else {}
+            except Exception:
+                phase = {}
+            try:
+                caps = json.loads(caps_json) if caps_json else {}
+            except Exception:
+                caps = {}
+            try:
+                ws = json.loads(ws_json) if ws_json else {}
+            except Exception:
+                ws = {}
             out.append(
                 {
                     "executor_id": executor_id,
                     "label": label or "",
                     "username": username or "",
+                    "user_email": user_email or "",
+                    "user_id": user_id or "",
                     "provider": provider or "",
                     "table_id": table_id or "",
                     "table_name": table_name or "",
                     "balance": balance,
                     "seq": seq,
+                    "gui": gui,
+                    "phase": phase,
+                    "caps": caps,
+                    "ws": ws,
+                    "bettable": bool(bettable) if bettable is not None else False,
+                    "session_elsewhere_unresolved": bool(session_elsewhere_unresolved) if session_elsewhere_unresolved is not None else False,
+                    "daily_pnl": daily_pnl,
+                    "daily_pnl_date": daily_pnl_date or "",
+                    "os": os_name or "",
                     "status": status or "",
                     "error": error or "",
                     "updated_at": updated_at,
