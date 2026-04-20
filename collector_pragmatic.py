@@ -78,8 +78,23 @@ def _extract_qpid(value: str) -> str:
     return ""
 
 
+def _winner_to_char(winner: str) -> str:
+    w = str(winner or "").upper()
+    if "PLAYER" in w: return "P"
+    if "BANKER" in w: return "B"
+    if "TIE" in w: return "T"
+    return ""
+
+
 def _make_snapshot(table_id: str, buf: "ShoeBuffer") -> dict:
     last_hand = buf.hands[-1] if buf.hands else None
+    # Master UI の roadmap 表示用に P/B/T 文字列を生成.
+    seq_chars = []
+    for h in (buf.hands or []):
+        c = _winner_to_char(h.get("winner"))
+        if c: seq_chars.append(c)
+    sequence = "".join(seq_chars)
+    last_10 = sequence[-10:] if sequence else ""
     return {
         "captured_at": _utc_now_iso(),
         "table_id": table_id,                   # operator_table_id (例 "415")
@@ -91,6 +106,10 @@ def _make_snapshot(table_id: str, buf: "ShoeBuffer") -> dict:
         "shoe_summary": buf.last_shoe_summary,
         "good_roads_map": buf.last_good_roads,
         "last_hand": last_hand,
+        # Master UI roadmap 表示用 (直近結果列).
+        "sequence": sequence,
+        "last_10": last_10,
+        "last_results": last_10,   # alias (Master UI が参照する互換フィールド)
         # 直接 URL 遷移用の内部 ID (LAPLACE hash-nav 相当).
         "qpid_table_id": buf.qpid_table_id or "",
         "table_image": buf.table_image or "",
