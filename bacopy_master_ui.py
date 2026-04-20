@@ -557,42 +557,69 @@ let _state = {
   decisions: { pending:[], processing:[], done:[], error:[] }, stats: null,
 };
 
-async function refreshOnce(){
-  const provider=document.getElementById('providerSel').value;
-  selected.provider=provider;
-  const [st, snaps, execs, pend, proc, done, err, appr] = await Promise.all([
-    apiGet('/api/status'),
-    apiGet('/api/snapshots'),
-    apiGet('/api/executors'),
-    apiGet('/api/decisions?status=pending&limit=100'),
-    apiGet('/api/decisions?status=processing&limit=100'),
-    apiGet('/api/decisions?status=done&limit=2000'),
-    apiGet('/api/decisions?status=error&limit=500'),
-    apiGet('/api/approved-users'),
-  ]);
-  _state.stats = st;
-  _state.snapshots = snaps;
-  _state.executors = (execs && execs.executors)||[];
-  _state.decisions.pending = (pend && pend.decisions)||[];
-  _state.decisions.processing = (proc && proc.decisions)||[];
-  _state.decisions.done = (done && done.decisions)||[];
-  _state.decisions.error = (err && err.decisions)||[];
-  _state.approvedUsers = (appr && appr.users)||[];
-  _state.approvedErr = (appr && !appr.ok) ? (appr.error||'approved-users fetch failed') : '';
+// 直近 fetch 結果のハッシュ (簡易 fingerprint) で差分検知し, 変化時のみ再描画.
+// 500ms 間隔 poll × innerHTML 丸ごと再構築 = 視覚的なフラッシュを防ぐ.
+let _lastRenderFingerprint = { snaps: '', execs: '', decs: '' };
+let _refreshInFlight = false;
 
-  renderHeader();
-  renderStatsBar();
-  renderPilots();
-  renderExecutors();
-  renderExecutorSelect();
-  renderLearning();
-  renderTables();
-  renderHistory();
-  renderDetailPanel();
-  updateButtonsGating();
-  updateButtonVisibility();
-  updateSwitchWatch();
-  updateActionWatch();
+async function refreshOnce(){
+  if(_refreshInFlight) return;  // 多重発火防止 (前回 fetch 未完了なら skip)
+  _refreshInFlight = true;
+  try {
+    const provider=document.getElementById('providerSel').value;
+    selected.provider=provider;
+    const [st, snaps, execs, pend, proc, done, err, appr] = await Promise.all([
+      apiGet('/api/status'),
+      apiGet('/api/snapshots'),
+      apiGet('/api/executors'),
+      apiGet('/api/decisions?status=pending&limit=100'),
+      apiGet('/api/decisions?status=processing&limit=100'),
+      apiGet('/api/decisions?status=done&limit=2000'),
+      apiGet('/api/decisions?status=error&limit=500'),
+      apiGet('/api/approved-users'),
+    ]);
+    _state.stats = st;
+    _state.snapshots = snaps;
+    _state.executors = (execs && execs.executors)||[];
+    _state.decisions.pending = (pend && pend.decisions)||[];
+    _state.decisions.processing = (proc && proc.decisions)||[];
+    _state.decisions.done = (done && done.decisions)||[];
+    _state.decisions.error = (err && err.decisions)||[];
+    _state.approvedUsers = (appr && appr.users)||[];
+    _state.approvedErr = (appr && !appr.ok) ? (appr.error||'approved-users fetch failed') : '';
+
+    // 差分検知 fingerprint (軽量): snapshot updated_at + executor 数/最新 heartbeat + decision 件数
+    const fpSnaps = String((snaps && snaps.updated_at) || '');
+    const fpExecs = (_state.executors||[]).map(e =>
+      `${e.executor_id}:${e.updated_at}:${e.bettable?1:0}:${e.status||''}:${e.table_name||''}`
+    ).join('|');
+    const fpDecs = `p${_state.decisions.pending.length}-pr${_state.decisions.processing.length}-d${_state.decisions.done.length}-e${_state.decisions.error.length}`;
+
+    renderHeader();         // header は軽量なので毎回 OK (時刻表示だけ)
+    if(fpExecs !== _lastRenderFingerprint.execs){
+      renderStatsBar();
+      renderPilots();
+      renderExecutors();
+      renderExecutorSelect();
+      _lastRenderFingerprint.execs = fpExecs;
+    }
+    if(fpSnaps !== _lastRenderFingerprint.snaps){
+      renderTables();
+      _lastRenderFingerprint.snaps = fpSnaps;
+    }
+    if(fpDecs !== _lastRenderFingerprint.decs){
+      renderLearning();
+      renderHistory();
+      _lastRenderFingerprint.decs = fpDecs;
+    }
+    renderDetailPanel();    // 選択テーブル詳細 (都度)
+    updateButtonsGating();  // 軽量判定
+    updateButtonVisibility();
+    updateSwitchWatch();
+    updateActionWatch();
+  } finally {
+    _refreshInFlight = false;
+  }
 }
 
 function renderHeader(){
