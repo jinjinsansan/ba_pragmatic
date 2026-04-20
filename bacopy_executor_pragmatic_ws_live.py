@@ -4230,6 +4230,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 # page.reload / frame detach で _wait_for が事実上 hang するケースへの保険.
                 if time.time() >= hard_deadline:
                     return True  # caller が state.bets_open_game_id を確認して None を返す
+                # session elsewhere modal を本 wait 中も即 dismiss (main loop に戻るまで待たない).
+                # Pragmatic が intermittent に出すモーダルが 10-15s 放置されていた問題への対処.
+                try:
+                    _dismiss_session_elsewhere_modal(page, state)
+                except Exception:
+                    pass
                 try:
                     game_frame = _refresh_game_frame(page, game_frame)
                 except Exception:
@@ -4275,6 +4281,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             start = time.time()
 
             def _pred() -> bool:
+                # BET confirm 待ち中も modal 即 dismiss.
+                try:
+                    _dismiss_session_elsewhere_modal(page, state)
+                except Exception:
+                    pass
                 _pump_ws_events(page, game_frame, state)
                 # Explicit server-side bet error (if any) should short-circuit.
                 if isinstance(state.last_bet_confirm, dict) and state.last_bet_confirm.get("type") == "xml_error":
@@ -4340,6 +4351,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return None
 
             def _pred() -> bool:
+                # wait_result は最大 90s 待つので, ここが modal 放置の最大要因.
+                # 毎 tick で dismiss 呼ぶ.
+                try:
+                    _dismiss_session_elsewhere_modal(page, state)
+                except Exception:
+                    pass
                 _pump_ws_events(page, game_frame, state)
                 return _winner() is not None
 
