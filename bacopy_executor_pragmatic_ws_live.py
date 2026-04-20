@@ -2650,7 +2650,20 @@ _LOBBY_TRY_CLICK_JS = r"""
       .replace(/[\$￥¥]/g, '')
       .toLowerCase();
   }
-  function match(text){
+  function matchStrict(text){
+    // プレフィックス一致 (テーブルカードは通常 "スピードバカラ3$ 0.2" のように table 名で始まる).
+    // substring 一致だと "日本語スピードバカラ 3" が "スピードバカラ 3" を含んで誤爆する.
+    const t = norm(text);
+    if (!t) return '';
+    for (const c of candidates) {
+      const n = norm(c);
+      if (n && t.indexOf(n) === 0) return c;  // startsWith
+    }
+    return '';
+  }
+  function matchLoose(text){
+    // プレフィックス一致しなかった場合の fallback (従来の substring).
+    // これは 2nd pass でしか使わない.
     const t = norm(text);
     if (!t) return '';
     for (const c of candidates) {
@@ -2659,6 +2672,8 @@ _LOBBY_TRY_CLICK_JS = r"""
     }
     return '';
   }
+  // 互換 alias (既存コードが match() を呼んでいる場合).
+  function match(text){ return matchStrict(text) || matchLoose(text); }
   function clickEl(el){
     try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch(_) {}
     try { el.focus(); } catch(_) {}
@@ -2681,12 +2696,22 @@ _LOBBY_TRY_CLICK_JS = r"""
     const nodes = [
       ...document.querySelectorAll('[role="button"], button, a, div[role="button"], [data-testid*="table"], [data-testid*="lobby"]')
     ];
+    // Pass A: startsWith 一致 (最優先 — テーブルカードの name prefix を確実に引く).
     for (const el of nodes) {
       const t = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-      const m = match(t);
+      const m = matchStrict(t);
       if (m) {
         clickEl(el);
-        return { clicked: true, match: m, text: t.slice(0, 120), nodes: nodes.length };
+        return { clicked: true, match: m, text: t.slice(0, 120), nodes: nodes.length, matchType: 'strict' };
+      }
+    }
+    // Pass B: substring 一致 (fallback). startsWith で見つからない時だけ.
+    for (const el of nodes) {
+      const t = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+      const m = matchLoose(t);
+      if (m) {
+        clickEl(el);
+        return { clicked: true, match: m, text: t.slice(0, 120), nodes: nodes.length, matchType: 'loose' };
       }
     }
     return { clicked: false, nodes: nodes.length };
