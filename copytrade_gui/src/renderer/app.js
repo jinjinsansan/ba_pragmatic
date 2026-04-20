@@ -968,10 +968,12 @@ function loadSettings() {
       merged.table_name_substr = String(merged.table_name_substr || '');
     }
     merged.auto_click_wait_sec = Number.isFinite(Number(merged.auto_click_wait_sec)) ? Math.max(10, Math.floor(Number(merged.auto_click_wait_sec))) : DEFAULT_SETTINGS.auto_click_wait_sec;
-    merged.allow_switch_table = !!merged.allow_switch_table;
-    merged.allow_banker = !!merged.allow_banker;
-    merged.allow_tie = !!merged.allow_tie;
-    merged.assume_bc_012 = !!merged.assume_bc_012;
+    // Hardcoded (UI チェックボックス撤廃済): SWITCH_TABLE / BANKER / assume_bc_012 は常時 ON, TIE は常時 OFF.
+    // localStorage に古い false が残っていても無視して上書きする.
+    merged.allow_switch_table = true;
+    merged.allow_banker = true;
+    merged.allow_tie = false;
+    merged.assume_bc_012 = true;
     merged.headless = !!merged.headless;
     return merged;
   } catch {

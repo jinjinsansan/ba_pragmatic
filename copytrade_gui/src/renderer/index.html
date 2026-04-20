@@ -303,26 +303,16 @@
             <label>Auto Click Wait (sec)</label>
             <input type="number" id="inputAutoClickWaitSec" value="90" min="10" step="5">
           </div>
-          <div class="form-group">
-            <label class="checkbox-label">
-              <input type="checkbox" id="inputAllowSwitchTable" checked> Allow SWITCH_TABLE signals
-            </label>
-          </div>
-          <div class="form-group">
-            <label class="checkbox-label">
-              <input type="checkbox" id="inputAllowBanker"> Allow BANKER bets (experimental)
-            </label>
-          </div>
-          <div class="form-group">
-            <label class="checkbox-label">
-              <input type="checkbox" id="inputAllowTie"> Allow TIE bets (experimental)
-            </label>
-          </div>
-          <div class="form-group">
-            <label class="checkbox-label">
-              <input type="checkbox" id="inputAssumeBc012"> Assume bc mapping PLAYER=0 BANKER=1 TIE=2 (unsafe)
-            </label>
-          </div>
+          <!-- Removed checkboxes (hardcoded in code):
+               - Allow SWITCH_TABLE signals: 常時 ON (Master UI の本質機能)
+               - Allow BANKER bets: 常時 ON (bet code 0/1/2 が業界標準)
+               - Allow TIE bets: 常時 OFF (ハイリスクなのでデフォルト無効)
+               - Assume bc 0/1/2: 常時 ON (executor が常にこの値を使うので選択不要)
+               Hidden DOM は JS 互換のため残存. -->
+          <input type="checkbox" id="inputAllowSwitchTable" checked style="display:none">
+          <input type="checkbox" id="inputAllowBanker" checked style="display:none">
+          <input type="checkbox" id="inputAllowTie" style="display:none">
+          <input type="checkbox" id="inputAssumeBc012" checked style="display:none">
           <div class="form-group">
             <label class="checkbox-label">
               <input type="checkbox" id="inputHeadless"> Headless (not recommended)
