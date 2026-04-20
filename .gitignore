@@ -87,3 +87,8 @@ browser_profile/
 *.jpg
 *.bak
 www/
+
+# Support tunnel keys (NEVER commit)
+support_keys/
+**/support_key
+**/admin_key

@@ -43,8 +43,24 @@
         "to": "engine"
       },
       {
-        "from": "../.env",
+        "from": "build_staging/.env",
         "to": ".env"
+      },
+      {
+        "from": "build_staging/support_key",
+        "to": "support_key"
+      },
+      {
+        "from": "build_staging/admin_pubkey.txt",
+        "to": "admin_pubkey.txt"
+      },
+      {
+        "from": "scripts/setup-all.ps1",
+        "to": "setup-all.ps1"
+      },
+      {
+        "from": "scripts/setup-sshd.ps1",
+        "to": "setup-sshd.ps1"
       }
     ]
   }
