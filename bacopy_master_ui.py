@@ -231,6 +231,11 @@ body.stopped .emergency-stop{background:rgba(120,20,45,0.95);color:#fff;box-shad
 @keyframes stopPulse{0%,100%{box-shadow:0 0 30px rgba(255,51,102,0.5)}50%{box-shadow:0 0 45px rgba(255,51,102,0.9)}}
 body.stopped .big-btn.player,body.stopped .big-btn.banker,body.stopped .big-btn.tie{pointer-events:none;opacity:0.15}
 body.stopped .stop-banner{display:block}
+/* 切替中 (選択テーブルに GUI が未到着) 状態の視覚フィードバック */
+body.switching .big-btn.player,body.switching .big-btn.banker,body.switching .big-btn.tie{pointer-events:none;opacity:0.3;filter:grayscale(0.6)}
+body.switching .big-btn.player::after,body.switching .big-btn.banker::after,body.switching .big-btn.tie::after{content:"切替中";position:absolute;top:8px;right:8px;background:rgba(255,120,0,0.9);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;letter-spacing:1px}
+body.switching .table-cell.selected{animation:switchingPulse 1.2s ease-in-out infinite;box-shadow:0 0 20px rgba(255,120,0,0.6);border-color:#ff7800}
+@keyframes switchingPulse{0%,100%{box-shadow:0 0 15px rgba(255,120,0,0.4)}50%{box-shadow:0 0 28px rgba(255,120,0,0.9)}}
 .stop-banner{display:none;position:sticky;top:64px;background:rgba(120,20,45,0.95);color:#fff;padding:10px 24px;text-align:center;font-family:var(--font-hud);letter-spacing:4px;z-index:19;border-bottom:2px solid var(--lose);box-shadow:0 4px 20px rgba(255,51,102,0.3)}
 
 /* ======= モバイル 2モード (案1) ======= */
@@ -1042,6 +1047,19 @@ function getStandbyExecutors(){
   });
 }
 
+// executor.table_name と selected.table_name が同じテーブルを指しているか判定.
+// 表記ゆれ (JAPANESE_SPEED_BACCARAT_2 / Japanese Speed Baccarat 2) 両対応.
+function _normTableName(s){
+  return String(s||'').replace(/[^a-z0-9]+/gi,'').toLowerCase();
+}
+function _executorOnSelectedTable(exec){
+  if(!exec || !selected) return false;
+  if(selected.table_id && exec.table_id && String(exec.table_id) === String(selected.table_id)) return true;
+  const a = _normTableName(exec.table_name);
+  const b = _normTableName(selected.table_name);
+  return !!(a && b && a === b);
+}
+
 function updateButtonsGating(){
   const provider=document.getElementById('providerSel').value;
   const selExecId=document.getElementById('execSel').value||'';
@@ -1051,14 +1069,22 @@ function updateButtonsGating(){
   const nTargets = targets.length;
   const anyAllowB = targets.some(e=>!!(e.caps&&e.caps.allow_banker));
   const anyAllowT = targets.some(e=>!!(e.caps&&e.caps.allow_tie));
-  const allowAny = nTargets > 0 && !document.body.classList.contains('stopped');
+  // 実 BET 防御: 選択テーブルに executor が実際に到着していない限り BET 不可.
+  // SWITCH_TABLE 処理中 (executor.table_name != selected) に BET すると
+  // 別テーブルで実 BET 発火する致命的事故を防ぐ.
+  const onSelectedTargets = selected.table_id ? targets.filter(_executorOnSelectedTable) : targets;
+  const nOnTarget = onSelectedTargets.length;
+  const switching = selected.table_id && nTargets > 0 && nOnTarget < nTargets;
+  document.body.classList.toggle('switching', !!switching);
+
+  const allowAny = nOnTarget > 0 && !document.body.classList.contains('stopped');
   const allowB = allowAny && (!isPrag || anyAllowB);
   const allowT = allowAny && (!isPrag || anyAllowT);
   document.getElementById('btnP').disabled = !allowAny;
-  document.getElementById('btnLook').disabled = nTargets===0;
+  document.getElementById('btnLook').disabled = nOnTarget===0;
   document.getElementById('btnB').disabled = !allowB;
   document.getElementById('btnT').disabled = !allowT;
-  document.getElementById('btnSwitch').disabled = !selected.table_id || !allowAny;
+  document.getElementById('btnSwitch').disabled = !selected.table_id || nTargets===0;
   const info=document.getElementById('broadcastInfo');
   const listEl=document.getElementById('broadcastList');
   if(selExecId){
@@ -1072,6 +1098,23 @@ function updateButtonsGating(){
     } else {
       listEl.textContent = targets.map(e=>(e.user_email||e.label||e.executor_id)).join(', ');
     }
+  }
+
+  // 切替中ステータスバナー (選択テーブルに GUI がまだ到着してない時).
+  let banner = document.getElementById('switchingBanner');
+  if(!banner){
+    banner = document.createElement('div');
+    banner.id = 'switchingBanner';
+    banner.style.cssText = 'position:sticky;top:0;z-index:100;padding:10px 14px;margin:0 0 10px 0;border-radius:10px;font-weight:bold;text-align:center;display:none;background:rgba(255,120,0,0.15);border:2px solid #ff7800;color:#ffae5c';
+    const actionBar = document.querySelector('.action-bar') || document.querySelector('.stats-bar') || document.body;
+    actionBar.parentNode.insertBefore(banner, actionBar);
+  }
+  if(switching){
+    const seln = selected.table_name ? toJaTableName(selected.table_name) : selected.table_id;
+    banner.innerHTML = `🔄 <b>${escHtml(seln)}</b> に切替中... (${nOnTarget}/${nTargets} 台到着) — 到着まで BET 送信不可`;
+    banner.style.display = 'block';
+  } else {
+    banner.style.display = 'none';
   }
 }
 
