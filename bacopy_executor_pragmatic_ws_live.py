@@ -2616,6 +2616,26 @@ _LOBBY_TRY_CLICK_JS = r"""
     }
     return { clicked: false, nodes: nodes.length };
   }
+  function tryClickAllCategory(){
+    // Pragmatic lobby の「全てのテーブル」「All Tables」等のカテゴリタブを探して click.
+    // 目標テーブル (Fortune 6/Privé 等) が default カテゴリ表示に居ない場合の到達手段.
+    const patterns = [
+      /^すべて$/, /^全て$/, /^全テーブル$/,
+      /^All$/i, /^All Tables$/i, /^All Games$/i, /^View All$/i,
+    ];
+    const selectors = '[role="tab"], [role="button"], button, a, [data-category], [data-testid*="tab"], [data-testid*="category"]';
+    const els = document.querySelectorAll(selectors);
+    for (const el of els) {
+      try{
+        const t = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g,' ').trim();
+        if (!t) continue;
+        for (const p of patterns) {
+          if (p.test(t)) { clickEl(el); return { matched: t.slice(0,40) }; }
+        }
+      }catch(_){}
+    }
+    return null;
+  }
   function scrollables(){
     const out = [];
     const root = document.scrollingElement || document.documentElement || document.body;
@@ -2631,9 +2651,10 @@ _LOBBY_TRY_CLICK_JS = r"""
     return out;
   }
   const scrollers = scrollables();
+  // Pass 1: default カテゴリで scroll 探索
   for (let i = 0; i <= maxScroll; i++) {
     const res = findAndClick();
-    if (res.clicked) return { ...res, attempts: i, scrollers: scrollers.length };
+    if (res.clicked) return { ...res, attempts: i, scrollers: scrollers.length, phase: 'default' };
     for (const sc of scrollers) {
       try {
         const next = sc.scrollTop + sc.clientHeight * scrollRatio;
@@ -2641,12 +2662,67 @@ _LOBBY_TRY_CLICK_JS = r"""
       } catch(_) {}
     }
   }
-  return { clicked: false, attempts: maxScroll, scrollers: scrollers.length };
+  // Pass 2: 「All Tables / すべて」タブを click してから再探索 (Fortune 6/Privé 等対応)
+  const allHit = tryClickAllCategory();
+  if (allHit) {
+    for (let i = 0; i <= maxScroll; i++) {
+      const res = findAndClick();
+      if (res.clicked) return { ...res, attempts: i, scrollers: scrollers.length, phase: 'all-tab:' + allHit.matched };
+      for (const sc of scrollers) {
+        try {
+          const next = sc.scrollTop + sc.clientHeight * scrollRatio;
+          sc.scrollTop = next >= sc.scrollHeight ? 0 : next;
+        } catch(_) {}
+      }
+    }
+  }
+  return { clicked: false, attempts: maxScroll, scrollers: scrollers.length, allTab: allHit ? allHit.matched : null };
 }
 """
 
 
-def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Optional[_PragmaticState] = None, on_tick=None, is_initial: bool = False) -> None:
+class _SwitchTableInterrupted(Exception):
+    """新しい SWITCH_TABLE decision が到着して現処理を中断したい時に投げる."""
+    def __init__(self, new_decision: dict):
+        super().__init__(f"interrupted by {new_decision.get('decision_id','?')[-12:]}")
+        self.new_decision = new_decision
+
+
+def _peek_new_switch_decision(q, current_did: str, current_received_at: str = ""):
+    """decision_q から**より新しい** SWITCH_TABLE を非破壊で覗く.
+
+    Returns:
+        current_received_at より新しい SWITCH_TABLE decision (current_did 以外), または None.
+    これにより fetcher が古い pending/processing 決定を再注入した時に誤爆しない.
+    """
+    import queue as _q
+    seen: list[dict] = []
+    found: Optional[dict] = None
+    try:
+        while True:
+            d = q.get_nowait()
+            seen.append(d)
+            fa = d.get("friend_action") or {}
+            if not isinstance(fa, dict) or str(fa.get("action") or "").upper() != "SWITCH_TABLE":
+                continue
+            did = str(d.get("decision_id") or "")
+            if not did or did == current_did:
+                continue
+            d_at = str(d.get("received_at") or d.get("captured_at") or "")
+            # current_received_at が明示されていない時は比較不可なので受け入れる (互換).
+            if current_received_at and d_at and d_at <= current_received_at:
+                continue
+            if found is None:
+                found = d
+    except _q.Empty:
+        pass
+    for it in seen:
+        try: q.put_nowait(it)
+        except Exception: pass
+    return found
+
+
+def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Optional[_PragmaticState] = None, on_tick=None, is_initial: bool = False, interrupt_check=None) -> None:
     send_phase("entering", "OPEN STAKE")
     # 初回起動時のみ「Stake ログインしてください」表示. SWITCH_TABLE / recovery
     # から呼ばれた場合は action バーに残ったシグナル表示を上書きしない.
@@ -2825,6 +2901,16 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Opt
         _dump_lobby_diag("initial")
         deadline = time.time() + float(max(auto_click_wait_sec, 1))
         while time.time() < deadline and not clicked:
+            # 連打対応: 新しい SWITCH_TABLE が来ていたら即中断.
+            if interrupt_check is not None:
+                try:
+                    new_dec = interrupt_check()
+                except Exception:
+                    new_dec = None
+                if new_dec:
+                    try: send_log(f"[switch] interrupted by {str(new_dec.get('decision_id','') or '')[-12:]}")
+                    except Exception: pass
+                    raise _SwitchTableInterrupted(new_dec)
             _dismiss_stake_loader(page)
             _dismiss_session_elsewhere_modal(page, state)
             if on_tick is not None:
@@ -4139,6 +4225,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                             auto_click_wait_sec=int(args.auto_click_wait_sec),
                             state=state,
                             on_tick=lambda: heartbeat("running"),
+                            is_initial=False,
+                            interrupt_check=lambda: _peek_new_switch_decision(
+                                decision_q,
+                                did,
+                                str(d.get("received_at") or d.get("captured_at") or ""),
+                            ),
                         )
                         game_frame = find_game_frame(page, attempts=60)
                         if game_frame:
@@ -4178,6 +4270,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                         _post_result(did, res, status="done")
                         send_action(f"Table ready: {state.table_name or target}")
                         send_phase("idle", "ARMED")
+                    except _SwitchTableInterrupted as ex:
+                        # 新 SWITCH_TABLE で中断された — 現 decision を superseded でエラー返却.
+                        new_did = str(ex.new_decision.get("decision_id", "") or "")
+                        try:
+                            send_log(f"[switch] aborted {did[-12:]} superseded by {new_did[-12:]}")
+                            send_action(f"Superseded by newer SWITCH → will process next")
+                        except Exception: pass
+                        _post_result(did, {"error": "superseded by later SWITCH_TABLE", "superseded_by": new_did}, status="error")
                     except Exception as e:
                         last_error = f"switch_table failed: {e}"
                         heartbeat("error")
