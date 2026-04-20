@@ -822,6 +822,20 @@ function renderTables(){
   const list = (_state.snapshots && _state.snapshots.snapshots && _state.snapshots.snapshots[provider]) || {};
   const wrap=document.getElementById('tableList');
   wrap.innerHTML='';
+  // Pragmatic lobby の別カテゴリで到達不可のテーブルは除外 (友人の誤選択防止).
+  // 根拠: scroll では default カテゴリしか走査できず, Fortune/MEGA/Super 8/Squeeze は別タブにあり到達不能.
+  const _UNREACHABLE_PATTERNS = [
+    /fortune\s*6/i,
+    /^mega\s*baccarat$/i,
+    /super\s*8/i,
+    /^squeeze\s*baccarat$/i,
+    /mega\s*sic/i,
+  ];
+  function _isUnreachable(name){
+    const n = String(name||'').trim();
+    if(!n) return false;
+    return _UNREACHABLE_PATTERNS.some(p => p.test(n));
+  }
   const items = Object.entries(list)
     .filter(([tid,s])=>{
       if(!s || typeof s!=='object') return false;
@@ -830,6 +844,7 @@ function renderTables(){
         if(tt && tt!=='BACCARAT') return false;
         if(!s.captured_at) return false;
         if(ageSecFromIso(s.captured_at) > 300) return false;
+        if(_isUnreachable(s.table_name)) return false;
       }
       return true;
     })
