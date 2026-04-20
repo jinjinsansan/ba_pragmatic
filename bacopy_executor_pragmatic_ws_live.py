@@ -3706,10 +3706,40 @@ def main(argv: Optional[list[str]] = None) -> int:
         # so we also attach when detected.
         page.on("websocket", _attach_ws_frame_spy)
 
-        # Enter lobby and (attempt to) join table (initial startup path)
+        # Enter lobby and (attempt to) join table (initial startup path).
+        # 初期テーブルは以下の優先順で決定:
+        #   1. Master API の最新 done SWITCH_TABLE decision (admin が最後に選んだ卓)
+        #   2. env BACOPY_TABLE_SUBSTR (GUI Settings)
+        #   3. CLI default "Speed Baccarat"
+        # これにより「GUI スタートで毎回 Speed Baccarat 6 に戻る」問題を解消.
+        def _fetch_master_last_table() -> str:
+            try:
+                import urllib.request as _ur
+                base = (os.getenv("BACOPY_API_URL") or "https://master.bafather.uk").rstrip("/")
+                key = os.getenv("BACOPY_API_KEY") or ""
+                req = _ur.Request(
+                    f"{base}/api/decisions?status=done&limit=50",
+                    headers={"Authorization": f"Bearer {key}"},
+                )
+                with _ur.urlopen(req, timeout=5) as resp:
+                    data = json.load(resp)
+                for d in data.get("decisions", []) or []:
+                    fa = d.get("friend_action") or {}
+                    if isinstance(fa, dict) and str(fa.get("action") or "").upper() == "SWITCH_TABLE":
+                        tn = str(d.get("table_name") or "").strip()
+                        if tn:
+                            return tn
+            except Exception as _e:
+                pass
+            return ""
+        _master_target = _fetch_master_last_table()
+        _initial_substr = _master_target or str(args.table_name_substr or "")
+        if _master_target:
+            try: send_log(f"[startup] using Master UI last target: {_master_target}")
+            except Exception: pass
         _join_table(
             page,
-            table_substr=str(args.table_name_substr or ""),
+            table_substr=_initial_substr,
             auto_click_wait_sec=int(args.auto_click_wait_sec),
             state=state,
             on_tick=lambda: heartbeat("running"),
