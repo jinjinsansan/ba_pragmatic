@@ -232,10 +232,25 @@ body.stopped .emergency-stop{background:rgba(120,20,45,0.95);color:#fff;box-shad
 body.stopped .big-btn.player,body.stopped .big-btn.banker,body.stopped .big-btn.tie{pointer-events:none;opacity:0.15}
 body.stopped .stop-banner{display:block}
 /* 切替中 (選択テーブルに GUI が未到着) 状態の視覚フィードバック */
-body.switching .big-btn.player,body.switching .big-btn.banker,body.switching .big-btn.tie{pointer-events:none;opacity:0.3;filter:grayscale(0.6)}
-body.switching .big-btn.player::after,body.switching .big-btn.banker::after,body.switching .big-btn.tie::after{content:"切替中";position:absolute;top:8px;right:8px;background:rgba(255,120,0,0.9);color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;letter-spacing:1px}
-body.switching .table-cell.selected{animation:switchingPulse 1.2s ease-in-out infinite;box-shadow:0 0 20px rgba(255,120,0,0.6);border-color:#ff7800}
-@keyframes switchingPulse{0%,100%{box-shadow:0 0 15px rgba(255,120,0,0.4)}50%{box-shadow:0 0 28px rgba(255,120,0,0.9)}}
+body.switching .big-btn.player,body.switching .big-btn.banker,body.switching .big-btn.tie{pointer-events:none;opacity:0.35;filter:grayscale(0.5)}
+body.switching .big-btn.player::after,body.switching .big-btn.banker::after,body.switching .big-btn.tie::after{content:"切替中";position:absolute;top:6px;right:6px;background:var(--tie);color:#0a1020;padding:2px 6px;border-radius:3px;font-size:9px;font-family:var(--font-hud);letter-spacing:2px;font-weight:600}
+body.switching .table-cell.selected{animation:switchingPulse 1.4s ease-in-out infinite}
+@keyframes switchingPulse{0%,100%{box-shadow:0 0 10px rgba(255,200,60,0.25);border-color:var(--tie)}50%{box-shadow:0 0 20px rgba(255,200,60,0.55);border-color:var(--tie)}}
+
+/* 配信先 GUI リスト: email + 到着状態の一覧 */
+#broadcastList{display:flex;flex-direction:column;gap:4px;font-family:var(--font-mono);font-size:11px;padding-top:4px}
+#broadcastList .bcast-row{display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:4px;background:rgba(255,255,255,0.02);border:1px solid var(--border);white-space:nowrap;overflow:hidden}
+#broadcastList .bcast-row.ok{border-color:rgba(100,240,180,0.35);background:rgba(100,240,180,0.06)}
+#broadcastList .bcast-row.pending{border-color:rgba(255,200,60,0.35);background:rgba(255,200,60,0.06)}
+#broadcastList .bcast-dot{flex:0 0 auto;width:10px;height:10px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;line-height:1}
+#broadcastList .bcast-dot.online{background:var(--win);border-radius:50%}
+#broadcastList .bcast-dot.ok{color:var(--win);font-size:12px}
+#broadcastList .bcast-dot.pending{color:var(--tie);font-size:14px;animation:spinDot 1.2s linear infinite}
+@keyframes spinDot{to{transform:rotate(360deg)}}
+#broadcastList .bcast-email{flex:0 0 auto;color:var(--text);max-width:180px;overflow:hidden;text-overflow:ellipsis}
+#broadcastList .bcast-tbl{flex:1 1 auto;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;font-size:10px}
+#broadcastList .bcast-row.ok .bcast-tbl{color:var(--win)}
+#broadcastList .bcast-row.pending .bcast-tbl{color:var(--tie)}
 .stop-banner{display:none;position:sticky;top:64px;background:rgba(120,20,45,0.95);color:#fff;padding:10px 24px;text-align:center;font-family:var(--font-hud);letter-spacing:4px;z-index:19;border-bottom:2px solid var(--lose);box-shadow:0 4px 20px rgba(255,51,102,0.3)}
 
 /* ======= モバイル 2モード (案1) ======= */
@@ -1087,34 +1102,45 @@ function updateButtonsGating(){
   document.getElementById('btnSwitch').disabled = !selected.table_id || nTargets===0;
   const info=document.getElementById('broadcastInfo');
   const listEl=document.getElementById('broadcastList');
+  const switchSt = document.getElementById('switchStatus');
   if(selExecId){
     info.textContent = nTargets>0 ? '1 台 (個別)' : '0 台 (該当なし)';
-    listEl.textContent = targets.map(e=>e.label||e.executor_id).join(', ')||'-';
   } else {
     info.textContent = nTargets + ' 台';
-    if(nTargets===0){
-      const total=(_state.executors||[]).length;
-      listEl.textContent = total>0 ? '登録済み GUI なし（セッション確認）' : '受け子 GUI 未接続';
-    } else {
-      listEl.textContent = targets.map(e=>(e.user_email||e.label||e.executor_id)).join(', ');
-    }
   }
+  // 旧オレンジバナーを撤去 (存在したら隠す).
+  const oldBanner = document.getElementById('switchingBanner');
+  if(oldBanner) oldBanner.style.display = 'none';
 
-  // 切替中ステータスバナー (選択テーブルに GUI がまだ到着してない時).
-  let banner = document.getElementById('switchingBanner');
-  if(!banner){
-    banner = document.createElement('div');
-    banner.id = 'switchingBanner';
-    banner.style.cssText = 'position:sticky;top:0;z-index:100;padding:10px 14px;margin:0 0 10px 0;border-radius:10px;font-weight:bold;text-align:center;display:none;background:rgba(255,120,0,0.15);border:2px solid #ff7800;color:#ffae5c';
-    const actionBar = document.querySelector('.action-bar') || document.querySelector('.stats-bar') || document.body;
-    actionBar.parentNode.insertBefore(banner, actionBar);
-  }
-  if(switching){
-    const seln = selected.table_name ? toJaTableName(selected.table_name) : selected.table_id;
-    banner.innerHTML = `🔄 <b>${escHtml(seln)}</b> に切替中... (${nOnTarget}/${nTargets} 台到着) — 到着まで BET 送信不可`;
-    banner.style.display = 'block';
+  // 配信先 GUI リスト: 選択テーブルと一致しているかをアイコンで表示.
+  if(nTargets === 0){
+    const total=(_state.executors||[]).length;
+    listEl.innerHTML = total>0 ? '<span style="color:var(--text-muted)">登録済み GUI なし (セッション確認)</span>' : '<span style="color:var(--text-muted)">受け子 GUI 未接続</span>';
+    if(switchSt) switchSt.innerHTML = '';
   } else {
-    banner.style.display = 'none';
+    const rows = targets.map(e => {
+      const onIt = _executorOnSelectedTable(e);
+      const ident = e.user_email || e.label || (e.executor_id||'').slice(0,8);
+      const cur = e.table_name ? toJaTableName(e.table_name) : '(未入場)';
+      if(!selected.table_id){
+        // 未選択: 現在のテーブルだけ表示.
+        return `<span class="bcast-row"><span class="bcast-dot online" title="接続中"></span><span class="bcast-email">${escHtml(ident)}</span><span class="bcast-tbl">${escHtml(cur)}</span></span>`;
+      }
+      if(onIt){
+        return `<span class="bcast-row ok" title="選択テーブル到着済"><span class="bcast-dot ok">●</span><span class="bcast-email">${escHtml(ident)}</span><span class="bcast-tbl">${escHtml(cur)}</span></span>`;
+      }
+      return `<span class="bcast-row pending" title="切替中..."><span class="bcast-dot pending">◌</span><span class="bcast-email">${escHtml(ident)}</span><span class="bcast-tbl">${escHtml(cur)} → ${escHtml(toJaTableName(selected.table_name||selected.table_id))}</span></span>`;
+    });
+    listEl.innerHTML = rows.join('');
+    if(switchSt){
+      if(!selected.table_id){
+        switchSt.innerHTML = '';
+      } else if(switching){
+        switchSt.innerHTML = `<span class="pill warn">${nOnTarget}/${nTargets} 到着</span>`;
+      } else {
+        switchSt.innerHTML = `<span class="pill ok">${nOnTarget}/${nTargets} 到着</span>`;
+      }
+    }
   }
 }
 
