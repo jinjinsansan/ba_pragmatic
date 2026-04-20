@@ -45,6 +45,7 @@ LOBBY_URL = "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccara
 DEFAULT_PROFILE = Path(__file__).parent / "auth_state" / "camoufox_profile_collector"
 SOURCE_PROFILE = BA_ROOT / "auth_state" / "camoufox_profile"
 PRAGMATIC_WS_PATTERN = "dga.pragmaticplaylive.net"
+PRAGMATIC_LOBBY_PATTERN = "pragmaticplaylive"
 
 # 最小有効シュー長 (これ未満ならゴミとみなしスキップ)
 MIN_SHOE_HANDS = 30
@@ -64,11 +65,24 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _extract_qpid(value: str) -> str:
+    if not value:
+        return ""
+    import re as _re
+    m = _re.search(r"/snaps/([^/]+)/", value)
+    if m:
+        return str(m.group(1) or "")
+    m = _re.search(r"[?&]tableId=([A-Za-z0-9]+)", value)
+    if m:
+        return str(m.group(1) or "")
+    return ""
+
+
 def _make_snapshot(table_id: str, buf: "ShoeBuffer") -> dict:
     last_hand = buf.hands[-1] if buf.hands else None
     return {
         "captured_at": _utc_now_iso(),
-        "table_id": table_id,
+        "table_id": table_id,                   # operator_table_id (例 "415")
         "table_name": buf.table_name or "",
         "table_type": buf.table_type,
         "hands": len(buf.hands or []),
@@ -77,6 +91,9 @@ def _make_snapshot(table_id: str, buf: "ShoeBuffer") -> dict:
         "shoe_summary": buf.last_shoe_summary,
         "good_roads_map": buf.last_good_roads,
         "last_hand": last_hand,
+        # 直接 URL 遷移用の内部 ID (LAPLACE hash-nav 相当).
+        "qpid_table_id": buf.qpid_table_id or "",
+        "table_image": buf.table_image or "",
     }
 
 
@@ -93,6 +110,9 @@ class ShoeBuffer:
         self.last_statistics: str | None = None
         self.last_shoe_summary = None
         self.last_good_roads = None
+        # Pragmatic internal ids (for direct-URL table entry)
+        self.table_image: str = ""       # .../snaps/<qpid_id>/table.png
+        self.qpid_table_id: str = ""     # internal id (e.g. "2q57e43m4ivqwaq3")
 
     def add_hands(self, new_hands: list[dict]) -> None:
         for h in new_hands:
@@ -148,6 +168,8 @@ class Collector:
         self.snapshot_api_url = (os.getenv("BACOPY_API_URL", "") or "").rstrip("/")
         self.snapshot_api_key = (os.getenv("BACOPY_API_KEY", "") or "").strip()
         self.snapshot_last_at: dict[str, float] = {}
+        self.qpid_scan_interval_sec = int(os.getenv("BACOPY_QPID_SCAN_SEC", "3600") or "3600")
+        self.last_qpid_scan_at = 0.0
 
     def _push_snapshot(self, table_id: str, snap: dict) -> None:
         if not (self.snapshot_push and self.snapshot_api_url and self.snapshot_api_key):
@@ -171,6 +193,125 @@ class Collector:
         update_snapshot("pragmatic", table_id, snap)
         self._push_snapshot(table_id, snap)
         self.snapshot_last_at[table_id] = now
+
+    def _scan_lobby_qpid(self, page) -> None:
+        """Lobby DOM から qpid_table_id を抽出して snapshot に反映。"""
+        frames = []
+        try:
+            for f in page.frames:
+                try:
+                    u = str(getattr(f, "url", "") or "")
+                    if PRAGMATIC_LOBBY_PATTERN in u and ("lobby" in u or "apps/lobby" in u):
+                        frames.append(f)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        if not frames:
+            frames = [page]
+
+        js = r"""
+        () => {
+          const rxSnap = /\/snaps\/([^/]+)\//;
+          const rxTable = /[?&]tableId=([A-Za-z0-9]+)/;
+          function pickQpid(v){
+            if (!v) return '';
+            const m = v.match(rxSnap) || v.match(rxTable);
+            return m ? m[1] : '';
+          }
+          function textOf(el){
+            const t = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+            return t.slice(0, 120);
+          }
+          const nodes = Array.from(document.querySelectorAll(
+            '[data-table-id],[data-tableid],[data-table-name],[data-testid*="table"],[class*="table"],[class*="Table"],img,a,[style*="background-image"]'
+          ));
+          const out = [];
+          const seen = new Set();
+          function push(e){
+            const key = [e.tableId||'', e.tableName||'', e.qpid||''].join('|');
+            if (!e.qpid || seen.has(key)) return;
+            seen.add(key);
+            out.push(e);
+          }
+          for (const el of nodes) {
+            const ds = el.dataset || {};
+            const attrs = el.getAttributeNames ? el.getAttributeNames() : [];
+            let tableId = ds.tableId || ds.tableid || ds.table || el.getAttribute('data-table-id') || el.getAttribute('data-tableid') || '';
+            let tableName = ds.tableName || ds.tablename || el.getAttribute('data-table-name') || textOf(el);
+            let qpid = ds.qpid || ds.tableQpid || '';
+            let image = '';
+            const cand = [];
+            if (el.getAttribute) {
+              for (const a of attrs) {
+                const v = el.getAttribute(a);
+                if (v) cand.push(String(v));
+              }
+              const style = el.getAttribute('style') || '';
+              cand.push(style);
+            }
+            if (el.src) cand.push(String(el.src));
+            if (el.href) cand.push(String(el.href));
+            for (const v of cand) {
+              if (!qpid) qpid = pickQpid(v);
+              if (!image && /snaps\//.test(v)) image = v;
+            }
+            if (!qpid && tableName) {
+              // try parent container if text matched
+              let p = el.parentElement;
+              let depth = 0;
+              while (p && depth < 3 && !qpid) {
+                const pv = p.getAttribute ? (p.getAttribute('style') || '') : '';
+                qpid = pickQpid(pv) || qpid;
+                depth += 1;
+                p = p.parentElement;
+              }
+            }
+            if (qpid) {
+              push({ tableId: String(tableId || ''), tableName: String(tableName || ''), qpid: String(qpid), image: String(image || '') });
+            }
+          }
+          return out;
+        }
+        """
+
+        updated = 0
+        total = 0
+        for fr in frames:
+            try:
+                rows = fr.evaluate(js) or []
+            except Exception:
+                continue
+            total += len(rows)
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                qpid = _extract_qpid(str(row.get("qpid") or ""))
+                if not qpid:
+                    continue
+                table_id = str(row.get("tableId") or "").strip()
+                table_name = str(row.get("tableName") or "").strip()
+                image = str(row.get("image") or "")
+
+                buf = self.buffers.get(table_id) if table_id else None
+                if not buf and table_name:
+                    for b in self.buffers.values():
+                        if b.table_name and b.table_name.strip().upper() == table_name.strip().upper():
+                            buf = b
+                            break
+                if not buf or (buf.qpid_table_id and buf.qpid_table_id == qpid):
+                    continue
+                buf.qpid_table_id = qpid
+                if image:
+                    buf.table_image = image
+                updated += 1
+                logger.info(f"[qpid-scan] table_id={buf.table_id} name={buf.table_name} qpid={qpid}")
+                try:
+                    self._emit_snapshot(buf.table_id, buf)
+                except Exception:
+                    pass
+        if total:
+            logger.info(f"[qpid-scan] scanned={total} updated={updated} frames={len(frames)}")
 
     def on_ws_frame(self, payload):
         """WSフレーム受信コールバック。payload は bytes/str の可能性あり。"""
@@ -205,6 +346,33 @@ class Collector:
             buf.last_shoe_summary = msg["baccaratShoeSummary"]
         if "goodRoadsMap" in msg:
             buf.last_good_roads = msg["goodRoadsMap"]
+        # tableImage: 内部 qpid id を取り出す (直接 URL 遷移用)
+        if "tableImage" in msg:
+            img = str(msg.get("tableImage") or "")
+            if img and img != buf.table_image:
+                buf.table_image = img
+                import re as _re
+                m = _re.search(r"/snaps/([^/]+)/", img)
+                if m:
+                    buf.qpid_table_id = str(m.group(1) or "")
+                    logger.info(f"[qpid] captured table_id={table_id} qpid={buf.qpid_table_id} name={buf.table_name}")
+        # 追加パターン: poster / image / thumbnail / backgroundImage なども qpid のソース候補
+        for _k in ("posterImage", "posterUrl", "image", "thumbnail", "tableUrl", "backgroundImage"):
+            if _k in msg and not buf.qpid_table_id:
+                v = str(msg.get(_k) or "")
+                import re as _re2
+                mm = _re2.search(r"/snaps/([^/]+)/", v) or _re2.search(r"[?&]tableId=([A-Za-z0-9]+)", v)
+                if mm:
+                    buf.qpid_table_id = str(mm.group(1) or "")
+                    buf.table_image = v
+                    logger.info(f"[qpid] captured via {_k} table_id={table_id} qpid={buf.qpid_table_id}")
+                    break
+        # 最初の 3 メッセージの構造を log で可視化 (何が入っているか不明なので)
+        if self.stats_msg <= 3:
+            try:
+                logger.info(f"[dga-msg-keys] msg #{self.stats_msg} keys={list(msg.keys())[:20]}")
+            except Exception:
+                pass
 
         # shuffle=True → 前シュー確定、新シュー開始
         if msg.get("shuffle") is True:
@@ -299,6 +467,12 @@ class Collector:
 
             logger.info(f"Navigating to {LOBBY_URL}")
             page.goto(LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(8000)
+            try:
+                self._scan_lobby_qpid(page)
+                self.last_qpid_scan_at = time.time()
+            except Exception as e:
+                logger.warning(f"[qpid-scan] initial scan failed: {e}")
 
             last_report = time.time()
             last_db_stats = time.time()
@@ -319,6 +493,12 @@ class Collector:
                     s = stats()
                     logger.info(f"[DB] {s}")
                     last_db_stats = now
+                if self.qpid_scan_interval_sec > 0 and now - self.last_qpid_scan_at >= self.qpid_scan_interval_sec:
+                    try:
+                        self._scan_lobby_qpid(page)
+                    except Exception as e:
+                        logger.warning(f"[qpid-scan] scan failed: {e}")
+                    self.last_qpid_scan_at = now
                 if duration and (now - start_ts) >= duration:
                     logger.info(f"Duration {duration}s reached, stopping.")
                     break

@@ -2646,9 +2646,12 @@ _LOBBY_TRY_CLICK_JS = r"""
 """
 
 
-def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Optional[_PragmaticState] = None, on_tick=None) -> None:
+def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Optional[_PragmaticState] = None, on_tick=None, is_initial: bool = False) -> None:
     send_phase("entering", "OPEN STAKE")
-    send_action("Opening Stake lobby. If prompted, please log in to Stake.")
+    # 初回起動時のみ「Stake ログインしてください」表示. SWITCH_TABLE / recovery
+    # から呼ばれた場合は action バーに残ったシグナル表示を上書きしない.
+    if is_initial:
+        send_action("Opening Stake lobby. If prompted, please log in to Stake.")
     print("[Stage 1] goto stake pragmatic lobby ...", flush=True)
     page.goto(LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(10_000)
@@ -2661,7 +2664,8 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Opt
     gf = find_game_frame(page)
     if not gf:
         send_phase("entering", "STAKE LOGIN")
-        send_action("Stake login may be required. Please complete login in the opened browser window.")
+        if is_initial:
+            send_action("Stake login may be required. Please complete login in the opened browser window.")
         try:
             print(f"[WARN] pragmatic frame not detected yet (url={page.url})", flush=True)
         except Exception:
@@ -2675,7 +2679,8 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Opt
     shell = find_shell_app_frame(page)
     if not shell:
         send_phase("entering", "WAIT LOGIN")
-        send_action("Waiting for Stake lobby... Please finish Stake login in the opened browser window.")
+        if is_initial:
+            send_action("Waiting for Stake lobby... Please finish Stake login in the opened browser window.")
         t0 = time.time()
         last_notice = 0.0
         while not shell:
@@ -3486,13 +3491,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         # so we also attach when detected.
         page.on("websocket", _attach_ws_frame_spy)
 
-        # Enter lobby and (attempt to) join table
+        # Enter lobby and (attempt to) join table (initial startup path)
         _join_table(
             page,
             table_substr=str(args.table_name_substr or ""),
             auto_click_wait_sec=int(args.auto_click_wait_sec),
             state=state,
             on_tick=lambda: heartbeat("running"),
+            is_initial=True,
         )
 
         # Ensure WS bridge exists in the pragmatic iframe context (send must be evaluated in-frame).
@@ -4063,6 +4069,21 @@ def main(argv: Optional[list[str]] = None) -> int:
                 master_last_decision_action = action
                 master_last_decision_at = ack.get("acked_at") or _utc_now_iso()
                 master_last_active_ts = time.time()
+
+                # ユーザー可視性: 受信したマスターシグナルを ACTION バーに即表示.
+                # これにより「シグナルが実際に届いたかどうか」が常に目視できる.
+                try:
+                    _tn = str(decision_table_name or "")
+                    _sig_desc_parts = [f"📡 SIGNAL {action}"]
+                    if _tn: _sig_desc_parts.append(_tn)
+                    if action == "BET":
+                        if side: _sig_desc_parts.append(side)
+                        _amt = fa.get("amount")
+                        if _amt: _sig_desc_parts.append(f"${_amt}")
+                    send_action(" | ".join(_sig_desc_parts))
+                    send_log(f"[signal] RECEIVED {action} table='{_tn}' side='{side}' did={did[-12:]}")
+                except Exception:
+                    pass
 
                 if action == "SWITCH_TABLE":
                     if not args.allow_switch_table:
