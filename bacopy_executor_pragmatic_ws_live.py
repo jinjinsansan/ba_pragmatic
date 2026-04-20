@@ -3627,6 +3627,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         send_phase("idle", "ARMED")
         send_action("Armed. Waiting for master signal...")
+        # Telegram 通知: ARMED 到達 (友人が遠隔でスタート状態を確認できる).
+        try:
+            from notify import send_user_notification as _notify
+            _notify(f"✅ bacopy ARMED | table={state.table_name or '?'} | waiting for master signal")
+        except Exception:
+            pass
         if state.game_ws_url:
             print(f"[session] game_ws={_redact_jsession(state.game_ws_url)}", flush=True)
         if state.operator_table_id:

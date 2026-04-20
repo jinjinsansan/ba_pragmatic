@@ -850,6 +850,22 @@ html[data-variant="user"] .os-tag { display: none !important; }
 }
 .tab-content.hidden { display: none; }
 
+/* Settings toast (Telegram Test / Install 結果用). */
+.settings-toast {
+  position: fixed; right: 24px; bottom: 24px;
+  padding: 10px 16px; border-radius: 8px;
+  background: rgba(5,10,22,0.96); border: 1px solid var(--border);
+  color: var(--text); font-family: var(--font-mono); font-size: 12px;
+  letter-spacing: 0.04em; box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+  opacity: 0; transform: translateY(8px);
+  transition: opacity 0.2s, transform 0.2s;
+  z-index: 200; pointer-events: none; max-width: 80vw;
+}
+.settings-toast.show { opacity: 1; transform: translateY(0); }
+.settings-toast.toast-win  { border-color: rgba(0,255,136,0.4);  box-shadow: 0 0 18px rgba(0,255,136,0.2); color: var(--win); }
+.settings-toast.toast-lose { border-color: rgba(255,51,102,0.4); box-shadow: 0 0 18px rgba(255,51,102,0.25); color: #ff9aaa; }
+.settings-toast.toast-info { border-color: rgba(0,229,255,0.4);  box-shadow: 0 0 18px rgba(0,229,255,0.2);  color: rgba(108,243,255,0.95); }
+
 /* ============================================================
    FILTER CONTROLS
    ============================================================ */

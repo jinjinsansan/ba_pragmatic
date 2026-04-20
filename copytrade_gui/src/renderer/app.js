@@ -737,12 +737,67 @@ async function restoreGuiStateFromServer() {
   return true;
 }
 
-// Tab switching
+// =============================================================
+// Settings モーダル: Tabs + Telegram + SYSTEM (SSH サポート)
+// ba GUI から移植. 既存のベット設定ロジックは壊さない.
+// =============================================================
+
+// Tab 切り替え (BOT / SYSTEM)
+function _settingsSwitchTab(which) {
+  $$('.modal-tab').forEach(t => t.classList.remove('active'));
+  $$('.tab-content').forEach(c => c.classList.add('hidden'));
+  if (which === 'system') {
+    $('#tabSystemBtn')?.classList.add('active');
+    $('#tabSystemContent')?.classList.remove('hidden');
+    _refreshSupportInfo();  // SYSTEM 開いた時に最新化
+  } else {
+    $('#tabBotBtn')?.classList.add('active');
+    $('#tabBotContent')?.classList.remove('hidden');
+  }
+}
+$('#tabBotBtn')?.addEventListener('click', () => _settingsSwitchTab('bot'));
+$('#tabSystemBtn')?.addEventListener('click', () => _settingsSwitchTab('system'));
+
 function initModalTabs() {
-  // Tabs removed in BACOPYRECEIVER.
+  // 互換用. 実際のセットアップは上の listener + _settingsSwitchTab で完結.
+  _settingsSwitchTab('bot');
 }
 
-$('#btnSettings')?.addEventListener('click', () => {
+// Tiny toast (Settings 内のテスト結果等に使う).
+function _settingsToast(msg, type = 'info') {
+  let el = $('#settingsToast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'settingsToast';
+    el.className = 'settings-toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.remove('toast-info', 'toast-win', 'toast-lose');
+  el.classList.add(type === 'win' ? 'toast-win' : type === 'lose' ? 'toast-lose' : 'toast-info');
+  el.classList.add('show');
+  clearTimeout(_settingsToast._tm);
+  _settingsToast._tm = setTimeout(() => el.classList.remove('show'), 3600);
+}
+
+// Support ID / Port / Tunnel status 表示更新.
+async function _refreshSupportInfo() {
+  try {
+    if (!window.bacopy?.getSupportInfo) return;
+    const info = await window.bacopy.getSupportInfo();
+    const $e = $('#supportIdEmail'), $p = $('#supportIdPort'), $s = $('#supportIdStatus');
+    if ($e) $e.textContent = info.email || '—';
+    if ($p) $p.textContent = info.port || '—';
+    if ($s) {
+      $s.textContent = info.tunnel_status || 'unknown';
+      $s.style.color = (info.tunnel_status === 'running') ? 'var(--win)' : 'var(--text-muted)';
+    }
+  } catch (e) {
+    console.warn('[Settings] getSupportInfo failed:', e);
+  }
+}
+
+$('#btnSettings')?.addEventListener('click', async () => {
   $('#settingsModal')?.classList.remove('hidden');
   const s = loadSettings();
   $('#inputChipBase').value = s.chip_base;
@@ -763,8 +818,90 @@ $('#btnSettings')?.addEventListener('click', () => {
   if ($('#inputAllowTie')) $('#inputAllowTie').checked = !!s.allow_tie;
   if ($('#inputAssumeBc012')) $('#inputAssumeBc012').checked = !!s.assume_bc_012;
   $('#inputHeadless').checked = !!s.headless;
+
+  // .env 由来の Telegram / Support 値を取得して pre-fill
+  try {
+    if (window.bacopy?.getSettings) {
+      const remote = await window.bacopy.getSettings();
+      if ($('#inputTelegramToken')) $('#inputTelegramToken').value = remote.telegram_bot_token || '';
+      if ($('#inputTelegramChat'))  $('#inputTelegramChat').value  = remote.telegram_chat_id || '';
+      if ($('#inputSupportToggle')) {
+        const v = String(remote.support_enabled || '0').toLowerCase();
+        $('#inputSupportToggle').checked = ['1', 'true', 'yes'].includes(v);
+      }
+    }
+  } catch (e) {
+    console.warn('[Settings] getSettings failed:', e);
+  }
+
+  // 初期タブは BOT
+  _settingsSwitchTab('bot');
 });
 $('#settingsClose')?.addEventListener('click', () => $('#settingsModal')?.classList.add('hidden'));
+
+// TEST TELEGRAM: .env に保存済みの token/chat で疎通確認
+$('#btnTestTelegram')?.addEventListener('click', async () => {
+  try {
+    // 未保存の値で Test したい場合に備えて, 先に現在の入力を .env へ保存する.
+    const token = $('#inputTelegramToken')?.value.trim() || '';
+    const chat  = $('#inputTelegramChat')?.value.trim()  || '';
+    if (!token || !chat) {
+      _settingsToast('Token と Chat ID を入力してください', 'lose');
+      return;
+    }
+    if (window.bacopy?.saveSettings) {
+      await window.bacopy.saveSettings({ telegram_bot_token: token, telegram_chat_id: chat });
+    }
+    _settingsToast('Telegram にテスト送信中...', 'info');
+    const res = await window.bacopy.testTelegram();
+    if (res?.ok) _settingsToast('Telegram OK — メッセージ届きました', 'win');
+    else _settingsToast(`Telegram NG: ${res?.error || 'unknown error'}`, 'lose');
+  } catch (e) {
+    _settingsToast(`Test 失敗: ${e.message || e}`, 'lose');
+  }
+});
+
+// SUPPORT toggle: 変更即 .env 保存 + tunnel start/stop
+$('#inputSupportToggle')?.addEventListener('change', async (ev) => {
+  const on = !!ev.target.checked;
+  try {
+    if (window.bacopy?.toggleSupport) await window.bacopy.toggleSupport(on);
+    _settingsToast(on ? 'リモート支援: 有効' : 'リモート支援: 無効', 'info');
+    _refreshSupportInfo();
+  } catch (e) {
+    _settingsToast(`Support toggle failed: ${e.message || e}`, 'lose');
+  }
+});
+
+// INSTALL ON THIS PC: PowerShell を昇格起動
+$('#btnInstallDeps')?.addEventListener('click', async () => {
+  try {
+    _settingsToast('セットアップを起動中... (UAC 承認)', 'info');
+    const res = await window.bacopy.installDeps();
+    if (res?.ok) _settingsToast('Setup launched. OPEN SETUP LOG で進捗確認.', 'win');
+    else _settingsToast(`Install 失敗: ${res?.error || 'unknown'}`, 'lose');
+  } catch (e) {
+    _settingsToast(`Install 失敗: ${e.message || e}`, 'lose');
+  }
+});
+
+// OPEN SETUP LOG
+$('#btnOpenSetupLog')?.addEventListener('click', async () => {
+  try {
+    const res = await window.bacopy.openSetupLog();
+    if (!res?.ok) _settingsToast(`Log open 失敗: ${res?.error || 'not found'}`, 'lose');
+  } catch (e) {
+    _settingsToast(`Log open 失敗: ${e.message || e}`, 'lose');
+  }
+});
+
+// install-deps 結果の非同期通知
+if (window.bacopy?.onInstallDepsResult) {
+  window.bacopy.onInstallDepsResult((data) => {
+    const msg = data?.message || (data?.success ? 'Setup launched' : 'Setup failed');
+    _settingsToast(msg, data?.success ? 'win' : 'lose');
+  });
+}
 $('#btnSaveSettings')?.addEventListener('click', async () => {
   // IME/composition の入力が確定していないと value が古いまま読まれる事があるため、
   // クリック時にフォーカスを外して 1tick 待ってから値を読む。
@@ -791,6 +928,21 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
   };
 
   localStorage.setItem('bacopy_settings', JSON.stringify(settings));
+
+  // Telegram / Support も .env へ保存 (preload 経由).
+  try {
+    if (window.bacopy?.saveSettings) {
+      const envPayload = {
+        telegram_bot_token: $('#inputTelegramToken')?.value.trim() || '',
+        telegram_chat_id:   $('#inputTelegramChat')?.value.trim()  || '',
+      };
+      // support_enabled は toggle 側で即時保存しているので, SAVE では上書きしない.
+      await window.bacopy.saveSettings(envPayload);
+    }
+  } catch (e) {
+    console.warn('[Settings] env save failed:', e);
+  }
+
   $('#settingsModal')?.classList.add('hidden');
   addLog(`Settings saved. Base:$${settings.chip_base} Target:$${settings.profit_target} LossCut:$${settings.loss_cut}`, 'info');
 });

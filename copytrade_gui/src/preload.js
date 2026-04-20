@@ -22,3 +22,16 @@ contextBridge.exposeInMainWorld('valhalla', {
   // Misc
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 });
+
+// Settings モーダル (Telegram / SYSTEM タブ) 用の追加 API.
+// ba の preload を参考に最小限だけ expose.
+contextBridge.exposeInMainWorld('bacopy', {
+  getSettings: () => ipcRenderer.invoke('get-settings'),
+  saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
+  testTelegram: () => ipcRenderer.invoke('test-telegram'),
+  toggleSupport: (enabled) => ipcRenderer.invoke('toggle-support', enabled),
+  installDeps: () => ipcRenderer.invoke('install-deps'),
+  getSupportInfo: () => ipcRenderer.invoke('get-support-info'),
+  openSetupLog: () => ipcRenderer.invoke('open-setup-log'),
+  onInstallDepsResult: (cb) => ipcRenderer.on('install-deps-result', (_, data) => cb(data)),
+});

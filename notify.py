@@ -334,3 +334,56 @@ class CompositeNotifier:
     def on_error(self, user: str, error_type: str, detail: str):
         if self.admin:
             self.admin.notify_error(user, error_type, detail)
+
+
+# ===== bacopy 追加: 軽量 convenience wrapper (env-driven) =====
+# Executor / 他モジュールから「ユーザー宛に即通知したい」時に使う簡易 API.
+# env: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+
+_USER_NOTIFIER_CACHE = None
+
+
+def _get_user_notifier_env() -> "TelegramNotifier":
+    """env 変数から TelegramNotifier を 1 つ作ってキャッシュ."""
+    global _USER_NOTIFIER_CACHE
+    if _USER_NOTIFIER_CACHE is None:
+        _USER_NOTIFIER_CACHE = TelegramNotifier(
+            bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
+            label="user-env",
+        )
+    return _USER_NOTIFIER_CACHE
+
+
+def send_user_notification(message: str) -> bool:
+    """Fire-and-forget: 失敗しても戻り値 False で例外上げない."""
+    try:
+        n = _get_user_notifier_env()
+        if not n.enabled:
+            return False
+        n.send(str(message)[:4000])
+        return True
+    except Exception as e:
+        logger.debug(f"send_user_notification failed: {e}")
+        return False
+
+
+def test_telegram_connection() -> tuple[bool, str]:
+    """Settings モーダルの Test ボタン向け. (ok, message)."""
+    try:
+        n = _get_user_notifier_env()
+    except Exception as e:
+        return False, f"init error: {e}"
+    if not n.enabled:
+        return False, "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID が未設定です"
+    try:
+        n.send("🤖 bacopy test notification — OK")
+        return True, "送信成功 (Telegram を確認してください)"
+    except Exception as e:
+        return False, f"送信エラー: {e}"
+
+
+def reload_user_notifier() -> None:
+    """設定変更後に env を再読込する時に呼ぶ."""
+    global _USER_NOTIFIER_CACHE
+    _USER_NOTIFIER_CACHE = None

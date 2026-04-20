@@ -80,6 +80,69 @@ const MAX_AUTO_RESTARTS = 10;
 const AUTO_RESTART_DELAY = 5000;
 const STABLE_RUN_THRESHOLD = 5 * 60 * 1000; // 5分以上動いたら成功扱いでカウンタリセット
 
+// === Periodic Preventive Restart (24/7 運用用) ===
+// メモリリーク / Stake セッション劣化 を予防的に掃除する.
+// BACOPY_PERIODIC_RESTART_HOURS=6 (default). 0 で無効.
+let periodicRestartTimer = null;
+
+function _periodicRestartHours() {
+  const v = parseFloat(
+    (process.env.BACOPY_PERIODIC_RESTART_HOURS || '').trim() ||
+    (loadDotEnv().BACOPY_PERIODIC_RESTART_HOURS || '').trim() ||
+    '6'
+  );
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+function _telegramNotifyFromMain(text) {
+  // main.js から Telegram に通知. env から token/chat_id を都度読む.
+  try {
+    const env = loadDotEnv();
+    const token = (env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    const chatId = (env.TELEGRAM_CHAT_ID || process.env.TELEGRAM_CHAT_ID || '').trim();
+    if (!token || !chatId) return;
+    const body = JSON.stringify({ chat_id: chatId, text: String(text).slice(0, 4000), disable_web_page_preview: true });
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${token}/sendMessage`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    }, (res) => { res.on('data', () => {}); res.on('end', () => {}); });
+    req.on('error', () => {});
+    req.write(body);
+    req.end();
+  } catch (_) {}
+}
+
+function schedulePeriodicRestart() {
+  if (periodicRestartTimer) { clearInterval(periodicRestartTimer); periodicRestartTimer = null; }
+  const h = _periodicRestartHours();
+  if (h <= 0) { console.log('[periodic-restart] disabled'); return; }
+  const ms = Math.floor(h * 3600 * 1000);
+  console.log(`[periodic-restart] scheduled every ${h}h`);
+  periodicRestartTimer = setInterval(() => {
+    if (!botProcess) return; // bot 停止中なら skip
+    console.log('[periodic-restart] firing (preventive restart)');
+    _telegramNotifyFromMain('🔄 bacopy periodic restart (' + h + 'h maintenance)');
+    try {
+      const cfg = lastStartConfig;
+      userInitiatedStop = false; // auto-restart を作動させる
+      const pid = botProcess.pid;
+      if (process.platform === 'win32' && pid) killTreeWin(pid);
+      try { botProcess.kill(); } catch (_) {}
+      botProcess = null;
+      // 5秒後に再起動 (既存 auto-restart ロジックが拾う)
+      setTimeout(() => {
+        if (!botProcess && cfg) {
+          try { _doStartBot && _doStartBot(cfg); } catch (e) { console.warn('[periodic-restart] respawn err:', e && e.message); }
+        }
+      }, 5000);
+    } catch (e) {
+      console.warn('[periodic-restart] error:', e && e.message);
+    }
+  }, ms);
+}
+
 process.on('uncaughtException', (err) => {
   if (err && (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED')) {
     console.error('[Main] Suppressed EPIPE:', err.message);
@@ -180,6 +243,191 @@ function loadDotEnv() {
     console.error('[Main] .env load error:', e);
   }
   return env;
+}
+
+// .env を部分更新 (既存キーは置換、無ければ末尾に追記).
+// ba/gui/src/main.js の saveDotEnv を移植.
+function saveDotEnv(updates) {
+  const envPath = resolveEnvPath();
+  let content = '';
+  try { content = fs.readFileSync(envPath, 'utf-8'); } catch (_) { content = ''; }
+  for (const [key, val] of Object.entries(updates)) {
+    const re = new RegExp(`^${key}=.*$`, 'm');
+    const v = (val === undefined || val === null) ? '' : String(val);
+    if (re.test(content)) {
+      content = content.replace(re, `${key}=${v}`);
+    } else {
+      if (content && !content.endsWith('\n')) content += '\n';
+      content += `${key}=${v}\n`;
+    }
+  }
+  try {
+    fs.mkdirSync(path.dirname(envPath), { recursive: true });
+    fs.writeFileSync(envPath, content, 'utf-8');
+  } catch (e) {
+    console.error('[Main] .env save error:', e);
+    throw e;
+  }
+}
+
+// Telegram Bot API に getMe 相当のテストメッセージを送る.
+// 成功なら { ok: true }、失敗なら { ok: false, error }.
+function _telegramSendTest(botToken, chatId) {
+  return new Promise((resolve) => {
+    if (!botToken || !chatId) {
+      return resolve({ ok: false, error: 'Bot Token / Chat ID が未設定です' });
+    }
+    const body = JSON.stringify({
+      chat_id: chatId,
+      text: '[BACOPYRECEIVER] Telegram test OK — 疎通確認できました.',
+      disable_web_page_preview: true,
+    });
+    const req = https.request(
+      {
+        hostname: 'api.telegram.org',
+        path: `/bot${botToken}/sendMessage`,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data || '{}');
+            if (res.statusCode === 200 && json.ok) resolve({ ok: true });
+            else resolve({ ok: false, error: json.description || `HTTP ${res.statusCode}` });
+          } catch (e) {
+            resolve({ ok: false, error: `parse error: ${e.message}` });
+          }
+        });
+      },
+    );
+    req.on('error', (e) => resolve({ ok: false, error: e.message || String(e) }));
+    req.setTimeout(10000, () => { try { req.destroy(new Error('timeout')); } catch (_) {} });
+    req.write(body);
+    req.end();
+  });
+}
+
+// SSH 支援トンネル関連 (簡易版)
+// ===== SSH Reverse Tunnel for Remote Support =====
+// 友人の Windows Desktop Cloud で稼働中の bacopy GUI に遠隔支援するための reverse tunnel.
+// 踏み台 VPS (210.131.215.116) の support ユーザーに -R で port forward.
+let _supportTunnelProc = null;
+let _supportTunnelReconnectTimer = null;
+
+const crypto = require('crypto');
+
+function _decryptSupportKey(encryptedB64, email) {
+  // AES-256-CBC + PBKDF2 (email派生). ba と同じ仕様.
+  const SALT = Buffer.from(process.env.BACOPY_KEY_SALT || 'bacopy-support-v1-2026', 'utf-8');
+  const key = crypto.pbkdf2Sync(String(email || '').toLowerCase(), SALT, 100000, 32, 'sha256');
+  const data = Buffer.from(String(encryptedB64 || '').trim(), 'base64');
+  const iv = data.slice(0, 16);
+  const ciphertext = data.slice(16);
+  const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
+function _resolveSupportKeyPath(rawPath) {
+  if (!rawPath) return '';
+  // ~/.ssh/... の展開 + relative path 解決.
+  if (rawPath.startsWith('~')) {
+    return path.join(os.homedir(), rawPath.slice(1).replace(/^[\\/]/, ''));
+  }
+  if (path.isAbsolute(rawPath)) return rawPath;
+  // packaged build では resources 配下優先.
+  if (app.isPackaged) {
+    const cand = path.join(process.resourcesPath, rawPath);
+    if (fs.existsSync(cand)) return cand;
+  }
+  return path.join(repoRoot(), rawPath);
+}
+
+function startSupportTunnel() {
+  if (_supportTunnelProc) return;
+  const envFile = loadDotEnv();
+  // packaged build は default ON, dev は default OFF.
+  const defaultEnabled = app.isPackaged ? '1' : '0';
+  const enabled = (envFile.BACOPY_SUPPORT_ENABLED || process.env.BACOPY_SUPPORT_ENABLED || defaultEnabled).trim();
+  if (!['1', 'true', 'yes', 'on'].includes(enabled.toLowerCase())) {
+    console.log('[support] tunnel disabled');
+    return;
+  }
+  const sshHost = envFile.BACOPY_SUPPORT_SSH_HOST || process.env.BACOPY_SUPPORT_SSH_HOST || '';
+  const rawKey = envFile.BACOPY_SUPPORT_SSH_KEY || process.env.BACOPY_SUPPORT_SSH_KEY
+    || (app.isPackaged ? 'support_key' : '');
+  const sshKeyPath = _resolveSupportKeyPath(rawKey);
+  const remotePort = (envFile.BACOPY_SUPPORT_REMOTE_PORT || process.env.BACOPY_SUPPORT_REMOTE_PORT || '2222').trim();
+  const localPort = (envFile.BACOPY_SUPPORT_LOCAL_PORT || process.env.BACOPY_SUPPORT_LOCAL_PORT || '22').trim();
+  const isEncrypted = (envFile.BACOPY_SUPPORT_SSH_KEY_ENCRYPTED || '0') === '1';
+  const userEmail = envFile.BACOPY_SUPPORT_USER_EMAIL || '';
+
+  if (!sshHost) { console.warn('[support] SSH host not configured'); return; }
+  if (!sshKeyPath || !fs.existsSync(sshKeyPath)) { console.warn('[support] key not found:', sshKeyPath); return; }
+
+  let actualKeyPath = sshKeyPath;
+  if (isEncrypted && userEmail) {
+    try {
+      const encryptedB64 = fs.readFileSync(sshKeyPath, 'utf-8').trim();
+      const decrypted = _decryptSupportKey(encryptedB64, userEmail);
+      actualKeyPath = path.join(os.tmpdir(), 'bacopy_support_key');
+      fs.writeFileSync(actualKeyPath, decrypted, { mode: 0o600 });
+    } catch (e) {
+      console.error('[support] key decrypt failed:', e.message);
+      return;
+    }
+  }
+
+  const args = [
+    '-i', actualKeyPath,
+    '-o', 'StrictHostKeyChecking=no',
+    '-o', 'BatchMode=yes',
+    '-o', 'ExitOnForwardFailure=yes',
+    '-o', 'ServerAliveInterval=30',
+    '-o', 'ServerAliveCountMax=3',
+    '-N',
+    '-R', `127.0.0.1:${remotePort}:127.0.0.1:${localPort}`,
+    sshHost,
+  ];
+  console.log('[support] starting tunnel → ' + sshHost + ' (-R ' + remotePort + ':22)');
+  _supportTunnelProc = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  _supportTunnelProc.on('error', (err) => console.error('[support] spawn error:', err.message));
+  _supportTunnelProc.stderr.on('data', (d) => {
+    const s = String(d || '').trim();
+    if (s) console.error('[support]', s);
+  });
+  _supportTunnelProc.on('exit', (code) => {
+    console.log('[support] tunnel exited code=' + code);
+    _supportTunnelProc = null;
+    if (isEncrypted && actualKeyPath !== sshKeyPath) {
+      try { fs.unlinkSync(actualKeyPath); } catch (_) {}
+    }
+    // 自動再接続 (10s後). 明示的 stop 時は reconnect しない.
+    if (_supportTunnelReconnectTimer) { clearTimeout(_supportTunnelReconnectTimer); _supportTunnelReconnectTimer = null; }
+    const envNow = loadDotEnv();
+    const stillEnabled = (envNow.BACOPY_SUPPORT_ENABLED || '0') === '1';
+    if (stillEnabled) {
+      _supportTunnelReconnectTimer = setTimeout(() => { _supportTunnelReconnectTimer = null; startSupportTunnel(); }, 10000);
+    }
+  });
+}
+
+function stopSupportTunnel() {
+  if (_supportTunnelReconnectTimer) { clearTimeout(_supportTunnelReconnectTimer); _supportTunnelReconnectTimer = null; }
+  if (_supportTunnelProc) {
+    try { _supportTunnelProc.kill(); } catch (_) {}
+    _supportTunnelProc = null;
+  }
+}
+
+// 後方互換 stub alias (Agent A が参照している関数名).
+function _startSupportTunnelStub() { startSupportTunnel(); }
+function _stopSupportTunnelStub() { stopSupportTunnel(); }
+
+function _setupLogPath() {
+  return path.join(process.env.ProgramData || 'C:\\ProgramData', 'BACOPY', 'setup-all.log');
 }
 
 function resolveEngine() {
@@ -832,6 +1080,12 @@ app.whenReady().then(() => {
 
   createWindow();
 
+  // 24/7 運用: 6時間ごとの予防再起動 + 起動通知.
+  schedulePeriodicRestart();
+  _telegramNotifyFromMain('🟢 bacopy GUI started');
+  // SSH support tunnel (BACOPY_SUPPORT_ENABLED=1 時のみ起動).
+  try { startSupportTunnel(); } catch (e) { console.warn('[support] startup err:', e && e.message); }
+
   ipcMain.handle('window-minimize', () => { if (mainWindow) mainWindow.minimize(); return { ok: true }; });
   ipcMain.handle('window-maximize', () => {
     if (!mainWindow) return { ok: false };
@@ -884,6 +1138,115 @@ app.whenReady().then(() => {
       return { ok: false, reason: e && e.message ? e.message : String(e), balance: 0 };
     }
   });
+
+  // === Settings モーダル (Telegram / SYSTEM タブ) ===
+  // .env 読み取り. 未設定キーは '' を返す.
+  ipcMain.handle('get-settings', () => {
+    const env = loadDotEnv();
+    return {
+      telegram_bot_token: env.TELEGRAM_BOT_TOKEN || env.BACOPY_TELEGRAM_BOT_TOKEN || '',
+      telegram_chat_id: env.TELEGRAM_CHAT_ID || env.BACOPY_TELEGRAM_CHAT_ID || '',
+      support_enabled: (env.BACOPY_SUPPORT_ENABLED || env.LAPLACE_SUPPORT_ENABLED || '0'),
+      support_email: env.BACOPY_SUPPORT_USER_EMAIL || env.LAPLACE_SUPPORT_USER_EMAIL || '',
+      support_port: env.BACOPY_SUPPORT_REMOTE_PORT || env.LAPLACE_SUPPORT_REMOTE_PORT || '',
+    };
+  });
+
+  ipcMain.handle('save-settings', (_evt, payload) => {
+    const s = payload || {};
+    const updates = {};
+    if ('telegram_bot_token' in s) updates.TELEGRAM_BOT_TOKEN = s.telegram_bot_token || '';
+    if ('telegram_chat_id' in s)   updates.TELEGRAM_CHAT_ID   = s.telegram_chat_id || '';
+    if ('support_enabled' in s)    updates.BACOPY_SUPPORT_ENABLED = s.support_enabled ? '1' : '0';
+    try {
+      saveDotEnv(updates);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message || String(e) };
+    }
+  });
+
+  ipcMain.handle('test-telegram', async () => {
+    const env = loadDotEnv();
+    const token = env.TELEGRAM_BOT_TOKEN || env.BACOPY_TELEGRAM_BOT_TOKEN || '';
+    const chat  = env.TELEGRAM_CHAT_ID   || env.BACOPY_TELEGRAM_CHAT_ID   || '';
+    return await _telegramSendTest(token, chat);
+  });
+
+  ipcMain.handle('toggle-support', (_evt, enabled) => {
+    try {
+      saveDotEnv({ BACOPY_SUPPORT_ENABLED: enabled ? '1' : '0' });
+      if (enabled) _startSupportTunnelStub();
+      else _stopSupportTunnelStub();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message || String(e) };
+    }
+  });
+
+  ipcMain.handle('get-support-info', () => {
+    const env = loadDotEnv();
+    return {
+      email: env.BACOPY_SUPPORT_USER_EMAIL || env.LAPLACE_SUPPORT_USER_EMAIL || '',
+      port:  env.BACOPY_SUPPORT_REMOTE_PORT || env.LAPLACE_SUPPORT_REMOTE_PORT || '',
+      tunnel_status: _supportTunnelProc ? 'running' : 'stopped',
+    };
+  });
+
+  // 管理者権限 setup-all.ps1 を起動. bacopy 版は packaged/dev とも
+  // extraResources 経由の setup-all.ps1 を想定 (未配置なら not found).
+  ipcMain.handle('install-deps', () => {
+    let scriptPath;
+    if (app.isPackaged) {
+      scriptPath = path.join(process.resourcesPath, 'setup-all.ps1');
+    } else {
+      scriptPath = path.join(__dirname, '..', 'scripts', 'setup-all.ps1');
+    }
+    if (!fs.existsSync(scriptPath)) {
+      const msg = `setup-all.ps1 not found: ${scriptPath}`;
+      console.warn('[install-deps]', msg);
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('install-deps-result', { success: false, message: msg });
+        }
+      }, 50);
+      return { ok: false, error: msg };
+    }
+    const psq = (p) => `'${String(p).replace(/'/g, "''")}'`;
+    const cmd = `Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',${psq(scriptPath)})`;
+    try {
+      const cp = spawn('powershell.exe', ['-NoProfile', '-Command', cmd], { detached: true, windowsHide: true });
+      cp.unref();
+    } catch (e) {
+      console.error('[install-deps] spawn failed:', e.message || e);
+      return { ok: false, error: `Failed to launch PowerShell: ${e.message || e}` };
+    }
+    const logPath = _setupLogPath();
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('install-deps-result', {
+          success: true,
+          message: `Setup launched. Log: ${logPath}`,
+          logPath,
+        });
+      }
+    }, 800);
+    return { ok: true, logPath };
+  });
+
+  ipcMain.handle('open-setup-log', async () => {
+    const logPath = _setupLogPath();
+    if (!fs.existsSync(logPath)) {
+      return { ok: false, error: `Setup log not found: ${logPath}`, logPath };
+    }
+    try {
+      const err = await shell.openPath(logPath);
+      if (err) return { ok: false, error: err, logPath };
+      return { ok: true, logPath };
+    } catch (e) {
+      return { ok: false, error: e.message || String(e), logPath };
+    }
+  });
 });
 
 app.on('window-all-closed', () => {
@@ -895,7 +1258,10 @@ app.on('before-quit', () => {
   try {
     userInitiatedStop = true;
     stopWatchdog();
+    stopSupportTunnel();
+    if (periodicRestartTimer) { clearInterval(periodicRestartTimer); periodicRestartTimer = null; }
     if (botProcess && botProcess.pid) killTreeWin(botProcess.pid);
     cleanupOrphanCamoufox();
+    _telegramNotifyFromMain('🔴 bacopy GUI stopped');
   } catch (_) {}
 });

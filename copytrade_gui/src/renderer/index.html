@@ -231,13 +231,37 @@
 
   <!-- Settings Modal -->
   <div class="modal hidden" id="settingsModal">
-    <div class="modal-content glass" style="width:420px;max-width:98vw;">
+    <div class="modal-content glass" style="width:460px;max-width:98vw;">
       <div class="modal-header">
         <h2>SETTINGS</h2>
         <button class="modal-close" id="settingsClose">&times;</button>
       </div>
       <div class="modal-body">
+
+        <!-- Tabs -->
+        <div class="modal-tabs">
+          <span class="modal-tab active" id="tabBotBtn">BOT</span>
+          <span class="modal-tab" id="tabSystemBtn">SYSTEM</span>
+        </div>
+
         <div id="tabBotContent" class="tab-content">
+
+          <!-- Telegram 通知設定 (ba GUI から移植) -->
+          <div class="form-group">
+            <label>Telegram Bot Token</label>
+            <input type="text" id="inputTelegramToken" placeholder="123456:ABC-DEF...">
+          </div>
+          <div class="form-group">
+            <label>Telegram Chat ID</label>
+            <input type="text" id="inputTelegramChat" placeholder="-1001234567890">
+          </div>
+          <div class="form-group" style="display:flex; gap:8px;">
+            <button class="btn btn-gear" id="btnTestTelegram" style="flex:1;">
+              <span class="btn-label" style="display:inline;">TEST TELEGRAM</span>
+            </button>
+          </div>
+          <div style="height:1px; background:var(--border); margin:14px 0 16px;"></div>
+
           <div class="form-group">
             <label>Base Bet ($)</label>
             <input type="number" id="inputChipBase" value="1" min="0.5" step="0.5">
@@ -305,6 +329,31 @@
             </label>
           </div>
           <button class="btn btn-start" id="btnSaveSettings" style="width:100%;margin-top:12px;">SAVE</button>
+        </div>
+
+        <!-- SYSTEM タブ: SSH サポート + setup log -->
+        <div id="tabSystemContent" class="tab-content hidden">
+          <div class="form-group">
+            <label>Support Information</label>
+            <div id="supportInfoBox" style="background:rgba(0,229,255,0.04); border:1px solid var(--border); border-radius:6px; padding:10px 12px; font-size:12px; line-height:1.7;">
+              <div><span style="color:var(--text-muted);">ID:</span>     <span id="supportIdEmail"  style="color:var(--text); font-family:var(--font-mono);">&mdash;</span></div>
+              <div><span style="color:var(--text-muted);">Port:</span>   <span id="supportIdPort"   style="color:var(--text); font-family:var(--font-mono);">&mdash;</span></div>
+              <div><span style="color:var(--text-muted);">Tunnel:</span> <span id="supportIdStatus" style="font-family:var(--font-mono); color:var(--text-muted);">checking...</span></div>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="inputSupportToggle"> リモート支援を有効にする (SSH)
+            </label>
+          </div>
+          <div class="form-group">
+            <label>Install Dependencies</label>
+            <button class="btn btn-danger" id="btnInstallDeps" style="width:100%;-webkit-app-region:no-drag;">INSTALL ON THIS PC</button>
+            <button class="btn btn-gear" id="btnOpenSetupLog" style="width:100%;margin-top:8px;-webkit-app-region:no-drag;">
+              <span class="btn-label" style="display:inline;">OPEN SETUP LOG</span>
+            </button>
+            <div class="filter-hint" style="margin-top:8px;">Setup runs in background (UAC 昇格). OPEN SETUP LOG で進捗確認.</div>
+          </div>
         </div>
 
       </div>
