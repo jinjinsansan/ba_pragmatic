@@ -4185,11 +4185,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             last_err = None
             for fr in target_frames:
                 try:
-                    # Re-inject WS bridge before every send (iframe may have reloaded)
+                    # WS bridge: 既に installed フラグがあれば再 inject 省略 (約 5-15ms 削減).
+                    # iframe reload 時のみ必要なので、まず "installed?" を確認し不在なら inject.
                     try:
-                        fr.evaluate(_WS_BRIDGE_INIT)
+                        _installed = fr.evaluate("() => !!window.__bacopy_ws_bridge_installed")
                     except Exception:
-                        pass
+                        _installed = False
+                    if not _installed:
+                        try:
+                            fr.evaluate(_WS_BRIDGE_INIT)
+                        except Exception:
+                            pass
                     # Keep state fresh even if Playwright websocket events miss cross-origin frames.
                     _pump_ws_events(page, game_frame, state)
                     res = fr.evaluate(
@@ -4987,6 +4993,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 state.expected_bet_ck = _extract_ck_from_lpbet_xml(xml)
                 state.last_bet_confirm = None
                 match = f"tableId={state.table_id}"
+                _bet_send_start = time.time()
                 send_res = send_bet_xml(xml, match=match)
 
                 if not send_res.get("ok"):
@@ -4999,6 +5006,37 @@ def main(argv: Optional[list[str]] = None) -> int:
                     last_error = "ws_send failed"
                     heartbeat("error")
                     continue
+
+                # ★ 高速化: ws_send OK の瞬間に Master UI 向け ack を更新 (非同期 POST).
+                # Master UI は ack.bet_confirm=True を見て「✓ BET 確定 → 結果待ち」と即表示する.
+                # これで wait_bet_confirm 完了を待たずに user 体感で 500ms-2s 短縮される.
+                # (stake balance delta 到着は別途 confirm として後続 result に載せる)
+                try:
+                    _bet_send_ms = int((time.time() - _bet_send_start) * 1000)
+                    _ack_update = {
+                        **ack,
+                        "bet_confirm": {
+                            "type": "ws_sent",
+                            "ws_send_ok": True,
+                            "ws_send_ms": _bet_send_ms,
+                            "match": match,
+                            "expected_ck": state.expected_bet_ck,
+                            "side": side,
+                            "amount": amt,
+                            "game_id": game_id,
+                            "at": _utc_now_iso(),
+                        },
+                    }
+                    # 非同期で POST. wait_bet_confirm の待機を開始しながらネットワーク roundtrip 隠蔽.
+                    threading.Thread(
+                        target=_post_ack, args=(did, _ack_update, "processing"), daemon=True
+                    ).start()
+                    # executor 側 UI にも即座に反映 (heartbeat で Master へ伝わる)
+                    send_phase(f"bet_sent", f"{side} ${amt:.0f} ({_bet_send_ms}ms)")
+                    send_action(f"✓ BET sent ({_bet_send_ms}ms) — waiting confirm...")
+                except Exception as _e:
+                    try: send_log(f"[bet][WARN] early-ack update failed: {_e}")
+                    except Exception: pass
 
                 confirm = wait_bet_confirm(
                     timeout_sec=10.0,
