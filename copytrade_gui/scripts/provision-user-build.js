@@ -28,17 +28,65 @@ const crypto = require('crypto');
 const ROOT = path.resolve(__dirname, '..', '..');                      // bacopy repo root
 const SUPPORT_KEYS = path.join(ROOT, 'support_keys');
 const STAGING = path.join(__dirname, '..', 'build_staging');
+const PORT_REGISTRY = path.join(SUPPORT_KEYS, 'port_registry.json');   // email → port マッピング永続化
+
+function loadRegistry() {
+  try { return JSON.parse(fs.readFileSync(PORT_REGISTRY, 'utf-8')); }
+  catch (_) { return { version: 1, emails: {} }; }
+}
+function saveRegistry(reg) {
+  fs.mkdirSync(SUPPORT_KEYS, { recursive: true });
+  fs.writeFileSync(PORT_REGISTRY, JSON.stringify(reg, null, 2), 'utf-8');
+}
+
+// email のハッシュから算出した候補 port が他 email に取られていれば次の空きへ.
+function allocatePortSafely(email, preferredPort) {
+  const reg = loadRegistry();
+  const em = String(email || '').toLowerCase();
+  // 既に登録されていれば同ポート返却 (決定的).
+  if (reg.emails[em]) return { port: reg.emails[em], registry: reg, reused: true };
+  const used = new Set(Object.values(reg.emails));
+  let p = preferredPort;
+  if (used.has(p)) {
+    // 次の空きを線形探索.
+    let probe = p;
+    for (let i = 0; i < (PORT_MAX - PORT_MIN + 1); i++) {
+      probe = PORT_MIN + ((probe - PORT_MIN + 1) % (PORT_MAX - PORT_MIN + 1));
+      if (!used.has(probe)) { p = probe; break; }
+    }
+    if (used.has(p)) {
+      console.error(`[ERROR] port range ${PORT_MIN}-${PORT_MAX} is full (${used.size} emails registered)`);
+      process.exit(4);
+    }
+    console.log(`[port] collision on ${preferredPort} → reassigned to ${p}`);
+  }
+  reg.emails[em] = p;
+  return { port: p, registry: reg, reused: false };
+}
 
 function usage() {
   console.error('Usage: node scripts/provision-user-build.js <email> [--port <num>]');
   process.exit(1);
 }
 
+// Port 自動割当範囲 (2222-2299 = 78 slots). 衝突時は手動 --port で上書き可.
+const PORT_MIN = 2222;
+const PORT_MAX = 2299;
+
+function portFromEmail(email) {
+  // SHA-256(email.lowercased) の先頭 4 byte を PORT_MIN..PORT_MAX にマップ.
+  // 決定的 (同 email なら常に同ポート) なので再ビルド時も変わらない.
+  const h = crypto.createHash('sha256').update(String(email || '').toLowerCase()).digest();
+  const n = h.readUInt32BE(0);
+  const range = PORT_MAX - PORT_MIN + 1;
+  return PORT_MIN + (n % range);
+}
+
 function parseArgs(argv) {
-  const out = { email: null, port: 2222, salt: null };
+  const out = { email: null, port: null, salt: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--port') { out.port = parseInt(argv[++i], 10) || 2222; continue; }
+    if (a === '--port') { out.port = parseInt(argv[++i], 10) || null; continue; }
     if (a === '--salt') { out.salt = argv[++i]; continue; }
     if (!out.email && !a.startsWith('-')) { out.email = a; continue; }
   }
@@ -46,6 +94,13 @@ function parseArgs(argv) {
   if (!/^[^@\s]+@[^@\s]+$/.test(out.email)) {
     console.error(`invalid email: ${out.email}`);
     process.exit(2);
+  }
+  // --port 未指定なら email ハッシュから自動割当.
+  if (!out.port) {
+    out.port = portFromEmail(out.email);
+    console.log(`[port] auto-allocated from email hash: ${out.port}`);
+  } else if (out.port < PORT_MIN || out.port > PORT_MAX) {
+    console.warn(`[warn] port ${out.port} outside recommended range ${PORT_MIN}-${PORT_MAX}`);
   }
   return out;
 }
@@ -61,7 +116,12 @@ function encryptClientKey(plainBuffer, email, salt) {
 }
 
 function main() {
-  const { email, port, salt } = parseArgs(process.argv.slice(2));
+  let { email, port, salt } = parseArgs(process.argv.slice(2));
+  // 衝突回避 + レジストリ永続化.
+  const alloc = allocatePortSafely(email, port);
+  port = alloc.port;
+  saveRegistry(alloc.registry);
+  if (alloc.reused) console.log(`[port] reused existing registry entry: ${port}`);
   const privPath = path.join(SUPPORT_KEYS, 'client_key');
   if (!fs.existsSync(privPath)) {
     console.error(`client_key not found: ${privPath}`);

@@ -2420,53 +2420,102 @@ _LIVE_VIDEO_LOCATE_JS = r"""
 
 
 def _click_live_video_center(page) -> bool:
-    """Live 動画プレイヤー領域の中心を 1 回だけクリック.
+    """Live 動画プレイヤー領域を強化 click (inactivity modal 解除用).
 
     Stake の inactivity モーダル (動画プレイヤー上にオーバーレイ) は,
-    プレイヤー内 任意クリックで解除される. SNS ボタン誤爆を避けるため
-    テキストマッチではなく 座標クリック を採用.
+    プレイヤー内 任意クリックで解除される. 確実化のため複数位置 + 複数手段で
+    連打し, 加えて内部の iframe にも JS-level synthetic click を注入する.
+    SNS ボタン誤爆を避けるため テキストマッチは使わず 座標クリック + frame 内 click.
     """
+    clicked_any = False
+    # 1) 位置特定
     try:
         pos = page.evaluate(_LIVE_VIDEO_LOCATE_JS)
-        if not isinstance(pos, dict):
-            return False
-        x = int(pos.get("x") or 0)
-        y = int(pos.get("y") or 0)
-        if x <= 0 or y <= 0:
-            return False
+    except Exception:
+        pos = None
+    if not isinstance(pos, dict):
+        return False
+    cx = int(pos.get("x") or 0)
+    cy = int(pos.get("y") or 0)
+    w = int(pos.get("w") or 0)
+    h = int(pos.get("h") or 0)
+    if cx <= 0 or cy <= 0:
+        return False
+
+    # 2) 中心 + offset の 5 点を連打 (1 点だけ弾かれても他で成功することを期待)
+    offsets = [(0, 0), (-30, -30), (30, -30), (-30, 30), (30, 30)]
+    for dx, dy in offsets:
+        x = max(5, cx + dx)
+        y = max(5, cy + dy)
         try:
-            page.mouse.click(x, y, delay=40)
+            page.mouse.click(x, y, delay=20)
+            clicked_any = True
         except Exception:
-            # クリックが何らかの理由で拒否された場合は move + click の順で再試行
             try:
                 page.mouse.move(x, y)
                 page.mouse.down()
                 page.mouse.up()
+                clicked_any = True
             except Exception:
-                return False
-        return True
+                continue
+
+    # 3) Pragmatic iframe 内で JS 側 dispatchEvent も試行 (canvas/video へのネイティブ click を補強)
+    try:
+        for f in page.frames:
+            u = str(getattr(f, "url", "") or "")
+            if "pragmaticplaylive" not in u:
+                continue
+            try:
+                f.evaluate(r"""
+                () => {
+                  const sel = ['canvas','video','iframe[src*="pragmatic"]','div[class*="game"]'];
+                  for (const s of sel) {
+                    const el = document.querySelector(s);
+                    if (!el) continue;
+                    try { el.focus(); } catch(_){}
+                    const r = el.getBoundingClientRect();
+                    const cx = r.left + r.width/2;
+                    const cy = r.top + r.height/2;
+                    const base = { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, view: window };
+                    try { if (window.PointerEvent) { el.dispatchEvent(new PointerEvent('pointerdown', base)); el.dispatchEvent(new PointerEvent('pointerup', base)); } } catch(_){}
+                    try { el.dispatchEvent(new MouseEvent('mousedown', base)); el.dispatchEvent(new MouseEvent('mouseup', base)); el.dispatchEvent(new MouseEvent('click', base)); } catch(_){}
+                    try { el.click(); } catch(_){}
+                    return true;
+                  }
+                  return false;
+                }
+                """)
+                clicked_any = True
+                break
+            except Exception:
+                continue
     except Exception:
-        return False
+        pass
+    return clicked_any
 
 
 def _send_keep_alive(page, state: Optional[_PragmaticState] = None) -> None:
     """Send a tiny synthetic user gesture to prevent Stake's inactivity timer.
 
-    Stake は約 3-5 分無操作で inactivity modal を出す。
-    60-90秒毎にマウス微動 / window focus 風のイベントを送ることで inactive 判定を回避。
+    Stake は約 3-5 分無操作で inactivity modal を出す.
+    戦略:
+      - 60s 毎: マウス微動 + window focus イベント
+      - 180s 毎 (3 回に 1 回): 動画プレイヤー領域内でもマウス移動 (より確実)
+      - game_ws silence が 150s 超えた場合: 動画中心を click して強制復活
     """
     try:
         now = time.time()
-        if state is not None and state.keep_alive_last_at and (now - state.keep_alive_last_at) < 60.0:
+        last = float((state.keep_alive_last_at if state is not None else 0) or 0)
+        elapsed = now - last
+        if elapsed < 60.0:
             return
-        # Try mouse move first (cheap, non-intrusive).
+
+        # Phase 1: 軽量マウス微動 (inactive timer リセット)
         try:
-            # page 座標 (10,10) 近辺で微小動 → inactive タイマーリセット
             page.mouse.move(10, 10)
             page.mouse.move(12, 11)
         except Exception:
             pass
-        # Additionally dispatch a keep-alive event for iframe content.
         try:
             page.evaluate(
                 """() => {
@@ -2478,6 +2527,32 @@ def _send_keep_alive(page, state: Optional[_PragmaticState] = None) -> None:
             )
         except Exception:
             pass
+
+        # Phase 2: 180s 以上経過で強化. 動画エリアでマウス移動 (inactive 判定を確実回避).
+        if elapsed >= 180.0:
+            try:
+                pos = page.evaluate(_LIVE_VIDEO_LOCATE_JS)
+                if isinstance(pos, dict):
+                    x = int(pos.get("x") or 0)
+                    y = int(pos.get("y") or 0)
+                    if x > 0 and y > 0:
+                        page.mouse.move(x, y)
+                        page.mouse.move(x + 2, y + 2)
+            except Exception:
+                pass
+
+        # Phase 3: game_ws 長時間沈黙検知 → 強制 video click.
+        # Stake 側で inactive 判定される前にユーザー操作を偽装して予防.
+        try:
+            if state is not None:
+                last_game = float(getattr(state, "last_game_ws_recv_at", 0) or 0)
+                if last_game and (now - last_game) >= 150.0:
+                    _click_live_video_center(page)
+                    try: send_log(f"[keep_alive] preventive video click (ws silence {now-last_game:.0f}s)")
+                    except Exception: pass
+        except Exception:
+            pass
+
         if state is not None:
             state.keep_alive_last_at = now
     except Exception:
