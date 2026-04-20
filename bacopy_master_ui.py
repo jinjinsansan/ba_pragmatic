@@ -327,6 +327,11 @@ body.switching .table-cell.selected{animation:switchingPulse 1.4s ease-in-out in
           <input id="autoSwitchToggle" type="checkbox" style="width:auto" checked/>
           クリック即テーブル移動
         </label>
+        <label style="display:flex;gap:4px;align-items:center;color:var(--accent);font-family:var(--font-mono);font-size:11px;white-space:nowrap" title="BET結果 (WIN/LOSE) 表示をライブ映像に合わせて N 秒遅らせます. 0=即時 (デフォルト 4s)">
+          結果遅延
+          <input id="visualDelayInput" type="number" min="0" max="10" step="0.5" value="4" style="width:48px"/>
+          s
+        </label>
       </div>
       <div id="tableList" style="min-height:80px">
         <div class="value small" style="color:var(--text-muted);padding:20px">テーブル読込中...</div>
@@ -1297,6 +1302,26 @@ function updateActionWatch(){
     return;
   }
   if(status==='done'){
+    // ★ 映像同期遅延 (BET 結果の勝敗フラッシュだけ遅らせる).
+    // 内部処理 (BET 送信・サーバ結果確定・次BETの準備) は既に完了済. 視覚上の
+    // "🏆/❌" 表示だけ N 秒待ってからライブ映像タイミングに揃える.
+    // N=0 なら即時 (bacopy 本来の "未来予知" 動作).
+    if(fa.action === 'BET'){
+      const delaySec = Number(localStorage.getItem('bacopy_master_visual_delay_sec') || '4');
+      if(delaySec > 0){
+        if(!lastDecisionWatch.doneFirstSeenAt){
+          lastDecisionWatch.doneFirstSeenAt = Date.now();
+        }
+        const elapsedMs = Date.now() - lastDecisionWatch.doneFirstSeenAt;
+        const remainMs = (delaySec * 1000) - elapsedMs;
+        if(remainMs > 150){
+          const remainSec = (remainMs / 1000).toFixed(1);
+          setActionBox('['+actLabel+'] ✓ 結果確定 → 映像同期中... 残り'+remainSec+'s','processing');
+          // 次 poll (500ms 後) で再評価. 遅延カウントダウン.
+          return;
+        }
+      }
+    }
     const oc = String(res.outcome||'').toLowerCase();
     const side = String(fa.side||'').toLowerCase();
     let icon = '✓', cls = 'ok';
@@ -1396,6 +1421,23 @@ document.getElementById('execSel').onchange = ()=>{ persistState(); refreshOnce(
 document.getElementById('noteBox').oninput = ()=>{ persistState(); };
 document.getElementById('searchBox').oninput = ()=>{ clearTimeout(window.__t); window.__t=setTimeout(renderTables,150); };
 document.getElementById('autoSwitchToggle').onchange = ()=>{ persistState(); };
+// 結果表示の映像同期遅延 (BET 結果のみ. BET 送信と ack は遅延しない).
+(function(){
+  const inp = document.getElementById('visualDelayInput');
+  if(!inp) return;
+  try{
+    const saved = localStorage.getItem('bacopy_master_visual_delay_sec');
+    if(saved !== null) inp.value = saved;
+  }catch(e){}
+  inp.addEventListener('change', ()=>{
+    let v = Number(inp.value);
+    if(!isFinite(v) || v < 0) v = 0;
+    if(v > 10) v = 10;
+    inp.value = v;
+    try{ localStorage.setItem('bacopy_master_visual_delay_sec', String(v)); }catch(e){}
+    showToast('結果表示遅延: '+v+'s','ok');
+  });
+})();
 document.getElementById('btnSwitch').onclick = ()=> sendDecision('SWITCH_TABLE','');
 document.getElementById('btnLook').onclick = ()=> sendDecision('LOOK','');
 document.getElementById('btnP').onclick = ()=> sendDecision('BET','PLAYER');
