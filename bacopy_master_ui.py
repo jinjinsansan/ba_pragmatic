@@ -655,7 +655,9 @@ function renderPilots(){
     if(!exec){ pillHtml='<span class="pill offline">オフライン</span>'; }
     else {
       const ageSec = ageSecFromIso(exec.updated_at);
-      const online = ageSec < 60;
+      // executor が明示的に stopped を送ってきた場合は即座にオフライン扱い.
+      const explicitlyStopped = String(exec.status||'').toLowerCase() === 'stopped';
+      const online = !explicitlyStopped && ageSec < 60;
       const busy = Array.isArray(_state.decisions.processing) && _state.decisions.processing.some(d=>(d.target_executor_id||'')===exec.executor_id);
       if(!online) pillHtml='<span class="pill offline">オフライン</span>';
       else if(exec.recovering) pillHtml='<span class="pill warn">復旧中</span>';
@@ -704,7 +706,9 @@ function renderExecutors(){
   const selExecId = document.getElementById('execSel').value||'';
   for(const e of _state.executors){
     const ageSec = ageSecFromIso(e.updated_at);
-    const online = ageSec<60;
+    // status='stopped' は即オフライン扱い (executor の明示的停止シグナル).
+    const explicitlyStopped = String(e.status||'').toLowerCase() === 'stopped';
+    const online = !explicitlyStopped && ageSec<60;
     const c=document.createElement('div'); c.className='glass-card exec-card';
     if(selExecId && selExecId===e.executor_id) c.classList.add('active');
     const ws=e.ws||{}, caps=e.caps||{}, seq=e.seq||{};
@@ -1027,6 +1031,8 @@ function computeWinrate(done){
 
 function getStandbyExecutors(){
   return (_state.executors||[]).filter(e=>{
+    // executor が明示的に status='stopped' を送ってきた場合は即オフライン扱い.
+    if(String(e.status||'').toLowerCase() === 'stopped') return false;
     const ageSec = ageSecFromIso(e.updated_at);
     if(ageSec >= 60) return false;
     if(e.session_elsewhere_unresolved) return false;

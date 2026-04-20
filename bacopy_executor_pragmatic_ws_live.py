@@ -3501,6 +3501,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         # SIGTERM/SIGINT で Camoufox を clean close (orphan camoufox プロセス防止).
         def _clean_shutdown(signum=None, frame=None):
             print(f"[exec] shutdown signal {signum} - closing camoufox ...", flush=True)
+            # 最終 heartbeat で status="stopped" を送信 → Master UI が即座にオフライン表示.
+            try:
+                with hb_lock:
+                    final_payload = dict(hb_latest_payload) if hb_latest_payload else {}
+                if final_payload:
+                    final_payload["status"] = "stopped"
+                    final_payload["bettable"] = False
+                    _post_heartbeat(final_payload)
+                    print("[exec] final stopped heartbeat posted", flush=True)
+            except Exception as _e:
+                print(f"[exec] final heartbeat failed: {_e}", flush=True)
             try:
                 ctx.close()
             except Exception:
@@ -3515,6 +3526,22 @@ def main(argv: Optional[list[str]] = None) -> int:
                 pass
             # os._exit で残存スレッドを強制終了 (atexit もここで発火).
             os._exit(0)
+
+        # Normal exit path (uncaught exception 等) でも atexit で status=stopped を送る.
+        def _atexit_notify_stopped():
+            try:
+                with hb_lock:
+                    fp = dict(hb_latest_payload) if hb_latest_payload else {}
+                if fp:
+                    fp["status"] = "stopped"
+                    fp["bettable"] = False
+                    _post_heartbeat(fp)
+            except Exception:
+                pass
+        try:
+            atexit.register(_atexit_notify_stopped)
+        except Exception:
+            pass
         try:
             import signal as _signal
             _signal.signal(_signal.SIGTERM, _clean_shutdown)
