@@ -3271,7 +3271,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         while not hb_stop.is_set():
             time.sleep(0.25)
             now2 = time.time()
-            if now2 - hb_last_sent < 5.0:
+            # 1s 間隔で heartbeat POST. Master UI の反映速度を 5 倍向上.
+            if now2 - hb_last_sent < 1.0:
                 continue
             with hb_lock:
                 payload = dict(hb_latest_payload) if hb_latest_payload else None
@@ -3309,7 +3310,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         nonlocal master_last_decision_id, master_last_decision_action, master_last_decision_at
         nonlocal master_last_active_ts, master_pending_for_me, master_prev_active
         now = time.time()
-        if now - last_hb < 5.0:
+        # 24/7 運用でレスポンシビリティ重視: 1s 間隔. state 変化即座に Master UI へ.
+        if now - last_hb < 1.0:
             return
         last_hb = now
         user_email = (os.getenv("BACOPY_USER_EMAIL", "") or os.getenv("BACOPY_BAFATHER_EMAIL", "") or "").strip()

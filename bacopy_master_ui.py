@@ -238,6 +238,9 @@ body.stopped .big-btn.player,body.stopped .big-btn.banker,body.stopped .big-btn.
 body.stopped .stop-banner{display:block}
 /* 切替中 (選択テーブルに GUI が未到着) 状態の視覚フィードバック */
 body.switching .big-btn.player,body.switching .big-btn.banker,body.switching .big-btn.tie{pointer-events:none;opacity:0.35;filter:grayscale(0.5)}
+/* 送信中: BET ボタン連打防止 (楽観的即時反応) */
+body.sending-bet .big-btn.player,body.sending-bet .big-btn.banker,body.sending-bet .big-btn.tie{pointer-events:none;opacity:0.5;filter:brightness(1.3)}
+body.sending-bet .big-btn.player::after,body.sending-bet .big-btn.banker::after,body.sending-bet .big-btn.tie::after{content:"送信中";position:absolute;top:6px;right:6px;background:var(--accent);color:#0a1020;padding:2px 6px;border-radius:3px;font-size:9px;font-family:var(--font-hud);letter-spacing:2px;font-weight:600}
 body.switching .big-btn.player::after,body.switching .big-btn.banker::after,body.switching .big-btn.tie::after{content:"切替中";position:absolute;top:6px;right:6px;background:var(--tie);color:#0a1020;padding:2px 6px;border-radius:3px;font-size:9px;font-family:var(--font-hud);letter-spacing:2px;font-weight:600}
 body.switching .table-cell.selected{animation:switchingPulse 1.4s ease-in-out infinite}
 @keyframes switchingPulse{0%,100%{box-shadow:0 0 10px rgba(255,200,60,0.25);border-color:var(--tie)}50%{box-shadow:0 0 20px rgba(255,200,60,0.55);border-color:var(--tie)}}
@@ -1175,19 +1178,46 @@ function sendDecision(action, side){
     friend_action:{action, side:side||'', amount:0, note},
   };
   const actJa = {LOOK:'様子見','BET':'BET','SWITCH_TABLE':'テーブル移動'}[action]||action;
+
+  // ===== 楽観 UI (Optimistic updates) =====
+  // HTTP レスポンスを待たず, クリック瞬時に UI 反映. 後で heartbeat で確定状態で上書きされる.
+  lastDecisionWatch = { id:did, action, side:side||'', startedAt:Date.now(), targetExecId:target_executor_id, targetTable:selected.table_name };
+  if(action === 'BET'){
+    setActionBox('['+actJa+(side?('/'+side):'')+'] 📨 送信中...','processing');
+    // BET 送信中は予測的に「切替中」扱いで連打防止
+    document.body.classList.add('sending-bet');
+  } else if(action === 'SWITCH_TABLE'){
+    setActionBox('[テーブル移動] 📨 送信中...','processing');
+    switchWatch = { id:did, targetTable:selected.table_name, startedAt:Date.now(), targetExecId:target_executor_id };
+    setSwitchStatus('📨 送信中 → '+(selected.table_name||selected.table_id), 'pending');
+    // 予測的 switching クラス (BET ボタン即座に無効化. 実 heartbeat で差し替え)
+    document.body.classList.add('switching');
+  } else {
+    setActionBox('['+actJa+'] 📨 送信中...','processing');
+  }
+
+  const _t0 = Date.now();
   apiPost('/api/decisions', payload).then(res=>{
+    const lat = Date.now() - _t0;
     if(res && res.accepted){
-      showToast('送信: '+actJa+(side?('/'+side):'')+' (ID:'+did.slice(-8)+')','ok');
-      lastDecisionWatch = { id:did, action, side:side||'', startedAt:Date.now(), targetExecId:target_executor_id, targetTable:selected.table_name };
-      setActionBox('処理中...','processing');
-      if(action==='SWITCH_TABLE'){
-        switchWatch = { id:did, targetTable:selected.table_name, startedAt:Date.now(), targetExecId:target_executor_id };
+      showToast(actJa+(side?('/'+side):'')+' 送信 ('+lat+'ms)','ok');
+      // 受理後は processing 状態に更新. 実際の executor 応答は heartbeat で反映.
+      if(action==='BET'){
+        setActionBox('['+actJa+(side?('/'+side):'')+'] ⏳ 受理 → executor 実行中...','processing');
+      } else if(action==='SWITCH_TABLE'){
         setSwitchStatus('移動中... → '+(selected.table_name||selected.table_id), 'pending');
       }
     } else {
+      document.body.classList.remove('sending-bet');
       showToast('送信失敗: '+fmt(res),'err');
-      setActionBox('送信失敗: '+(res && (res.error||res.reason)||'?'),'err');
+      setActionBox('❌ 送信失敗: '+(res && (res.error||res.reason)||'?'),'err');
+      lastDecisionWatch = null;
     }
+  }).catch(err => {
+    document.body.classList.remove('sending-bet');
+    showToast('通信エラー: '+err,'err');
+    setActionBox('❌ 通信エラー','err');
+    lastDecisionWatch = null;
   });
 }
 function setActionBox(msg, kind){
@@ -1229,6 +1259,7 @@ function updateActionWatch(){
     const err = (res.error||'error').toString();
     const short = err.slice(0,80);
     setActionBox('['+actLabel+'] ❌ '+short,'err');
+    document.body.classList.remove('sending-bet');
     lastDecisionWatch=null;
     return;
   }
@@ -1257,6 +1288,7 @@ function updateActionWatch(){
     }
     if(res.stake_delta!=null){ const n=Number(res.stake_delta); detail += ' ('+(n>=0?'+':'')+'$'+n.toFixed(2)+')'; }
     setActionBox('['+actLabel+'] '+icon+' '+detail, cls);
+    document.body.classList.remove('sending-bet');
     lastDecisionWatch=null;
     return;
   }
@@ -1352,7 +1384,8 @@ document.addEventListener('keydown', (e)=>{
 });
 
 refreshOnce();
-setInterval(refreshOnce, 1000);
+// 500ms 間隔で refresh (レスポンシビリティ重視. heartbeat 1s と組合せて体感即時).
+setInterval(refreshOnce, 500);
 </script>
 </body></html>
 """
