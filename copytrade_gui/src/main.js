@@ -564,16 +564,11 @@ function _mergedEnvForValidation() {
 }
 
 function _validateConfigForSpawn(cfg) {
-  const c = cfg || {};
-  const assume = !!c.assume_bc_012;
-  if (assume) return null;
-  const env = _mergedEnvForValidation();
-  if (c.allow_banker && !env.BACOPY_PRAGMATIC_BC_BANKER) {
-    return 'BANKER is enabled but BACOPY_PRAGMATIC_BC_BANKER is not set. Run sniff_pragmatic_bet_ws.py (banker) or enable "Assume bc 0/1/2" (unsafe).';
-  }
-  if (c.allow_tie && !env.BACOPY_PRAGMATIC_BC_TIE) {
-    return 'TIE is enabled but BACOPY_PRAGMATIC_BC_TIE is not set. Run sniff_pragmatic_bet_ws.py (tie) or enable "Assume bc 0/1/2" (unsafe).';
-  }
+  // 以前は BANKER/TIE を有効化する際に sniff_pragmatic_bet_ws.py で
+  // BC code (BACOPY_PRAGMATIC_BC_*) を取得する必要があった.
+  // Pragmatic Baccarat の bet code は 0=Player / 1=Banker / 2=Tie が業界標準で
+  // 全テーブル共通. sniff 不要で executor がデフォルト値を使う.
+  // env で override も可能なので検証 gate は撤廃.
   return null;
 }
 

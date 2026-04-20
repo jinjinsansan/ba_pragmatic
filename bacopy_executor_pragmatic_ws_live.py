@@ -1001,19 +1001,16 @@ class _PragmaticState:
 
 
 def _side_to_bc(side: str, *, assume_012: bool = False) -> Optional[str]:
+    # Pragmatic Baccarat の標準 bet code は 0=Player / 1=Banker / 2=Tie で業界共通.
+    # 以前は assume_012 opt-in 必須だったが, 検証済みの標準値なのでデフォルト有効に変更.
+    # env で override 可 (table/provider が非標準の場合用).
     s = str(side or "").upper().strip()
     if s in ("P", "PLAYER"):
-        return (os.getenv("BACOPY_PRAGMATIC_BC_PLAYER", "") or ("0" if assume_012 else "0")).strip() or "0"
+        return (os.getenv("BACOPY_PRAGMATIC_BC_PLAYER", "") or "0").strip() or "0"
     if s in ("B", "BANKER"):
-        v = (os.getenv("BACOPY_PRAGMATIC_BC_BANKER", "") or "").strip()
-        if v:
-            return v
-        return "1" if assume_012 else None
+        return (os.getenv("BACOPY_PRAGMATIC_BC_BANKER", "") or "1").strip() or "1"
     if s in ("T", "TIE"):
-        v = (os.getenv("BACOPY_PRAGMATIC_BC_TIE", "") or "").strip()
-        if v:
-            return v
-        return "2" if assume_012 else None
+        return (os.getenv("BACOPY_PRAGMATIC_BC_TIE", "") or "2").strip() or "2"
     return None
 
 

@@ -36,8 +36,8 @@ _HTML = r"""<!doctype html>
   --win:#00ff88;
   --lose:#ff3366;
   --tie:#ffcc00;
-  --banker:#ff5c8a;
-  --player:#00bfff;
+  --banker:#ff3344;  /* はっきりした赤 (従来のピンク #ff5c8a から変更) */
+  --player:#00bfff;  /* deep sky blue */
   --text:#e0e8f0;
   --text-muted:#7888a0;
   --text-dim:#4a5568;
@@ -147,7 +147,8 @@ h2 .hctl{font-family:var(--font-mono);font-size:10px;color:var(--text-muted);let
 .big-btn.look:not(:disabled):hover{background:rgba(120,136,160,0.12)}
 .big-btn.player{color:var(--player);border-color:rgba(0,191,255,0.55);background:linear-gradient(180deg,rgba(0,191,255,0.22),rgba(0,191,255,0.05));text-shadow:0 0 12px rgba(0,191,255,0.5)}
 .big-btn.player:not(:disabled):hover{background:linear-gradient(180deg,rgba(0,191,255,0.35),rgba(0,191,255,0.1));box-shadow:0 0 30px rgba(0,191,255,0.5)}
-.big-btn.banker{color:var(--banker);border-color:rgba(255,92,138,0.55);background:linear-gradient(180deg,rgba(255,92,138,0.16),rgba(255,92,138,0.03))}
+.big-btn.banker{color:var(--banker);border-color:rgba(255,51,68,0.6);background:linear-gradient(180deg,rgba(255,51,68,0.22),rgba(255,51,68,0.05));text-shadow:0 0 12px rgba(255,51,68,0.5)}
+.big-btn.banker:not(:disabled):hover{background:linear-gradient(180deg,rgba(255,51,68,0.35),rgba(255,51,68,0.1));box-shadow:0 0 30px rgba(255,51,68,0.5)}
 .big-btn.tie{color:var(--tie);border-color:rgba(255,204,0,0.55);background:linear-gradient(180deg,rgba(255,204,0,0.16),rgba(255,204,0,0.03))}
 .big-btn.hidden-by-default{display:none}
 body.show-bt .big-btn.hidden-by-default{display:flex}
@@ -1137,7 +1138,8 @@ function updateButtonsGating(){
   document.body.classList.toggle('switching', !!switching);
 
   const allowAny = nOnTarget > 0 && !document.body.classList.contains('stopped');
-  const allowB = allowAny && (!isPrag || anyAllowB);
+  // BANKER は PLAYER と同列のデフォルト BET. caps.allow_banker は廃止済 (executor 側で standard bc=1 使用).
+  const allowB = allowAny;
   const allowT = allowAny && (!isPrag || anyAllowT);
   document.getElementById('btnP').disabled = !allowAny;
   document.getElementById('btnLook').disabled = nOnTarget===0;

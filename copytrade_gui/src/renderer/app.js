@@ -549,9 +549,9 @@ const DEFAULT_SETTINGS = {
   table_name_substr: '',
   auto_click_wait_sec: 90,
   allow_switch_table: true,
-  allow_banker: false,
-  allow_tie: false,
-  assume_bc_012: false,
+  allow_banker: true,   // Pragmatic bet code 0/1/2 が標準なので BANKER デフォルト有効.
+  allow_tie: false,     // TIE は任意 (ペイアウト 8x でハイリスク).
+  assume_bc_012: true,  // BC code は standard pragmatic (0=P/1=B/2=T).
   headless: false,
   dry_run: false,
   bet_mode: 'counter_seq7',
