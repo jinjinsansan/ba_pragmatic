@@ -3098,16 +3098,26 @@ class _SwitchTableInterrupted(Exception):
         self.new_decision = new_decision
 
 
-def _peek_new_switch_decision(q, current_did: str, current_received_at: str = ""):
+def _peek_new_switch_decision(q, current_did: str, current_captured_at: str = ""):
     """decision_q から**より新しい** SWITCH_TABLE を非破壊で覗く.
 
+    BUG FIX 2026-04-20: 以前 received_at で比較していたが, fetcher が同じ pending
+    decision を毎回 re-fetch して received_at が新しくなる → 古い decision が
+    "新しい" と誤判定され, supersede が無限発火して main loop が stuck した.
+    →  decision の生成時刻である captured_at のみで比較する.
+
+    Args:
+        current_captured_at: 現 decision の captured_at (ISO8601). 空なら比較スキップ.
+
     Returns:
-        current_received_at より新しい SWITCH_TABLE decision (current_did 以外), または None.
-    これにより fetcher が古い pending/processing 決定を再注入した時に誤爆しない.
+        current_captured_at より新しい captured_at を持つ SWITCH_TABLE decision
+        (current_did 以外), または None.
     """
     import queue as _q
     seen: list[dict] = []
     found: Optional[dict] = None
+    # found の captured_at を保持し、最も新しい "真に新しい" SWITCH_TABLE を返す.
+    found_at: str = ""
     try:
         while True:
             d = q.get_nowait()
@@ -3118,12 +3128,16 @@ def _peek_new_switch_decision(q, current_did: str, current_received_at: str = ""
             did = str(d.get("decision_id") or "")
             if not did or did == current_did:
                 continue
-            d_at = str(d.get("received_at") or d.get("captured_at") or "")
-            # current_received_at が明示されていない時は比較不可なので受け入れる (互換).
-            if current_received_at and d_at and d_at <= current_received_at:
+            # 厳密に captured_at のみ使う (received_at は fetcher の再フェッチで変動する).
+            d_cap = str(d.get("captured_at") or "")
+            if not d_cap:
+                # captured_at が無い古い/壊れた decision は supersede に使わない
                 continue
-            if found is None:
+            if current_captured_at and d_cap <= current_captured_at:
+                continue
+            if not found_at or d_cap > found_at:
                 found = d
+                found_at = d_cap
     except _q.Empty:
         pass
     for it in seen:
@@ -4621,7 +4635,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         non_sw.append(_d)
                 if len(sw) > 1:
                     # sw list order is not stable due to duplicate enqueue; choose by timestamp, not by list order.
-                    keep = max(sw, key=lambda x: str(x.get("received_at") or x.get("captured_at") or ""))
+                    # fix 2026-04-20: captured_at のみで判定 (received_at は fetcher 再フェッチで変動).
+                    keep = max(sw, key=lambda x: str(x.get("captured_at") or ""))
                     keep_id = str(keep.get("decision_id") or "")
                     superseded: set[str] = set()
                     for old in sw:
@@ -4824,7 +4839,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                             interrupt_check=lambda: _peek_new_switch_decision(
                                 decision_q,
                                 did,
-                                str(d.get("received_at") or d.get("captured_at") or ""),
+                                # fix: captured_at のみ使う (received_at は fetcher 再フェッチで変動).
+                                str(d.get("captured_at") or ""),
                             ),
                         )
                         game_frame = find_game_frame(page, attempts=60)
