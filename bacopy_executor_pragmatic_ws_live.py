@@ -47,8 +47,21 @@ LOBBY_URL = "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccara
 
 # ======== GUI IPC (stdout JSON) ========
 
+# デバッグ目的: executor のすべての IPC メッセージをファイルに残す.
+# 実装に問題があっても後から grep で追えるため, 自動復旧や診断が楽になる.
+_DEBUG_LOG_PATH = Path(__file__).parent / "executor_debug.log"
+
+def _append_debug_log(line: str) -> None:
+    try:
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8", errors="replace") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%S ") + line.rstrip() + "\n")
+    except Exception:
+        pass
+
+
 def send_msg(msg: dict) -> None:
     line = json.dumps(msg, ensure_ascii=False) + "\n"
+    _append_debug_log(line)
     try:
         sys.stdout.write(line)
         sys.stdout.flush()
@@ -2640,40 +2653,114 @@ def _build_substr_candidates(user_input: str) -> list[str]:
 
 
 _LOBBY_TRY_CLICK_JS = r"""
-(args) => {
+async (args) => {
+  // 引数:
+  //   qpid         — Pragmatic の unique table id (例: "h22z8qhp17sa0vkh"). 最優先.
+  //   candidates   — 表示名候補 (fallback 用, 完全一致マッチ)
+  //   maxScroll    — 最大 scroll 回数
+  //   categories   — click 候補のカテゴリタブラベル (正規表現ソース)
+  const qpid = String((args && args.qpid) || '').trim();
   const candidates = (args && args.candidates) || [];
-  const maxScroll = (args && args.maxScroll) || 10;
-  const scrollRatio = (args && args.scrollRatio) || 0.85;
+  const maxScroll = (args && args.maxScroll) || 30;
+  const categoryPatterns = (args && args.categories) || [
+    'すべて', '全て', '全テーブル', '全部',
+    'All', 'All Tables', 'All Games', 'View All',
+    // Classic (Baccarat 1-9 等 regular 卓) - 最優先. Speed だけ見えて Classic が抜けた事例への対応.
+    'クラシック', 'Classic', 'クラシックバカラ', 'Classic Baccarat',
+    'ノーコミッション', 'No Commission', 'ノーコミ',
+    'マルチプレイ', 'Multi', 'Multiplayer',
+    'バカラ', 'Baccarat',
+    'スピード', 'Speed', 'スピードバカラ', 'Speed Baccarat',
+    '日本語', 'Japanese',
+    '韓国', 'Korean',
+    'ライブ', 'Live',
+    'VIP', 'プライベ', 'Prive',
+    'スクイーズ', 'Squeeze',
+    'その他', 'Other',
+  ];
+
   function norm(s){
-    return (s || '')
-      .replace(/\s+/g, '')
-      .replace(/[\$￥¥]/g, '')
-      .toLowerCase();
+    return (s || '').replace(/\s+/g, '').replace(/[\$￥¥]/g, '').toLowerCase();
   }
-  function matchStrict(text){
-    // プレフィックス一致 (テーブルカードは通常 "スピードバカラ3$ 0.2" のように table 名で始まる).
-    // substring 一致だと "日本語スピードバカラ 3" が "スピードバカラ 3" を含んで誤爆する.
-    const t = norm(text);
-    if (!t) return '';
+  function extractNamePart(text){
+    // カード innerText は "スピードバカラ6\n$ 0.23" の形. name 部だけ切り出す.
+    if (!text) return '';
+    let s = text.replace(/\r/g, '\n');
+    const nl = s.indexOf('\n');
+    const dol = s.indexOf('$');
+    const cuts = [nl, dol].filter(i => i >= 0);
+    if (cuts.length) s = s.slice(0, Math.min(...cuts));
+    return s.trim();
+  }
+  function normCands(){
+    const out = [];
     for (const c of candidates) {
       const n = norm(c);
-      if (n && t.indexOf(n) === 0) return c;  // startsWith
+      if (n && out.indexOf(n) === -1) out.push({ orig: c, n: n });
     }
-    return '';
+    return out;
   }
-  function matchLoose(text){
-    // プレフィックス一致しなかった場合の fallback (従来の substring).
-    // これは 2nd pass でしか使わない.
-    const t = norm(text);
-    if (!t) return '';
-    for (const c of candidates) {
-      const n = norm(c);
-      if (n && t.includes(n)) return c;
+  const normedCands = normCands();
+
+  // ---- qpid 発見ロジック ----
+  // Pragmatic lobby のカードは以下のいずれかに qpid を含んでいる:
+  //   (a) data-qpid / data-table-qpid 属性
+  //   (b) data-table-id / data-tableid 属性 (numeric の operator ID ではなく qpid の場合あり)
+  //   (c) href / src / background-image に /snaps/<qpid>/ パス
+  //   (d) query string の ?tableId=<qpid>
+  //   (e) 親要素のスタイル (最大 3 階層上)
+  // qpid マッチしたら問答無用で click できる唯一要素なので誤爆ゼロ.
+  function containsQpid(v, q){
+    if (!v || !q) return false;
+    const s = String(v);
+    if (s.indexOf('/snaps/' + q + '/') >= 0) return true;
+    if (s.indexOf('tableId=' + q) >= 0) return true;
+    if (s.indexOf('tableid=' + q) >= 0) return true;
+    return false;
+  }
+  function elementHasQpid(el, q){
+    if (!el || !q) return false;
+    try {
+      // data-* 属性
+      const ds = el.dataset || {};
+      if (ds.qpid === q || ds.tableQpid === q || ds.tableId === q || ds.tableid === q) return true;
+      // すべての属性を横断的にチェック
+      if (el.getAttributeNames) {
+        for (const a of el.getAttributeNames()) {
+          const v = el.getAttribute(a) || '';
+          if (containsQpid(v, q)) return true;
+          // 完全一致も (data-table-id など)
+          if (v === q) return true;
+        }
+      }
+      // style 属性 (background-image の url(...) 内の qpid)
+      const style = (el.getAttribute && el.getAttribute('style')) || '';
+      if (containsQpid(style, q)) return true;
+      if (el.src && containsQpid(String(el.src), q)) return true;
+      if (el.href && containsQpid(String(el.href), q)) return true;
+      // computed background-image
+      try {
+        const cs = getComputedStyle(el);
+        if (cs && cs.backgroundImage && containsQpid(cs.backgroundImage, q)) return true;
+      } catch(_) {}
+    } catch(_) {}
+    return false;
+  }
+  // qpid ヒットを持つ最上位の clickable な祖先 (role=button / button / a) を返す
+  function clickableAncestor(el){
+    let cur = el;
+    for (let i = 0; i < 6 && cur; i++) {
+      try {
+        const role = cur.getAttribute && cur.getAttribute('role');
+        const tag = (cur.tagName || '').toLowerCase();
+        if (role === 'button' || tag === 'button' || tag === 'a') return cur;
+        if (cur.onclick || (cur.dataset && (cur.dataset.testid || '').toLowerCase().indexOf('table') >= 0)) return cur;
+      } catch(_) {}
+      cur = cur.parentElement;
     }
-    return '';
+    return el;  // fallback: 自分自身 (最後の手段で click 試行)
   }
-  // 互換 alias (既存コードが match() を呼んでいる場合).
-  function match(text){ return matchStrict(text) || matchLoose(text); }
+
   function clickEl(el){
     try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch(_) {}
     try { el.focus(); } catch(_) {}
@@ -2692,50 +2779,89 @@ _LOBBY_TRY_CLICK_JS = r"""
     } catch (_) {}
     try { el.click(); } catch(_) {}
   }
-  function findAndClick(){
-    const nodes = [
-      ...document.querySelectorAll('[role="button"], button, a, div[role="button"], [data-testid*="table"], [data-testid*="lobby"]')
+
+  // ---- qpid 優先 → 文字列 fallback の順で探索 ----
+  function findByQpid(){
+    if (!qpid) return null;
+    // まず data-* や href/src で直接検索
+    const direct = [
+      'a[href*="/snaps/' + qpid + '/"]',
+      'a[href*="tableId=' + qpid + '"]',
+      '[data-qpid="' + qpid + '"]',
+      '[data-table-qpid="' + qpid + '"]',
+      '[data-tableid="' + qpid + '"]',
+      '[data-table-id="' + qpid + '"]',
+      'img[src*="/snaps/' + qpid + '/"]',
     ];
-    // Pass A: startsWith 一致 (最優先 — テーブルカードの name prefix を確実に引く).
-    for (const el of nodes) {
-      const t = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-      const m = matchStrict(t);
-      if (m) {
-        clickEl(el);
-        return { clicked: true, match: m, text: t.slice(0, 120), nodes: nodes.length, matchType: 'strict' };
-      }
+    for (const sel of direct) {
+      try {
+        const el = document.querySelector(sel);
+        if (el) return { el: clickableAncestor(el), via: 'selector', sel: sel };
+      } catch(_) {}
     }
-    // Pass B: substring 一致 (fallback). startsWith で見つからない時だけ.
-    for (const el of nodes) {
-      const t = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-      const m = matchLoose(t);
-      if (m) {
-        clickEl(el);
-        return { clicked: true, match: m, text: t.slice(0, 120), nodes: nodes.length, matchType: 'loose' };
+    // 全要素走査 (style url / computed style 等)
+    const all = document.querySelectorAll('*');
+    for (const el of all) {
+      if (elementHasQpid(el, qpid)) {
+        return { el: clickableAncestor(el), via: 'scan' };
       }
-    }
-    return { clicked: false, nodes: nodes.length };
-  }
-  function tryClickAllCategory(){
-    // Pragmatic lobby の「全てのテーブル」「All Tables」等のカテゴリタブを探して click.
-    // 目標テーブル (Fortune 6/Privé 等) が default カテゴリ表示に居ない場合の到達手段.
-    const patterns = [
-      /^すべて$/, /^全て$/, /^全テーブル$/,
-      /^All$/i, /^All Tables$/i, /^All Games$/i, /^View All$/i,
-    ];
-    const selectors = '[role="tab"], [role="button"], button, a, [data-category], [data-testid*="tab"], [data-testid*="category"]';
-    const els = document.querySelectorAll(selectors);
-    for (const el of els) {
-      try{
-        const t = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g,' ').trim();
-        if (!t) continue;
-        for (const p of patterns) {
-          if (p.test(t)) { clickEl(el); return { matched: t.slice(0,40) }; }
-        }
-      }catch(_){}
     }
     return null;
   }
+
+  function findByName(){
+    // name fallback: 完全一致のみ. 誤爆しないのが最優先.
+    if (!normedCands.length) return null;
+    const nodes = document.querySelectorAll('[role="button"], button, a, div[role="button"], [data-testid*="table"], [data-testid*="lobby"]');
+    for (const el of nodes) {
+      const raw = (el.innerText || el.textContent || '');
+      const np = extractNamePart(raw);
+      const t = norm(np);
+      if (!t) continue;
+      for (const cc of normedCands) {
+        if (t === cc.n) return { el: el, via: 'name', match: cc.orig };
+      }
+    }
+    return null;
+  }
+
+  function findAndClick(){
+    let r = findByQpid();
+    if (r) {
+      clickEl(r.el);
+      return { clicked: true, match: qpid, via: r.via, sel: r.sel || '', matchType: 'qpid' };
+    }
+    r = findByName();
+    if (r) {
+      clickEl(r.el);
+      return { clicked: true, match: r.match, via: r.via, matchType: 'name' };
+    }
+    return { clicked: false };
+  }
+
+  // ---- カテゴリタブの click (ループ中に使う) ----
+  function clickCategory(label){
+    const selectors = '[role="tab"], [role="button"], button, a, [data-category], [data-testid*="tab"], [data-testid*="category"]';
+    const els = document.querySelectorAll(selectors);
+    for (const el of els) {
+      try {
+        const t = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+        if (!t) continue;
+        // label を substring で含むか exact か
+        if (t === label || t.toLowerCase() === label.toLowerCase() ||
+            new RegExp('^' + label.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '$', 'i').test(t) ||
+            new RegExp(label.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i').test(t)) {
+          clickEl(el);
+          return { matched: t.slice(0, 60) };
+        }
+      } catch(_) {}
+    }
+    return null;
+  }
+
+  // ---- scroll ロジック ----
+  // scrollTop 操作は Pragmatic lobby の virtual scroll が反応しないことがある.
+  // 真の user wheel event も dispatch して lazy-load を確実に trigger する.
   function scrollables(){
     const out = [];
     const root = document.scrollingElement || document.documentElement || document.body;
@@ -2750,33 +2876,217 @@ _LOBBY_TRY_CLICK_JS = r"""
     }
     return out;
   }
-  const scrollers = scrollables();
-  // Pass 1: default カテゴリで scroll 探索
-  for (let i = 0; i <= maxScroll; i++) {
-    const res = findAndClick();
-    if (res.clicked) return { ...res, attempts: i, scrollers: scrollers.length, phase: 'default' };
-    for (const sc of scrollers) {
+
+  // virtual scroll 対応: 複数の手法を全部試す. 1 つでも効けば lazy load 発火.
+  function scrollStep(sc, dirDown){
+    const delta = (sc.clientHeight || 500) * 0.85 * (dirDown ? 1 : -1);
+    let prev = 0;
+    try { prev = sc.scrollTop; } catch(_) {}
+
+    // 方法 1: scrollTo
+    try {
+      const target = Math.max(0, Math.min(sc.scrollHeight || 99999, prev + delta));
+      if (sc.scrollTo) sc.scrollTo({ top: target, behavior: 'instant' });
+      else sc.scrollTop = target;
+    } catch(_) {}
+
+    // 方法 2: WheelEvent (scroller 本体 + その中央にある element + window)
+    try {
+      const rect = sc.getBoundingClientRect ? sc.getBoundingClientRect() : {left:0, top:0, width:0, height:0};
+      const cx = rect.left + (rect.width || 0) / 2;
+      const cy = rect.top + (rect.height || 0) / 2;
+      const base = {
+        deltaY: delta, deltaMode: 0, bubbles: true, cancelable: true, composed: true,
+        clientX: cx, clientY: cy, view: window,
+      };
+      sc.dispatchEvent(new WheelEvent('wheel', base));
+      // 内部 child 要素にも投げる (scroll を消費する layer を探す)
       try {
-        const next = sc.scrollTop + sc.clientHeight * scrollRatio;
-        sc.scrollTop = next >= sc.scrollHeight ? 0 : next;
+        const inner = document.elementFromPoint ? document.elementFromPoint(cx, cy) : null;
+        if (inner && inner !== sc) inner.dispatchEvent(new WheelEvent('wheel', base));
+      } catch(_) {}
+      // window 全体にも投げる (iframe root scroll 用)
+      try { window.dispatchEvent(new WheelEvent('wheel', base)); } catch(_) {}
+    } catch(_) {}
+
+    // 方法 3: Keyboard PageDown/PageUp on document (virtual list が key event に反応する実装用)
+    try {
+      const kopts = {
+        key: dirDown ? 'PageDown' : 'PageUp',
+        code: dirDown ? 'PageDown' : 'PageUp',
+        keyCode: dirDown ? 34 : 33,
+        which: dirDown ? 34 : 33,
+        bubbles: true, cancelable: true, composed: true,
+      };
+      document.dispatchEvent(new KeyboardEvent('keydown', kopts));
+      document.dispatchEvent(new KeyboardEvent('keyup', kopts));
+    } catch(_) {}
+
+    // 方法 4: 'scroll' イベント明示 (listener が監視している場合に render trigger)
+    try {
+      sc.dispatchEvent(new Event('scroll', { bubbles: true }));
+    } catch(_) {}
+
+    let after = 0;
+    try { after = sc.scrollTop; } catch(_) {}
+    return { prev: prev, after: after, changed: Math.abs(after - prev) > 3 };
+  }
+
+  // 「最適な」scroller を選ぶ: scrollHeight が最大で、かつ virtual list の可能性が高いもの.
+  // 全 scroller を試すより効率的.
+  function pickBestScroller(list){
+    let best = null;
+    let bestDelta = 0;
+    for (const el of list) {
+      try {
+        const delta = (el.scrollHeight || 0) - (el.clientHeight || 0);
+        if (delta > bestDelta) {
+          bestDelta = delta;
+          best = el;
+        }
       } catch(_) {}
     }
+    return best;
   }
-  // Pass 2: 「All Tables / すべて」タブを click してから再探索 (Fortune 6/Privé 等対応)
-  const allHit = tryClickAllCategory();
-  if (allHit) {
+
+  // ---- 実行本体 ----
+  const scrollers = scrollables();
+  const phaseLog = [];
+
+  // 同期 sleep (JS は setTimeout しかないので, wait_for_timeout を呼ぶ Python 側経由では sync 不可.
+  // Playwright の evaluate は JS の await を許可するので Promise ベースで待機).
+  function sleepMs(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+  async function sweep(phaseLabel, downDir){
+    // scroll しながら探索. 最も大きな scroller を軸に回す + 他の scroller にも補助で scroll 投げる.
+    let lastDomCount = 0;
+    let stagnantRounds = 0;
+    const primary = pickBestScroller(scrollers);
     for (let i = 0; i <= maxScroll; i++) {
       const res = findAndClick();
-      if (res.clicked) return { ...res, attempts: i, scrollers: scrollers.length, phase: 'all-tab:' + allHit.matched };
+      if (res.clicked) return { ...res, attempts: i, phase: phaseLabel };
+      // DOM 進捗監視
+      let domCount = 0;
+      try { domCount = document.querySelectorAll('*').length; } catch(_) {}
+      if (domCount === lastDomCount) stagnantRounds++; else stagnantRounds = 0;
+      lastDomCount = domCount;
+      // 方向: 最初は下へ続ける (ユーザ報告: 下スクロールで Baccarat 1 が出る). 10回停滞で上→再度下.
+      const dirDown = stagnantRounds < 10 ? downDir : (stagnantRounds < 15 ? !downDir : downDir);
+      // primary scroller を先に全力で動かし, 他も補助.
+      let anyScrolled = false;
+      if (primary) {
+        const r = scrollStep(primary, dirDown);
+        if (r.changed) anyScrolled = true;
+      }
       for (const sc of scrollers) {
+        if (sc === primary) continue;
+        const r = scrollStep(sc, dirDown);
+        if (r.changed) anyScrolled = true;
+      }
+      // virtual scroll が lazy load する時間を与える (300ms).
+      await sleepMs(300);
+      if (!anyScrolled && stagnantRounds > 15) break;
+    }
+    return { clicked: false, attempts: maxScroll, phase: phaseLabel };
+  }
+
+  // Pass 1: 現状カテゴリで下方向 sweep
+  let r = await sweep('default-down', true);
+  if (r.clicked) return { ...r, scrollers: scrollers.length };
+
+  // Pass 2: カテゴリタブを順次 click してから sweep
+  for (const cat of categoryPatterns) {
+    const hit = clickCategory(cat);
+    if (!hit) continue;
+    phaseLog.push('cat:' + hit.matched);
+    await sleepMs(500);  // カテゴリ切替後 DOM 再構築を待つ
+    const q = findAndClick();
+    if (q.clicked) return { ...q, phase: 'cat-immediate:' + hit.matched, scrollers: scrollers.length };
+    const r2 = await sweep('cat:' + hit.matched, true);
+    if (r2.clicked) return { ...r2, scrollers: scrollers.length };
+  }
+
+  // 失敗時: lobby の全 tab/button テキストを列挙して返す.
+  // 「バカラ/スピード/日本語/その他」以外にカテゴリがあるか可視化するため.
+  function scanTabTexts(){
+    const labels = [];
+    const sel = '[role="tab"], [role="button"], button, a, [data-category], [data-testid*="tab"], [data-testid*="category"], [data-testid*="nav"], [class*="tab"], [class*="Tab"], [class*="category"], [class*="Category"], [class*="nav"], [class*="Nav"]';
+    try {
+      const els = document.querySelectorAll(sel);
+      const seen = new Set();
+      for (const el of els) {
         try {
-          const next = sc.scrollTop + sc.clientHeight * scrollRatio;
-          sc.scrollTop = next >= sc.scrollHeight ? 0 : next;
+          const t = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+          if (!t || t.length > 40) continue;
+          if (seen.has(t)) continue;
+          seen.add(t);
+          labels.push(t);
+          if (labels.length > 60) break;
         } catch(_) {}
       }
-    }
+    } catch(_) {}
+    return labels;
   }
-  return { clicked: false, attempts: maxScroll, scrollers: scrollers.length, allTab: allHit ? allHit.matched : null };
+  // 失敗時の診断情報: 現在 DOM に存在する qpid 候補文字列を列挙して返す.
+  // これで「該当 qpid が DOM に居ない」のか「居るのに click できていない」のか切り分け可能.
+  function scanAllQpids(){
+    const qpidRe = /\/snaps\/([A-Za-z0-9]+)\/|[?&]tableId=([A-Za-z0-9]+)/g;
+    const seen = new Set();
+    const samples = [];
+    try {
+      const all = document.querySelectorAll('*');
+      for (const el of all) {
+        try {
+          // href / src
+          if (el.href) {
+            const s = String(el.href);
+            let m;
+            while ((m = qpidRe.exec(s))) {
+              const q = m[1] || m[2];
+              if (q) seen.add(q);
+            }
+          }
+          if (el.src) {
+            const s = String(el.src);
+            let m;
+            while ((m = qpidRe.exec(s))) {
+              const q = m[1] || m[2];
+              if (q) seen.add(q);
+            }
+          }
+          // style attribute
+          const style = (el.getAttribute && el.getAttribute('style')) || '';
+          if (style) {
+            let m;
+            while ((m = qpidRe.exec(style))) {
+              const q = m[1] || m[2];
+              if (q) seen.add(q);
+            }
+          }
+          // data attributes
+          const ds = el.dataset || {};
+          for (const k of ['qpid', 'tableQpid', 'tableId', 'tableid']) {
+            if (ds[k]) seen.add(String(ds[k]));
+          }
+        } catch(_) {}
+      }
+    } catch(_) {}
+    return Array.from(seen).slice(0, 80);
+  }
+  const dom_qpids = scanAllQpids();
+  const visible_tabs = scanTabTexts();
+  return {
+    clicked: false,
+    attempts: maxScroll,
+    scrollers: scrollers.length,
+    phaseLog: phaseLog,
+    qpid: qpid,
+    candidates: normedCands.map(x => x.orig),
+    dom_qpids_found: dom_qpids,
+    dom_qpid_count: dom_qpids.length,
+    dom_total_elements: (function(){try{return document.querySelectorAll('*').length;}catch(_){return -1;}})(),
+    visible_tabs: visible_tabs,
+  };
 }
 """
 
@@ -2822,7 +3132,7 @@ def _peek_new_switch_decision(q, current_did: str, current_received_at: str = ""
     return found
 
 
-def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Optional[_PragmaticState] = None, on_tick=None, is_initial: bool = False, interrupt_check=None) -> None:
+def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Optional[_PragmaticState] = None, on_tick=None, is_initial: bool = False, interrupt_check=None, qpid_table_id: str = "") -> None:
     send_phase("entering", "OPEN STAKE")
     # 初回起動時のみ「Stake ログインしてください」表示. SWITCH_TABLE / recovery
     # から呼ばれた場合は action バーに残ったシグナル表示を上書きしない.
@@ -2996,8 +3306,10 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Opt
 
     # 候補文字列 (EN + JA + ユーザー指定) を列挙.
     candidates = _build_substr_candidates(table_substr) or []
-    if candidates:
-        print(f"[Stage 4] wait (<= {auto_click_wait_sec}s) candidates={candidates}", flush=True)
+    qpid = str(qpid_table_id or "").strip()
+    # qpid があれば文字列候補が空でも実行 (qpid だけで一意特定できる).
+    if candidates or qpid:
+        print(f"[Stage 4] wait (<= {auto_click_wait_sec}s) qpid={qpid or '-'} candidates={candidates}", flush=True)
         _dump_lobby_diag("initial")
         deadline = time.time() + float(max(auto_click_wait_sec, 1))
         while time.time() < deadline and not clicked:
@@ -3020,59 +3332,58 @@ def _join_table(page, *, table_substr: str, auto_click_wait_sec: int, state: Opt
                     pass
             lobby_frames = find_lobby_frames(page)
             clicked_info = None
+            _last_diag_attempt = getattr(_join_table, "_last_diag_attempt", {})
             for fr in lobby_frames:
                 try:
-                    res = fr.evaluate(_LOBBY_TRY_CLICK_JS, {"candidates": candidates, "maxScroll": 10})
+                    res = fr.evaluate(_LOBBY_TRY_CLICK_JS, {
+                        "qpid": qpid,
+                        "candidates": candidates,
+                        "maxScroll": 30,
+                    })
                 except Exception:
                     continue
                 if isinstance(res, dict) and res.get("clicked"):
                     clicked_info = res
                     try:
-                        send_log(f"[lobby] clicked via JS frame={getattr(fr,'url','')[:120]} match='{res.get('match')}' text='{str(res.get('text') or '')[:60]}'")
+                        send_log(
+                            f"[lobby] clicked type={res.get('matchType')} via={res.get('via')} "
+                            f"match='{res.get('match')}' phase='{res.get('phase','')}' "
+                            f"frame={getattr(fr,'url','')[:80]}"
+                        )
                     except Exception:
                         pass
                     clicked = True
                     break
-            if not clicked:
-                lobby_frame = _pick_lobby_frame()
-                for cand in candidates:
-                    if clicked:
-                        break
-                    try:
-                        locator = lobby_frame.get_by_text(re.compile(re.escape(cand), re.I))
-                        if locator.count() > 0:
-                            first = locator.first
-                            first.scroll_into_view_if_needed(timeout=3000)
-                            try:
-                                lobby_frame.locator(f"[role='button']:has-text('{cand}')").first.click(timeout=3000, force=True)
-                            except Exception:
-                                try:
-                                    lobby_frame.locator(f"button:has-text('{cand}')").first.click(timeout=3000, force=True)
-                                except Exception:
-                                    first.click(timeout=3000, force=True)
-                            clicked = True
-                            print(f"[Stage 4] clicked '{cand}' via text match", flush=True)
-                            break
-                    except Exception:
-                        pass
-                    # フォールバック: テキスト付きセレクタ
-                    for sel in [
-                        f"[role='button']:has-text('{cand}')",
-                        f"button:has-text('{cand}')",
-                        f"a:has-text('{cand}')",
-                        f"div:has-text('{cand}')",
-                    ]:
+                # 診断ログ: click 失敗時に「DOM に qpid 見えているか」を 15s 毎に 1 回だけ出力.
+                if isinstance(res, dict) and not res.get("clicked"):
+                    _now = time.time()
+                    _fu = getattr(fr, "url", "") or ""
+                    _last = _last_diag_attempt.get(_fu, 0)
+                    if _now - _last > 15:
+                        _last_diag_attempt[_fu] = _now
                         try:
-                            loc = lobby_frame.locator(sel)
-                            cnt = loc.count()
-                            if cnt > 0:
-                                loc.first.scroll_into_view_if_needed(timeout=3000)
-                                loc.first.click(timeout=3000, force=True)
-                                clicked = True
-                                print(f"[Stage 4] clicked via filtered fallback '{sel}' (count={cnt})", flush=True)
-                                break
-                        except Exception:
-                            continue
+                            dom_qs = res.get("dom_qpids_found", []) or []
+                            qpid_visible = qpid in dom_qs if qpid else False
+                            tabs = res.get("visible_tabs", []) or []
+                            send_log(
+                                f"[lobby DIAG] no-click frame={_fu[:60]} "
+                                f"qpid={qpid or '-'}({'VISIBLE' if qpid_visible else 'NOT_IN_DOM'}) "
+                                f"dom_qpid_count={res.get('dom_qpid_count',0)} "
+                                f"dom_els={res.get('dom_total_elements',-1)} "
+                                f"phaseLog={','.join(res.get('phaseLog',[]) or [])[:120]} "
+                                f"sample_qpids={','.join(dom_qs[:12])} "
+                                f"tabs={'|'.join(tabs[:20])}"
+                            )
+                        except Exception as _e:
+                            try: send_log(f"[lobby DIAG] log failed: {_e}")
+                            except Exception: pass
+            _join_table._last_diag_attempt = _last_diag_attempt  # type: ignore
+            # NOTE: 以前ここにあった Python 側 text/has-text fallback は削除.
+            # Playwright の get_by_text / has-text は substring 判定なので,
+            # 候補 "バカラ1" が "日本語スピードバカラ 1" に誤ヒットして
+            # 間違うテーブルに入ってしまう主因だった (実銭BET 時の致命リスク).
+            # JS matcher (Pass A strict) で見つからなかったら, そのまま
+            # 次のスクロール iteration に進めて "見つからないなら timeout" で失敗させる.
 
             # NOTE: 旧フォールバック「60s 経過後 nth(1) 無条件 click」を削除.
             # 候補が 1 つも match しない場合に lobby の 2 番目ボタン (= Speed Baccarat 6)
@@ -3326,11 +3637,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         except Exception:
             pass
         bal = state.stake_balance_by_currency.get(bet_currency)
-        if bal is None and state.stake_balance_by_currency and len(state.stake_balance_by_currency) == 1:
+        if bal is None and state.stake_balance_by_currency:
+            # fallback: configured bet_currency が Stake 上に存在しない時は
+            # 「今最も残高が多い通貨」を active 通貨として採用して表示する.
+            # (Stake は通常 USD/BTC/ETH/USDT など複数通貨を返すので, USD 固定だと
+            #  BTC プレイヤーで残高 0 表示になる原因だった).
             try:
-                bal = next(iter(state.stake_balance_by_currency.values()))
+                # USD 優先 → その次に額の大きい通貨.
+                if "USD" in state.stake_balance_by_currency:
+                    bal = state.stake_balance_by_currency.get("USD")
+                else:
+                    pairs = sorted(state.stake_balance_by_currency.items(), key=lambda kv: float(kv[1] or 0), reverse=True)
+                    if pairs:
+                        bal = pairs[0][1]
             except Exception:
-                pass
+                try:
+                    bal = next(iter(state.stake_balance_by_currency.values()))
+                except Exception:
+                    pass
         try:
             seq7.update_balance(bal)
         except Exception:
@@ -3712,34 +4036,68 @@ def main(argv: Optional[list[str]] = None) -> int:
         #   2. env BACOPY_TABLE_SUBSTR (GUI Settings)
         #   3. CLI default "Speed Baccarat"
         # これにより「GUI スタートで毎回 Speed Baccarat 6 に戻る」問題を解消.
-        def _fetch_master_last_table() -> str:
+        def _fetch_master_last_table() -> tuple[str, str]:
+            """最新 done SWITCH_TABLE から (table_name, qpid_table_id) を返す.
+
+            - decisions API は ASC (古い順) で返すので captured_at 降順にソート.
+            - decision root の qpid_table_id を優先 (Master UI 新実装).
+            - 無ければ decision snapshot.qpid_table_id を fallback.
+            - それでも無ければ snapshots API を引いて operator_table_id から qpid を補完.
+            """
             try:
                 import urllib.request as _ur
                 base = (os.getenv("BACOPY_API_URL") or "https://master.bafather.uk").rstrip("/")
                 key = os.getenv("BACOPY_API_KEY") or ""
                 req = _ur.Request(
-                    f"{base}/api/decisions?status=done&limit=50",
+                    f"{base}/api/decisions?status=done&limit=200",
                     headers={"Authorization": f"Bearer {key}"},
                 )
                 with _ur.urlopen(req, timeout=5) as resp:
                     data = json.load(resp)
-                for d in data.get("decisions", []) or []:
+                decisions = data.get("decisions", []) or []
+                decisions.sort(key=lambda x: (x.get("captured_at") or x.get("received_at") or ""), reverse=True)
+                for d in decisions:
                     fa = d.get("friend_action") or {}
-                    if isinstance(fa, dict) and str(fa.get("action") or "").upper() == "SWITCH_TABLE":
-                        tn = str(d.get("table_name") or "").strip()
-                        if tn:
-                            return tn
-            except Exception as _e:
+                    if not (isinstance(fa, dict) and str(fa.get("action") or "").upper() == "SWITCH_TABLE"):
+                        continue
+                    tn = str(d.get("table_name") or "").strip()
+                    if not tn:
+                        continue
+                    qpid = str(d.get("qpid_table_id") or "").strip()
+                    if not qpid:
+                        snap = d.get("snapshot") if isinstance(d.get("snapshot"), dict) else None
+                        if snap:
+                            qpid = str(snap.get("qpid_table_id") or "").strip()
+                    if not qpid:
+                        # 最終 fallback: snapshots API から operator_table_id で逆引き
+                        try:
+                            tid = str(d.get("table_id") or "").strip()
+                            if tid:
+                                req2 = _ur.Request(
+                                    f"{base}/api/snapshots?provider=pragmatic&table_id={tid}",
+                                    headers={"Authorization": f"Bearer {key}"},
+                                )
+                                with _ur.urlopen(req2, timeout=5) as r2:
+                                    snap2 = json.load(r2).get("snapshot") or {}
+                                qpid = str(snap2.get("qpid_table_id") or "").strip()
+                        except Exception:
+                            pass
+                    if qpid:
+                        print(f"[startup] resolved qpid for '{tn}': {qpid}", flush=True)
+                    return tn, qpid
+            except Exception:
                 pass
-            return ""
-        _master_target = _fetch_master_last_table()
+            return "", ""
+
+        _master_target, _master_qpid = _fetch_master_last_table()
         _initial_substr = _master_target or str(args.table_name_substr or "")
         if _master_target:
-            try: send_log(f"[startup] using Master UI last target: {_master_target}")
+            try: send_log(f"[startup] using Master UI last target: {_master_target} qpid={_master_qpid or '-'}")
             except Exception: pass
         _join_table(
             page,
             table_substr=_initial_substr,
+            qpid_table_id=_master_qpid,
             auto_click_wait_sec=int(args.auto_click_wait_sec),
             state=state,
             on_tick=lambda: heartbeat("running"),
@@ -4053,9 +4411,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 pass
 
             try:
+                # recovery 時も qpid を渡せば文字列マッチ不要で確実.
+                _recover_qpid = str(state.table_id or "").strip() if state else ""
                 _join_table(
                     page,
                     table_substr=target,
+                    qpid_table_id=_recover_qpid,
                     auto_click_wait_sec=int(args.auto_click_wait_sec),
                     state=state,
                     on_tick=lambda: heartbeat("running"),
@@ -4341,8 +4702,35 @@ def main(argv: Optional[list[str]] = None) -> int:
                         _post_result(did, {"error": "switch_table disabled (start executor with --allow-switch-table)"}, status="error")
                         continue
                     target = decision_table_name or (decision_snapshot.get("table_name") if isinstance(decision_snapshot, dict) else "") or ""
-                    if not target:
-                        _post_result(did, {"error": "table_name required for SWITCH_TABLE"}, status="error")
+                    # qpid 優先: decision root に qpid_table_id があればそれを使い, 無ければ
+                    # snapshot 内の qpid_table_id を使い, 無ければ snapshots API で補完.
+                    target_qpid = str(d.get("qpid_table_id") or "").strip()
+                    if not target_qpid and isinstance(decision_snapshot, dict):
+                        target_qpid = str(decision_snapshot.get("qpid_table_id") or "").strip()
+                    if not target_qpid:
+                        # fallback: Master UI (旧版) からの decision には qpid が無いので
+                        # snapshots API を operator_table_id で引いて qpid を補完する.
+                        _op_tid = str(d.get("table_id") or "").strip()
+                        if _op_tid:
+                            try:
+                                import urllib.request as _ur
+                                _base = (os.getenv("BACOPY_API_URL") or "https://master.bafather.uk").rstrip("/")
+                                _key = os.getenv("BACOPY_API_KEY") or ""
+                                _req = _ur.Request(
+                                    f"{_base}/api/snapshots?provider=pragmatic&table_id={_op_tid}",
+                                    headers={"Authorization": f"Bearer {_key}"},
+                                )
+                                with _ur.urlopen(_req, timeout=5) as _r:
+                                    _snap = json.load(_r).get("snapshot") or {}
+                                target_qpid = str(_snap.get("qpid_table_id") or "").strip()
+                                if target_qpid:
+                                    try: send_log(f"[qpid] resolved via snapshots API: {_op_tid} -> {target_qpid}")
+                                    except Exception: pass
+                            except Exception as _e:
+                                try: send_log(f"[qpid] snapshot lookup failed: {_e}")
+                                except Exception: pass
+                    if not target and not target_qpid:
+                        _post_result(did, {"error": "table_name or qpid_table_id required for SWITCH_TABLE"}, status="error")
                         continue
 
                     # If we're already in the requested table, treat as no-op (prevents queue stalls).
@@ -4387,6 +4775,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         _join_table(
                             page,
                             table_substr=str(target),
+                            qpid_table_id=target_qpid,
                             auto_click_wait_sec=int(args.auto_click_wait_sec),
                             state=state,
                             on_tick=lambda: heartbeat("running"),

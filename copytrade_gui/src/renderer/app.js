@@ -542,7 +542,11 @@ const DEFAULT_SETTINGS = {
   executor_id: 'gui-1',
   executor_label: 'MAIN-PC',
   stake_username: '',
-  table_name_substr: 'Speed Baccarat',
+  // 空がデフォルト. executor は Master API の最後の SWITCH_TABLE を優先し,
+  // なければ空 → lobby 自動 click しない (= admin が Master UI から選ぶのを待つ).
+  // 以前 "Speed Baccarat" をデフォルトにしていたが, これが lobby 先頭カード
+  // (= Speed Baccarat 6) に毎回入る原因だったので削除.
+  table_name_substr: '',
   auto_click_wait_sec: 90,
   allow_switch_table: true,
   allow_banker: false,
@@ -956,7 +960,13 @@ function loadSettings() {
     merged.executor_id = String(merged.executor_id || DEFAULT_SETTINGS.executor_id);
     merged.executor_label = String(merged.executor_label || DEFAULT_SETTINGS.executor_label);
     merged.stake_username = String(merged.stake_username || '');
-    merged.table_name_substr = String(merged.table_name_substr || DEFAULT_SETTINGS.table_name_substr);
+    // legacy migration: 旧デフォルト "Speed Baccarat" が localStorage に残っていたら空にする.
+    // (毎回 Speed Baccarat 6 に入ってしまう原因だった).
+    if (String(merged.table_name_substr || '').trim() === 'Speed Baccarat') {
+      merged.table_name_substr = '';
+    } else {
+      merged.table_name_substr = String(merged.table_name_substr || '');
+    }
     merged.auto_click_wait_sec = Number.isFinite(Number(merged.auto_click_wait_sec)) ? Math.max(10, Math.floor(Number(merged.auto_click_wait_sec))) : DEFAULT_SETTINGS.auto_click_wait_sec;
     merged.allow_switch_table = !!merged.allow_switch_table;
     merged.allow_banker = !!merged.allow_banker;

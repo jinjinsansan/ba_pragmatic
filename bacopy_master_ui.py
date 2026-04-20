@@ -441,7 +441,7 @@ const LS = {
   favorites:'bacopy_master_favorites', mode:'bacopy_master_mode',
   stopped:'bacopy_master_stopped',
 };
-let selected = { provider:'pragmatic', table_id:'', table_name:'' };
+let selected = { provider:'pragmatic', table_id:'', table_name:'', qpid_table_id:'' };
 let favorites = new Set();
 let prevHands = {};  // tid -> hands (for flash detection)
 let lastDecisionWatch = null;
@@ -961,11 +961,14 @@ function renderTables(){
       <div class="tmeta"><span>${escHtml(players)}人</span><span>${escHtml(hands)}ハンド</span></div>`;
     btn.onclick = () => {
       const wasSame = selected.table_id === String(it.tid);
-      selected = { provider, table_id:String(it.tid), table_name:name };
+      // qpid_table_id を snapshot から回収して一緒に保持する (executor が
+      // lobby DOM 走査でユニーク ID マッチするため).
+      const qpid = String((it.s && it.s.qpid_table_id) || '');
+      selected = { provider, table_id:String(it.tid), table_name:name, qpid_table_id:qpid };
       // UI には日本語表示を優先.
       const selT = document.getElementById('selectedTable');
       if(selT){ selT.textContent = toJaTableName(name||it.tid); selT.title = name||''; }
-      document.getElementById('selectedMeta').textContent='provider='+provider+' table_id='+it.tid;
+      document.getElementById('selectedMeta').textContent='provider='+provider+' table_id='+it.tid+(qpid?(' qpid='+qpid):'');
       persistState();
       renderTables();
       renderDetailPanel();
@@ -1201,6 +1204,9 @@ function sendDecision(action, side){
   const payload = {
     decision_id:did, provider,
     table_id:selected.table_id, table_name:selected.table_name,
+    // qpid_table_id を root に追加. executor はこれを lobby DOM 走査の
+    // unique key として使って「バカラ 1 と バカラ 10 の取り違え」等の誤爆を根絶する.
+    qpid_table_id:String(selected.qpid_table_id||''),
     target_executor_id,
     friend_action:{action, side:side||'', amount:0, note},
   };

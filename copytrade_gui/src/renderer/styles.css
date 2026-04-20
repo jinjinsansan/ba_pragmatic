@@ -323,14 +323,18 @@ html[data-variant="user"] .os-tag { display: none !important; }
 /* ============================================================
    STATS ROW
    ============================================================ */
-.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+/* 6 カード (BALANCE/MASTER/SERVICE CREDIT/SESSION/BETS/WIN RATE) を常に 1 行に固定.
+   これで縦長狭窓時も stats-row が 1 行で収まり, 下のログ領域が十分見える.
+   (auto-fit だと 170px 未満に折り返して 3 行になり ログが画面外に押し出されていた) */
+.stats-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
 .stat-card {
   position: relative;
   background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px 10px; text-align: center;
+  border-radius: var(--radius); padding: 8px 6px; text-align: center;
   box-shadow: inset 0 1px 0 rgba(0,229,255,0.06), 0 2px 14px rgba(0,0,0,0.45);
   transition: border-color 0.2s, box-shadow 0.2s;
   overflow: hidden;
+  min-width: 0;  /* grid item が長い値 (e.g. "$12345.67") で縮まないのを許可 */
 }
 .stat-card::before {
   content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
@@ -347,12 +351,14 @@ html[data-variant="user"] .os-tag { display: none !important; }
 }
 .stat-card.accent::before { opacity: 0.7; }
 .stat-label {
-  font-family: var(--font-hud); font-size: 10px; font-weight: 600;
-  letter-spacing: 0.14em; color: var(--text-muted); margin-bottom: 5px; text-transform: uppercase;
+  font-family: var(--font-hud); font-size: 8px; font-weight: 600;
+  letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 3px; text-transform: uppercase;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .stat-value {
-  font-family: var(--font-mono); font-size: 16px; font-weight: 700;
+  font-family: var(--font-mono); font-size: 13px; font-weight: 700;
   font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .stat-value.positive { color: var(--win); text-shadow: 0 0 8px rgba(0,255,136,0.3); }
 .stat-value.negative { color: var(--lose); text-shadow: 0 0 8px rgba(255,51,102,0.3); }
@@ -721,7 +727,11 @@ html[data-variant="user"] .os-tag { display: none !important; }
   background: linear-gradient(180deg, rgba(2, 4, 9, 0.96) 0%, rgba(2, 4, 9, 0.85) 100%);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  /* 最低 180px は必ず確保. main-content は flex col なのでここで flex を 1
+     にすると余った縦スペースを log が全部食ってくれる (ba と同じ挙動) */
+  min-height: 180px;
   height: clamp(220px, 40vh, 520px);
+  flex: 1 1 auto;
   overflow-y: auto;
   padding: 10px 12px;
   box-shadow: 0 0 24px rgba(0, 229, 255, 0.12);
@@ -1071,4 +1081,12 @@ body.animations-on .neon-frame {
   .btn-gear .btn-label { display: inline; }
   .setup-card { width: 92vw; }
   .master-grid { grid-template-columns: 1fr; }
+  /* 狭窓: 6 カードを 3x2 グリッドへ (1 行 6 カードは潰れすぎて読めないため) */
+  .stats-row { grid-template-columns: repeat(3, 1fr); }
+}
+/* さらに狭い (縦長運用) の場合: 2x3 まで縮退 */
+@media (max-width: 520px) {
+  .stats-row { grid-template-columns: repeat(2, 1fr); gap: 5px; }
+  .stat-card { padding: 6px 5px; }
+  .stat-value { font-size: 12px; }
 }
