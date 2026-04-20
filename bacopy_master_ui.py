@@ -407,10 +407,11 @@ body.switching .table-cell.selected{animation:switchingPulse 1.4s ease-in-out in
         <div id="switchStatus" class="value small" style="text-align:right;color:var(--text-muted);max-width:60%"></div>
       </div>
       <div id="broadcastList" class="value small" style="color:var(--text-muted);font-family:var(--font-mono)">-</div>
-      <button id="btnLook" class="big-btn look" title="全GUIに様子見シグナル">LOOK<span class="sub">様子見</span></button>
       <button id="btnP" class="big-btn player" title="全GUIにPLAYER BET">PLAYER<span class="sub">勝負</span></button>
-      <button id="btnB" class="big-btn banker hidden-by-default">BANKER<span class="sub">勝負</span></button>
+      <button id="btnB" class="big-btn banker" title="全GUIにBANKER BET">BANKER<span class="sub">勝負</span></button>
       <button id="btnT" class="big-btn tie hidden-by-default">TIE<span class="sub">勝負</span></button>
+      <!-- btnLook は削除済 (UX: LOOK は使われていない). JS も無効化. -->
+      <button id="btnLook" style="display:none"></button>
       <div id="lastActionBox" class="act-status">待機中</div>
     </div>
   </aside>
@@ -1188,10 +1189,9 @@ function updateButtonsGating(){
 }
 
 function updateButtonVisibility(){
-  const anyB = _state.executors.some(e=>e.caps&&e.caps.allow_banker);
   const anyT = _state.executors.some(e=>e.caps&&e.caps.allow_tie);
-  document.body.classList.toggle('show-bt', !!(anyB||anyT));
-  document.getElementById('btnB').style.display = anyB?'':'none';
+  // BANKER は常時表示 (PLAYER と同列の基本ボタン). TIE のみオプション表示.
+  document.body.classList.toggle('show-bt', true);  // BANKER 常時表示なのでレイアウト幅確保.
   document.getElementById('btnT').style.display = anyT?'':'none';
 }
 
