@@ -495,6 +495,14 @@ class Collector:
 
             last_report = time.time()
             last_db_stats = time.time()
+            # WS 受信ウォッチドッグ: 一定時間 msgs が増えなければ self-restart させる.
+            # dga WS の disconnect / Stake セッション失効で受信停止しても収集器は
+            # プロセスだけ生きている状態になるため, systemd Restart=always に任せて
+            # クリーン再起動するほうが確実.
+            ws_watchdog_stale_sec = int(os.getenv("BACOPY_COLLECTOR_WS_STALE_SEC", "180"))  # 3 min
+            last_msg_check_at = time.time()
+            last_msg_count = self.stats_msg
+            last_msg_change_at = time.time()
             while not self.stop_flag:
                 # page.wait_for_timeout yields to Playwright event loop, letting
                 # WebSocket frame handlers fire in real time (time.sleep would block them)
@@ -508,6 +516,21 @@ class Collector:
                         f"tables={len(self.buffers)}"
                     )
                     last_report = now
+
+                # WS watchdog: 30s おきに msg 増分を check, stale なら exit(1) → systemd が restart.
+                if now - last_msg_check_at >= 30.0:
+                    if self.stats_msg > last_msg_count:
+                        last_msg_count = self.stats_msg
+                        last_msg_change_at = now
+                    last_msg_check_at = now
+                    silence = now - last_msg_change_at
+                    if silence >= ws_watchdog_stale_sec:
+                        logger.error(
+                            f"[ws-watchdog] no new msgs for {int(silence)}s "
+                            f"(stats_msg={self.stats_msg}). Triggering self-restart via exit(1)."
+                        )
+                        # 既存の snapshot push 完遂を待たず exit (systemd が Restart=always で拾う).
+                        os._exit(1)
                 if now - last_db_stats >= 300:
                     s = stats()
                     logger.info(f"[DB] {s}")
