@@ -4220,18 +4220,29 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         def wait_bets_open(timeout_sec: float) -> Optional[str]:
             start = time.time()
+            hard_deadline = start + float(timeout_sec)
             prev_id = state.bets_open_game_id
             prev_at = state.last_bets_open_at
 
             def _pred() -> bool:
                 nonlocal game_frame
-                game_frame = _refresh_game_frame(page, game_frame)
+                # wall-clock 優先の hard deadline: _wait_for の tick と別系で時間管理.
+                # page.reload / frame detach で _wait_for が事実上 hang するケースへの保険.
+                if time.time() >= hard_deadline:
+                    return True  # caller が state.bets_open_game_id を確認して None を返す
+                try:
+                    game_frame = _refresh_game_frame(page, game_frame)
+                except Exception:
+                    pass
                 try:
                     if state.game_ws_url:
                         page.evaluate("(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)", state.game_ws_url)
                 except Exception:
                     pass
-                _pump_ws_events(page, game_frame, state)
+                try:
+                    _pump_ws_events(page, game_frame, state)
+                except Exception:
+                    pass
                 if not state.bets_open_game_id:
                     return False
                 if state.bets_closed_game_id == state.bets_open_game_id:
@@ -4244,7 +4255,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return (time.time() - state.last_bets_open_at) < 20.0
 
             ok = _wait_for(_pred, timeout_sec=timeout_sec, tick_ms=200, page=page, on_tick=lambda: heartbeat("running"))
-            return state.bets_open_game_id if ok else None
+            # hard_deadline 経由で True 返しても「実際に bets open」かどうかは再検証.
+            if not ok:
+                return None
+            if not state.bets_open_game_id:
+                return None
+            if state.bets_closed_game_id == state.bets_open_game_id:
+                return None
+            return state.bets_open_game_id
 
         def wait_bet_confirm(
             timeout_sec: float,
@@ -4898,15 +4916,23 @@ def main(argv: Optional[list[str]] = None) -> int:
                 except Exception:
                     pass
 
+                # BET 全体のハード期限. wait_bets_open + session dismiss + ws_send + confirm までで
+                # 最大 35 秒で必ず抜ける. これを超えたら "bet flow timeout" で明示的 error.
+                # (過去ログで session_elsewhere → page.reload が wait_bets_open 中に発火して
+                #  frame が detach → 予期しない 10+ 分の hang が確認された事故を防ぐ)
+                _bet_flow_deadline = time.time() + 35.0
+
                 # Wait for betting open & current game id
-                # Do not reset existing state here; betsopen/timer may have already arrived.
                 _wait_open_start = time.time()
-                game_id = wait_bets_open(timeout_sec=float(args.bet_timeout_sec))
+                # bet_timeout_sec を最大 15s にキャップ (過去 19s 待ちが発生していた — 次ラウンドまで
+                # 待つのは UX 悪化の主因. 短くして "次窓で送り直してください" エラーの方がマシ).
+                _wbo_to = min(float(args.bet_timeout_sec), 15.0)
+                game_id = wait_bets_open(timeout_sec=_wbo_to)
                 _wait_open_ms = int((time.time() - _wait_open_start) * 1000)
                 if not game_id:
                     _post_result(
                         did,
-                        {"error": "betsopen timeout", "timeout_sec": args.bet_timeout_sec, "waited_ms": _wait_open_ms},
+                        {"error": "betsopen timeout", "timeout_sec": _wbo_to, "waited_ms": _wait_open_ms},
                         status="error",
                     )
                     consecutive_hard_errors += 1
@@ -4918,6 +4944,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                     heartbeat("error")
                     continue
 
+                # deadline 超過チェック.
+                if time.time() > _bet_flow_deadline:
+                    _post_result(did, {"error": "bet_flow_timeout_after_bets_open", "waited_ms": _wait_open_ms}, status="error")
+                    try: send_action("⏰ BET フロー全体タイムアウト — 次窓で再送してください")
+                    except Exception: pass
+                    continue
+
                 op_tid = state.operator_table_id or decision_table_id or str(args.only_table_id or "")
                 if not op_tid:
                     _post_result(did, {"error": "operator_table_id unknown (set --only-table-id or ensure chat mapping)"}, status="error")
@@ -4926,45 +4959,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                     heartbeat("error")
                     continue
 
-                # Session elsewhere 対応: すぐブロックせず 1 秒だけ再解除を試す.
-                # 背景: 他 Stake セッション (別ブラウザ/スマホ/同 IP 別プロファイル) がある場合に
-                # Stake は "他の場所でセッションが開始されました" モーダルを出す. 毎分発生し得るが
-                # main loop が 0.5s 周期で dismiss している. BET 到達時に一時的に
-                # unresolved=True 状態のことがあり, 即 block は厳し過ぎる. 1 秒 retry して
-                # dismiss 成功していれば BET 続行する.
+                # Session elsewhere — block せず log のみ. 理由:
+                # (1) Pragmatic 自体が intermittent にこのモーダルを出すため (user 検証済)
+                # (2) main loop で毎秒 dismiss しており, 通常数秒で resolved になる
+                # (3) block + retry loop を置くと _dismiss_session_elsewhere 内部の
+                #     page.reload (20s 経過で発火) と競合し BET 処理が無限 hang する事故あり
+                # → block は廃止. ws_send に進み, 失敗したら自然に error 返却.
                 if state.session_elsewhere_unresolved:
                     try:
-                        send_action("🚫 他セッション検知中 — 自動解除試行 (最大1s)...")
-                    except Exception: pass
-                    for _retry in range(10):  # 10 x 100ms
-                        try:
-                            _dismiss_session_elsewhere_modal(page, state)
-                        except Exception:
-                            pass
-                        page.wait_for_timeout(100)
-                        if not state.session_elsewhere_unresolved:
-                            break
-                    if state.session_elsewhere_unresolved:
-                        _post_result(
-                            did,
-                            {
-                                "error": "session_taken_by_other_client (BET blocked after 1s retry)",
-                                "session_elsewhere_observed": state.session_elsewhere_observed,
-                                "session_elsewhere_last_at": state.session_elsewhere_last_at,
-                                "session_elsewhere_resolved_at": state.session_elsewhere_resolved_at,
-                                "hint": "別ブラウザ/スマホで Stake ログインしていませんか? そのセッションを全部閉じてから再送してください.",
-                            },
-                            status="error",
-                        )
-                        last_error = "session_taken_by_other_client"
-                        try:
-                            send_action("❌ 他セッション解除できず — 別ブラウザ/スマホの Stake を全部閉じてください")
-                        except Exception: pass
-                        heartbeat("error")
-                        continue
-                    try:
-                        send_action("✓ 他セッション解除成功 — BET 続行")
-                    except Exception: pass
+                        send_log("[bet][warn] session_elsewhere_unresolved=True — proceeding anyway (Pragmatic intermittent modal, not a real conflict)")
+                    except Exception:
+                        pass
 
                 # Timer gating (best-effort)
                 tsec = _parse_timer_sec(state.last_timer)
