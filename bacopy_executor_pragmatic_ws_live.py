@@ -4892,17 +4892,29 @@ def main(argv: Optional[list[str]] = None) -> int:
                     )
                     continue
 
+                # BET 開始: ユーザ向け可視化 — 何が起きているか一目で分かるようにする.
+                try:
+                    send_action(f"⏳ BET 窓待機中... (最大 {int(args.bet_timeout_sec)}s)")
+                except Exception:
+                    pass
+
                 # Wait for betting open & current game id
                 # Do not reset existing state here; betsopen/timer may have already arrived.
+                _wait_open_start = time.time()
                 game_id = wait_bets_open(timeout_sec=float(args.bet_timeout_sec))
+                _wait_open_ms = int((time.time() - _wait_open_start) * 1000)
                 if not game_id:
                     _post_result(
                         did,
-                        {"error": "betsopen timeout", "timeout_sec": args.bet_timeout_sec},
+                        {"error": "betsopen timeout", "timeout_sec": args.bet_timeout_sec, "waited_ms": _wait_open_ms},
                         status="error",
                     )
                     consecutive_hard_errors += 1
                     last_error = "betsopen timeout"
+                    try:
+                        send_action(f"⏰ 賭けウィンドウが開かずタイムアウト ({_wait_open_ms}ms) — 次ラウンドで再送してください")
+                    except Exception:
+                        pass
                     heartbeat("error")
                     continue
 
@@ -4914,25 +4926,45 @@ def main(argv: Optional[list[str]] = None) -> int:
                     heartbeat("error")
                     continue
 
-                # Safety: block betting if Stake indicates session was taken elsewhere.
-                # NOTE: main loop が毎秒 _dismiss_session_elsewhere_modal を呼んでいるので
-                # BET 毎の追加チェックは不要. むしろ DOM 走査の偽陽性で session_elsewhere_unresolved
-                # が一時的に True になり BET が不当に block される事故を招く.
-                # → ここでは state.session_elsewhere_unresolved フラグを信じるのみ.
+                # Session elsewhere 対応: すぐブロックせず 1 秒だけ再解除を試す.
+                # 背景: 他 Stake セッション (別ブラウザ/スマホ/同 IP 別プロファイル) がある場合に
+                # Stake は "他の場所でセッションが開始されました" モーダルを出す. 毎分発生し得るが
+                # main loop が 0.5s 周期で dismiss している. BET 到達時に一時的に
+                # unresolved=True 状態のことがあり, 即 block は厳し過ぎる. 1 秒 retry して
+                # dismiss 成功していれば BET 続行する.
                 if state.session_elsewhere_unresolved:
-                    _post_result(
-                        did,
-                        {
-                            "error": "session_taken_by_other_client (BET blocked)",
-                            "session_elsewhere_observed": state.session_elsewhere_observed,
-                            "session_elsewhere_last_at": state.session_elsewhere_last_at,
-                            "session_elsewhere_resolved_at": state.session_elsewhere_resolved_at,
-                        },
-                        status="error",
-                    )
-                    last_error = "session_taken_by_other_client"
-                    heartbeat("error")
-                    continue
+                    try:
+                        send_action("🚫 他セッション検知中 — 自動解除試行 (最大1s)...")
+                    except Exception: pass
+                    for _retry in range(10):  # 10 x 100ms
+                        try:
+                            _dismiss_session_elsewhere_modal(page, state)
+                        except Exception:
+                            pass
+                        page.wait_for_timeout(100)
+                        if not state.session_elsewhere_unresolved:
+                            break
+                    if state.session_elsewhere_unresolved:
+                        _post_result(
+                            did,
+                            {
+                                "error": "session_taken_by_other_client (BET blocked after 1s retry)",
+                                "session_elsewhere_observed": state.session_elsewhere_observed,
+                                "session_elsewhere_last_at": state.session_elsewhere_last_at,
+                                "session_elsewhere_resolved_at": state.session_elsewhere_resolved_at,
+                                "hint": "別ブラウザ/スマホで Stake ログインしていませんか? そのセッションを全部閉じてから再送してください.",
+                            },
+                            status="error",
+                        )
+                        last_error = "session_taken_by_other_client"
+                        try:
+                            send_action("❌ 他セッション解除できず — 別ブラウザ/スマホの Stake を全部閉じてください")
+                        except Exception: pass
+                        heartbeat("error")
+                        continue
+                    try:
+                        send_action("✓ 他セッション解除成功 — BET 続行")
+                    except Exception: pass
 
                 # Timer gating (best-effort)
                 tsec = _parse_timer_sec(state.last_timer)
@@ -4979,7 +5011,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
                 amt = float(seq7.bet_amount())
                 send_phase(f"betting_{side.lower()}", f"${amt:.0f}")
-                send_action(f"BET {side} ${amt:.0f}")
+                send_action(f"📤 BET {side} ${amt:.0f} 送信中...")
                 stake_cur = bet_currency
                 if stake_cur not in state.stake_balance_by_currency and state.stake_balance_by_currency:
                     if len(state.stake_balance_by_currency) == 1:
