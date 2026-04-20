@@ -138,6 +138,11 @@ h2 .hctl{font-family:var(--font-mono);font-size:10px;color:var(--text-muted);let
 .big-btn .sub{font-size:10px;letter-spacing:3px;opacity:0.7;font-weight:400}
 .big-btn:disabled{opacity:0.25;cursor:not-allowed}
 .big-btn:not(:disabled):hover{transform:translateY(-2px);box-shadow:0 0 28px rgba(0,229,255,0.4)}
+/* クリック感: 押下で 2px 沈めて影減らし → 触覚的フィードバック */
+.big-btn:not(:disabled):active{transform:translateY(2px) scale(0.98);box-shadow:0 0 10px rgba(0,229,255,0.6) inset;transition:transform 0.05s, box-shadow 0.05s}
+.big-btn:not(:disabled):active::before{content:"";position:absolute;inset:0;border-radius:inherit;background:rgba(255,255,255,0.15);animation:btnFlash 0.3s ease-out;pointer-events:none}
+.big-btn{position:relative;overflow:hidden}
+@keyframes btnFlash{0%{opacity:0.8;transform:scale(0.8)}100%{opacity:0;transform:scale(1.5)}}
 .big-btn.look{color:var(--text);border-color:var(--border-h)}
 .big-btn.look:not(:disabled):hover{background:rgba(120,136,160,0.12)}
 .big-btn.player{color:var(--player);border-color:rgba(0,191,255,0.55);background:linear-gradient(180deg,rgba(0,191,255,0.22),rgba(0,191,255,0.05));text-shadow:0 0 12px rgba(0,191,255,0.5)}
@@ -1204,12 +1209,54 @@ function updateActionWatch(){
   const status=d.status||'', res=d.result||{}, fa=d.friend_action||{};
   const actJa = {LOOK:'様子見','BET':'BET','SWITCH_TABLE':'テーブル移動'}[fa.action]||fa.action||'';
   const actLabel = actJa + (fa.side?('/'+fa.side):'');
-  if(status==='processing'||status==='pending'){ setActionBox('['+actLabel+'] 処理中...','processing'); return; }
-  if(status==='error'){ setActionBox('['+actLabel+'] エラー: '+(res.error||'error'),'err'); lastDecisionWatch=null; return; }
+  // pending: GUI へ送信された直後 (API 受理後)
+  if(status==='pending'){ setActionBox('['+actLabel+'] 📨 送信 → GUI 受信待ち...','processing'); return; }
+  // processing: executor が ack 送信後, 結果待ち中
+  if(status==='processing'){
+    // ack に bet_placed 情報があれば BET 確定として扱う
+    const ack = d.ack || {};
+    const confirmed = ack.bet_confirm || res.bet_confirmed || res.bet_confirm;
+    if(fa.action === 'BET' && confirmed){
+      setActionBox('['+actLabel+'] ✓ BET確定 → 結果待ち...','processing');
+    } else if(fa.action === 'BET'){
+      setActionBox('['+actLabel+'] ⏳ BET送信中...','processing');
+    } else {
+      setActionBox('['+actLabel+'] 処理中...','processing');
+    }
+    return;
+  }
+  if(status==='error'){
+    const err = (res.error||'error').toString();
+    const short = err.slice(0,80);
+    setActionBox('['+actLabel+'] ❌ '+short,'err');
+    lastDecisionWatch=null;
+    return;
+  }
   if(status==='done'){
-    let detail = res.outcome || (res.bet_confirm?'BET確定':'') || res.note || '完了';
+    const oc = String(res.outcome||'').toLowerCase();
+    const side = String(fa.side||'').toLowerCase();
+    let icon = '✓', cls = 'ok';
+    let detail = '';
+    if(fa.action === 'BET' && oc){
+      // 3-way 明示判定: WIN / TIE(push) / LOSE
+      if(oc === 'tie' && side !== 'tie'){
+        icon = '⚖️'; cls = 'pending';
+        detail = 'TIE (引き分け・返却)';
+      } else if(oc === side){
+        icon = '🏆'; cls = 'ok';
+        detail = 'WIN '+oc.toUpperCase();
+      } else if(side === 'tie' && oc === 'tie'){
+        icon = '🏆'; cls = 'ok';
+        detail = 'TIE WIN';
+      } else {
+        icon = '❌'; cls = 'err';
+        detail = 'LOSE (winner='+oc+')';
+      }
+    } else {
+      detail = oc || res.note || '完了';
+    }
     if(res.stake_delta!=null){ const n=Number(res.stake_delta); detail += ' ('+(n>=0?'+':'')+'$'+n.toFixed(2)+')'; }
-    setActionBox('['+actLabel+'] '+detail,'ok');
+    setActionBox('['+actLabel+'] '+icon+' '+detail, cls);
     lastDecisionWatch=null;
     return;
   }

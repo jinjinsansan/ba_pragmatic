@@ -4487,11 +4487,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                     heartbeat("error")
                     continue
 
-                # Safety: block betting if Stake indicates this account session was taken elsewhere.
-                try:
-                    _dismiss_session_elsewhere_modal(page, state)
-                except Exception:
-                    pass
+                # Safety: block betting if Stake indicates session was taken elsewhere.
+                # NOTE: main loop が毎秒 _dismiss_session_elsewhere_modal を呼んでいるので
+                # BET 毎の追加チェックは不要. むしろ DOM 走査の偽陽性で session_elsewhere_unresolved
+                # が一時的に True になり BET が不当に block される事故を招く.
+                # → ここでは state.session_elsewhere_unresolved フラグを信じるのみ.
                 if state.session_elsewhere_unresolved:
                     _post_result(
                         did,
@@ -4654,18 +4654,26 @@ def main(argv: Optional[list[str]] = None) -> int:
                 rr_meta = seq7.apply_round(outcome, won, bet_side=bet_side_low)
 
                 try:
+                    # 3-way 分岐を厳密に (TIE / WIN / LOSS). won is None でも LOSE にしない.
                     if outcome == "tie" and bet_side_low != "tie":
-                        send_action("Tie — BET returned")
-                    elif won:
+                        # PLAYER/BANKER BET で TIE は PUSH (引き分け, 賭け金返却)
+                        if after_balance is not None:
+                            send_action(f"TIE (引き分け) {side} — BET returned. Balance: ${after_balance:.2f}")
+                        else:
+                            send_action(f"TIE (引き分け) {side} — BET returned")
+                    elif won is True:
                         if after_balance is not None:
                             send_action(f"WIN {side} ${amt:.0f}. Balance: ${after_balance:.2f}")
                         else:
                             send_action(f"WIN {side} ${amt:.0f}")
-                    else:
+                    elif won is False:
                         if after_balance is not None:
                             send_action(f"LOSE {side} ${amt:.0f}. Balance: ${after_balance:.2f}")
                         else:
                             send_action(f"LOSE {side} ${amt:.0f}")
+                    else:
+                        # 万一 won=None が別経路で来た時の保険 (PUSH 扱い)
+                        send_action(f"PUSH {side} — BET returned")
                     send_phase("idle", "ARMED")
 
                     send_msg(
