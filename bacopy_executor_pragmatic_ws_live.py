@@ -31,6 +31,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse, urlsplit, urlunsplit
 
 import requests
+from email.utils import parsedate_to_datetime
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 
@@ -340,6 +341,61 @@ class Seq7Session:
             "should_reset": self.should_reset(),
         }
 
+# Worker-compatible WS bridge (uses self instead of window; no async helpers needed)
+_WS_BRIDGE_WORKER_INIT = r"""
+(() => {
+  try {
+    if (self.__bacopy_ws_bridge_installed) return;
+    self.__bacopy_ws_bridge_installed = true;
+    self.__bacopy_sockets = [];
+
+    const OrigWS = WebSocket;
+
+    function WrappedWebSocket(url, protocols) {
+      const ws = protocols ? new OrigWS(url, protocols) : new OrigWS(url);
+      try {
+        ws.__bacopy_url = url;
+        self.__bacopy_sockets.push(ws);
+        ws.__bacopy_orig_send = ws.send.bind(ws);
+      } catch (e) {}
+      return ws;
+    }
+    WrappedWebSocket.prototype = OrigWS.prototype;
+    WrappedWebSocket.OPEN = OrigWS.OPEN;
+    WrappedWebSocket.CLOSED = OrigWS.CLOSED;
+    WrappedWebSocket.CLOSING = OrigWS.CLOSING;
+    WrappedWebSocket.CONNECTING = OrigWS.CONNECTING;
+    self.WebSocket = WrappedWebSocket;
+
+    // Also spy on any sockets already captured before we installed the hook
+    self.__bacopy_ws_send = (match, payload) => {
+      const urls = [];
+      for (const ws of (self.__bacopy_sockets || [])) {
+        try {
+          const u = ws.__bacopy_url || ws.url || "";
+          if (u) urls.push(u);
+          if (ws.readyState === OrigWS.OPEN && (!match || u.includes(match))) {
+            if (ws.__bacopy_orig_send) {
+              ws.__bacopy_orig_send(payload);
+            } else {
+              ws.send(payload);
+            }
+            return { ok: true, url: u, via: "worker" };
+          }
+        } catch (e) {}
+      }
+      return { ok: false, error: "ws_not_found", known: urls.slice(0, 20), via: "worker" };
+    };
+
+    // Scan existing WebSocket-like objects if game already started
+    self.__bacopy_ws_known = () => (self.__bacopy_sockets || []).map(ws => ({
+      url: ws.__bacopy_url || ws.url || "",
+      readyState: ws.readyState,
+    }));
+  } catch (e) {}
+})();
+"""
+
 # Captures WebSocket objects so python can trigger ws.send(payload) via page.evaluate().
 _WS_BRIDGE_INIT = r"""
 (() => {
@@ -496,6 +552,49 @@ def _utc_now_iso() -> str:
 
 def _epoch_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _parse_iso_ts(value: str) -> Optional[float]:
+    try:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        return datetime.fromisoformat(raw).timestamp()
+    except Exception:
+        return None
+
+
+_SERVER_TIME_OFFSET_SEC = 0.0
+_SERVER_TIME_OFFSET_AT = 0.0
+
+
+def _refresh_server_time_offset() -> None:
+    global _SERVER_TIME_OFFSET_SEC, _SERVER_TIME_OFFSET_AT
+    try:
+        r = _http_request(
+            "GET",
+            f"{_api_url()}/api/status",
+            headers=_headers(),
+            timeout=(_api_connect_timeout_sec(), _api_read_timeout_sec()),
+            retries=1,
+        )
+        date_hdr = r.headers.get("Date")
+        if not date_hdr:
+            return
+        dt = parsedate_to_datetime(date_hdr)
+        if not dt:
+            return
+        _SERVER_TIME_OFFSET_SEC = dt.timestamp() - time.time()
+        _SERVER_TIME_OFFSET_AT = time.time()
+    except Exception:
+        pass
+
+
+def _server_time_now() -> float:
+    # Never block on HTTP refresh in the hot path; refresh happens in background heartbeat.
+    return time.time() + _SERVER_TIME_OFFSET_SEC
 
 
 def _api_url() -> str:
@@ -851,12 +950,13 @@ def _wait_decisions(
     return items if isinstance(items, list) else []
 
 
-def find_game_frame(page, attempts: int = 30):
+def find_game_frame(page, attempts: int = 30, *, sleep_ms: int = 1000):
     for _ in range(attempts):
         for f in page.frames:
             if "qpidreoxcc.net" in f.url or "pragmaticplaylive" in f.url:
                 return f
-        page.wait_for_timeout(1000)
+        if sleep_ms:
+            page.wait_for_timeout(sleep_ms)
     return None
 
 
@@ -902,7 +1002,7 @@ def _refresh_game_frame(page, game_frame):
                 return game_frame
     except Exception:
         pass
-    gf = find_game_frame(page, attempts=1)
+    gf = find_game_frame(page, attempts=1, sleep_ms=0)
     if gf and gf != game_frame:
         try:
             gf.evaluate(_WS_BRIDGE_INIT)
@@ -1114,12 +1214,20 @@ def _update_from_game_msg(state: _PragmaticState, msg: dict[str, Any]) -> None:
         if g:
             state.bets_open_game_id = g
             state.last_bets_open_at = time.time()
+            try:
+                send_log(f"[betwindow] OPEN game={g} timer={state.last_timer or '-'}")
+            except Exception:
+                pass
         return
     if "betsclosed" in msg and isinstance(msg["betsclosed"], dict):
         g = str(msg["betsclosed"].get("game") or "")
         if g:
             state.bets_closed_game_id = g
             state.last_bets_closed_at = time.time()
+            try:
+                send_log(f"[betwindow] CLOSE game={g} timer={state.last_timer or '-'}")
+            except Exception:
+                pass
         return
     if "bet" in msg and isinstance(msg["bet"], dict):
         # This appears after betsclosed in sniff logs and likely confirms our bet.
@@ -1244,8 +1352,18 @@ def _drain_ws_events(page_or_frame, *, max_items: int = 300) -> list[dict[str, A
 def _maybe_update_from_game_ws_url(state: _PragmaticState, url: str) -> None:
     if not url or "pragmaticplaylive.net/game" not in url:
         return
+    # Log every unique game WS URL seen (for diagnosing PLAYER vs BANKER channel differences).
+    _redacted = _redact_jsession(url)
+    if url != state.game_ws_url and not getattr(state, "_seen_game_ws_urls", None):
+        state._seen_game_ws_urls = set()  # type: ignore[attr-defined]
+    if hasattr(state, "_seen_game_ws_urls") and url not in state._seen_game_ws_urls:
+        state._seen_game_ws_urls.add(url)  # type: ignore[attr-defined]
+        print(f"[ws-discover] new game_ws_url seen: {_redacted}", flush=True)
     if not state.game_ws_url:
         state.game_ws_url = url
+        print(f"[ws-discover] game_ws_url set (first): {_redacted}", flush=True)
+    elif url != state.game_ws_url:
+        print(f"[ws-discover] game_ws_url DIFFERENT from stored: {_redacted}", flush=True)
     try:
         u = urlparse(url)
         qs = parse_qs(u.query or "")
@@ -3433,7 +3551,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--loss-cut", type=float, default=200.0, help="Session loss cut in $ (converted to chips by chip_base)")
     ap.add_argument("--only-table-id", default=os.getenv("BACOPY_ONLY_TABLE_ID", ""), help="operator tableId (numeric) to accept")
     ap.add_argument("--bet-timeout-sec", type=int, default=20)
-    ap.add_argument("--min-timer-sec", type=float, default=2.0, help="Refuse bets if timer is below this (when available)")
+    ap.add_argument(
+        "--min-timer-sec",
+        type=float,
+        default=float(os.getenv("BACOPY_MIN_TIMER_SEC", "5") or 5),
+        help="Refuse bets if timer is below this (when available)",
+    )
+    ap.add_argument(
+        "--decision-stale-sec",
+        type=float,
+        default=float(os.getenv("BACOPY_DECISION_STALE_SEC", "6.0") or 6.0),
+        help="Reject bets if decision is older than this (captured_at 기준).",
+    )
     ap.add_argument("--result-timeout-sec", type=int, default=90)
     ap.add_argument("--allow-switch-table", action="store_true", help="Allow SWITCH_TABLE action to navigate/click table")
     ap.add_argument(
@@ -3475,6 +3604,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.only_table_id:
         print(f"[executor-live] only_table_id={args.only_table_id}", flush=True)
     print("[executor-live] DO NOT run pragmatic watcher concurrently on same account.", flush=True)
+    _refresh_server_time_offset()
+    try:
+        if abs(_SERVER_TIME_OFFSET_SEC) >= 0.1:
+            send_log(f"[time] server_offset_sec={_SERVER_TIME_OFFSET_SEC:+.3f}")
+    except Exception:
+        pass
 
     state = _PragmaticState()
     init_db()
@@ -3520,6 +3655,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         dtid = str(d.get("table_id") or "")
                         if dtid and str(args.only_table_id) != dtid:
                             continue
+                    d["_fetched_at_ts"] = time.time()
                     decision_q.put(d)
         except Exception:
             pass
@@ -3551,6 +3687,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if not did:
                     continue
                 # Don't drop duplicates here; ack timing can cause pending re-appearance. Main loop dedupes.
+                d["_fetched_at_ts"] = time.time()
                 decision_q.put(d)
             backoff = 0.5
             # A safety sleep prevents tight loops if server returns instantly with same pending items.
@@ -3590,9 +3727,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     def _hb_sender() -> None:
         nonlocal hb_last_sent
         nonlocal master_last_ok_ts, master_last_ok_at, master_last_err
+        _last_offset_refresh = 0.0
         while not hb_stop.is_set():
             time.sleep(0.25)
             now2 = time.time()
+            # Refresh server time offset every 60s in background (non-blocking critical path).
+            if now2 - _last_offset_refresh >= 60.0:
+                try:
+                    _refresh_server_time_offset()
+                    _last_offset_refresh = now2
+                except Exception:
+                    pass
             # 1s 間隔で heartbeat POST. Master UI の反映速度を 5 倍向上.
             if now2 - hb_last_sent < 1.0:
                 continue
@@ -3765,6 +3910,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                 and not ws_dead
                 and not state.recover_exhausted
             ),
+            "bet_window_open": bool(
+                state.bets_open_game_id
+                and state.bets_closed_game_id != state.bets_open_game_id
+                and state.last_bets_open_at
+                and (time.time() - float(state.last_bets_open_at or 0)) < float(os.getenv("BACOPY_BET_WINDOW_OPEN_MAX_SEC", "15") or 15)
+            ),
+            "bet_window_open_age_sec": (
+                (time.time() - float(state.last_bets_open_at or 0))
+                if state.last_bets_open_at
+                else None
+            ),
             "session_elsewhere_unresolved": bool(state.session_elsewhere_unresolved),
             "inactivity_modal_unresolved": bool(state.inactivity_modal_unresolved),
             "inactivity_dismissed_count": int(state.inactivity_dismissed_count or 0),
@@ -3778,6 +3934,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "last_game_recv_at": state.last_game_ws_recv_at,
                 "last_lobby_recv_at": state.last_lobby_ws_recv_at,
                 "last_stake_recv_at": state.last_stake_ws_recv_at,
+                "timer": state.last_timer,
+                "bets_open_game_id": state.bets_open_game_id,
+                "bets_closed_game_id": state.bets_closed_game_id,
                 "bettable_silence_sec": bettable_silence_sec,
                 "recover_exhausted": bool(state.recover_exhausted),
                 "recover_attempts": int(state.recover_attempts or 0),
@@ -4185,6 +4344,31 @@ def main(argv: Optional[list[str]] = None) -> int:
                     game_frame.evaluate("(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)", state.game_ws_url)
                 except Exception:
                     pass
+            # Inject Worker bridge into any existing Workers at ARMED time.
+            try:
+                _worker_list = page.workers
+                send_log(f"[session] page.workers count={len(_worker_list)}")
+                for _aw in _worker_list:
+                    try:
+                        _wurl = getattr(_aw, "url", lambda: "?")()
+                        _aw.evaluate(_WS_BRIDGE_WORKER_INIT)
+                        send_log(f"[session] injected Worker bridge at ARMED time url={_wurl}")
+                    except Exception as _we:
+                        send_log(f"[session] Worker bridge inject failed: {_we}")
+            except Exception as _we:
+                send_log(f"[session] page.workers failed: {_we}")
+            # Register worker listener for Workers created AFTER ARMED (game may lazy-create them).
+            def _on_worker(w) -> None:
+                try:
+                    _wurl = getattr(w, "url", lambda: "?")()
+                    w.evaluate(_WS_BRIDGE_WORKER_INIT)
+                    send_log(f"[session] injected Worker bridge into new worker url={_wurl}")
+                except Exception as _we:
+                    send_log(f"[session] new worker bridge inject failed: {_we}")
+            try:
+                page.on("worker", _on_worker)
+            except Exception as _we:
+                send_log(f"[session] page.on worker failed: {_we}")
 
         def send_bet_xml(xml_payload: str, match: str) -> dict[str, Any]:
             target_frames = []
@@ -4197,7 +4381,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             for fr in target_frames:
                 try:
                     # WS bridge: 既に installed フラグがあれば再 inject 省略 (約 5-15ms 削減).
-                    # iframe reload 時のみ必要なので、まず "installed?" を確認し不在なら inject.
                     try:
                         _installed = fr.evaluate("() => !!window.__bacopy_ws_bridge_installed")
                     except Exception:
@@ -4205,6 +4388,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     if not _installed:
                         try:
                             fr.evaluate(_WS_BRIDGE_INIT)
+                            send_log(f"[bet][ws] re-injected WS bridge into frame (was missing)")
                         except Exception:
                             pass
                     # Keep state fresh even if Playwright websocket events miss cross-origin frames.
@@ -4214,20 +4398,123 @@ def main(argv: Optional[list[str]] = None) -> int:
                         {"match": match, "payload": xml_payload},
                     )
                     if isinstance(res, dict) and res.get("ok"):
+                        try:
+                            _is_gf = (fr == game_frame)
+                            send_log(f"[bet][ws] sent via native bridge frame={'game' if _is_gf else 'other'}")
+                        except Exception:
+                            pass
                         return res
-                    # If the bridge couldn't capture Pragmatic's internal WS (e.g. moved to Worker),
-                    # open our own WS to the game url and send through it.
-                    if state.game_ws_url:
-                        res2 = fr.evaluate(
-                            "(args) => window.__bacopy_ws_open_send(args.url, args.payload, args.timeoutMs)",
-                            {"url": state.game_ws_url, "payload": xml_payload, "timeoutMs": 5000},
-                        )
-                        if isinstance(res2, dict) and res2.get("ok"):
-                            return {**res2, "fallback": "open_send"}
                     last_err = res
                 except Exception as e:
                     last_err = {"ok": False, "error": f"evaluate_failed: {e}"}
+
+            # Try Playwright Workers — Pragmatic WS may live inside a Web Worker.
+            try:
+                workers = page.workers
+            except Exception:
+                workers = []
+            for _w in workers:
+                try:
+                    _w_installed = _w.evaluate("() => !!self.__bacopy_ws_bridge_installed")
+                except Exception:
+                    _w_installed = False
+                if not _w_installed:
+                    try:
+                        _w.evaluate(_WS_BRIDGE_WORKER_INIT)
+                        send_log(f"[bet][ws] injected Worker bridge into worker")
+                    except Exception:
+                        pass
+                try:
+                    res_w = _w.evaluate(
+                        "(args) => self.__bacopy_ws_send(args.match, args.payload)",
+                        {"match": match, "payload": xml_payload},
+                    )
+                    if isinstance(res_w, dict) and res_w.get("ok"):
+                        send_log(f"[bet][ws] sent via Worker bridge url={res_w.get('url','?')}")
+                        return res_w
+                    else:
+                        send_log(f"[bet][ws] Worker bridge result: {res_w}")
+                except Exception as _we:
+                    send_log(f"[bet][ws] Worker evaluate failed: {_we}")
+
+            # All frames + Workers failed native bridge (Pragmatic WS is in Worker context).
+            # Reuse the existing persistent socket opened at ARMED time (page top context).
+            # This avoids opening a NEW WS connection each bet which triggers session-elsewhere.
+            if state.game_ws_url:
+                try:
+                    send_log(f"[bet][ws] game_ws_url suffix={state.game_ws_url[-80:]}")
+                except Exception:
+                    pass
+                try:
+                    send_log(f"[bet][ws] native bridge ws_not_found — trying persistent page-level socket")
+                except Exception:
+                    pass
+                # Collect ALL WebSocket URLs visible in page + frames at bet time (diagnosis).
+                try:
+                    _all_ws: list[str] = []
+                    for _f in [page] + list(page.frames):
+                        try:
+                            _urls = _f.evaluate("() => (window.__bacopy_sockets||[]).map(ws=>ws.__bacopy_url||ws.url||'').filter(Boolean)")
+                            if isinstance(_urls, list):
+                                _all_ws.extend(_urls)
+                        except Exception:
+                            pass
+                    send_log(f"[bet][ws] all_sockets match={match} urls={list(set(_all_ws))[:10]}")
+                except Exception:
+                    pass
+                try:
+                    res_page = page.evaluate(
+                        "(args) => window.__bacopy_ws_send(args.match, args.payload)",
+                        {"match": match, "payload": xml_payload},
+                    )
+                    if isinstance(res_page, dict) and res_page.get("ok"):
+                        try:
+                            send_log(f"[bet][ws] sent via persistent page-level socket (reused)")
+                        except Exception:
+                            pass
+                        return res_page
+                except Exception:
+                    pass
+                # Last resort: open_send reuses existing socket if already open, otherwise opens once.
+                try:
+                    res2 = page.evaluate(
+                        "(args) => window.__bacopy_ws_open_send(args.url, args.payload, args.timeoutMs)",
+                        {"url": state.game_ws_url, "payload": xml_payload, "timeoutMs": 5000},
+                    )
+                    if isinstance(res2, dict) and res2.get("ok"):
+                        reused = res2.get("reused", False)
+                        try:
+                            send_log(f"[bet][ws] open_send {'reused' if reused else 'NEW'} socket on page context")
+                        except Exception:
+                            pass
+                        return {**res2, "fallback": "open_send"}
+                except Exception as e:
+                    last_err = {"ok": False, "error": f"open_send failed: {e}"}
             return last_err or {"ok": False, "error": "evaluate_failed"}
+
+        def _drain_decisions_nowait() -> list[dict[str, Any]]:
+            try:
+                d0 = decision_q.get_nowait()
+            except queue.Empty:
+                return []
+            items = [d0]
+            while len(items) < int(args.limit):
+                try:
+                    items.append(decision_q.get_nowait())
+                except queue.Empty:
+                    break
+            return items
+
+        def _is_bet_window_open(now: Optional[float] = None) -> bool:
+            now = now or time.time()
+            if not state.bets_open_game_id:
+                return False
+            if state.bets_closed_game_id == state.bets_open_game_id:
+                return False
+            if not state.last_bets_open_at:
+                return False
+            max_age = float(os.getenv("BACOPY_BET_WINDOW_OPEN_MAX_SEC", "15") or 15)
+            return (now - float(state.last_bets_open_at or 0)) < max_age
 
         def wait_bets_open(timeout_sec: float) -> Optional[str]:
             start = time.time()
@@ -4249,11 +4536,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                     pass
                 try:
                     game_frame = _refresh_game_frame(page, game_frame)
-                except Exception:
-                    pass
-                try:
-                    if state.game_ws_url:
-                        page.evaluate("(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)", state.game_ws_url)
                 except Exception:
                     pass
                 try:
@@ -4562,32 +4844,41 @@ def main(argv: Optional[list[str]] = None) -> int:
                     pass
                 return False
 
+        _last_modal_check_at = 0.0
+        _MODAL_CHECK_INTERVAL = float(os.getenv("BACOPY_MODAL_CHECK_INTERVAL_SEC", "2.0") or 2.0)
+
         while True:
             heartbeat("running")
-            try:
-                _dismiss_session_elsewhere_modal(page, state)
-            except Exception:
-                pass
-            # ハードセッションタイムアウト (OK 押すと TOP に飛ぶ危険) を検出して lobby goto.
-            try:
-                _dismiss_session_ended_modal(page, state)
-            except Exception:
-                pass
-            # 自動復旧: 無操作モーダル (Stake のタイムアウト) を検出してクリック.
-            try:
-                _dismiss_inactivity_modal(page, state)
-            except Exception:
-                pass
-            # 予防: 一定間隔で微小 gesture を送り inactivity 判定を回避.
-            try:
-                _send_keep_alive(page, state)
-            except Exception:
-                pass
+            items = _drain_decisions_nowait()
+            _now = time.time()
+            if _now - _last_modal_check_at >= _MODAL_CHECK_INTERVAL:
+                _last_modal_check_at = _now
+                try:
+                    _dismiss_session_elsewhere_modal(page, state)
+                except Exception:
+                    pass
+                # ハードセッションタイムアウト (OK 押すと TOP に飛ぶ危険) を検出して lobby goto.
+                try:
+                    _dismiss_session_ended_modal(page, state)
+                except Exception:
+                    pass
+                # 自動復旧: 無操作モーダル (Stake のタイムアウト) を検出してクリック.
+                try:
+                    _dismiss_inactivity_modal(page, state)
+                except Exception:
+                    pass
+                # 予防: 一定間隔で微小 gesture を送り inactivity 判定を回避.
+                try:
+                    _send_keep_alive(page, state)
+                except Exception:
+                    pass
             try:
                 game_frame = _refresh_game_frame(page, game_frame)
                 _pump_ws_events(page, game_frame, state)
             except Exception:
                 pass
+            if not items:
+                items = _drain_decisions_nowait()
 
             # SESSION EXPIRED / WS dead detection: if no recv frames for long, try to reload + re-join.
             try:
@@ -4604,21 +4895,24 @@ def main(argv: Optional[list[str]] = None) -> int:
                 pass
 
             # Decisions are fetched via long-poll in a background thread (reduces DNS churn + timeouts).
-            try:
-                d0 = decision_q.get(timeout=max(float(args.poll_sec), 0.2))
-                items = [d0]
-                while len(items) < int(args.limit):
-                    try:
-                        items.append(decision_q.get_nowait())
-                    except queue.Empty:
+            if not items:
+                try:
+                    d0 = decision_q.get(timeout=max(float(args.poll_sec), 0.2))
+                    items = [d0]
+                    while len(items) < int(args.limit):
+                        try:
+                            items.append(decision_q.get_nowait())
+                        except queue.Empty:
+                            break
+                    master_pending_for_me = decision_q.qsize() + len(items)
+                except queue.Empty:
+                    master_pending_for_me = decision_q.qsize()
+                    if args.once:
                         break
+                    page.wait_for_timeout(int(max(args.poll_sec, 0.2) * 1000))
+                    continue
+            else:
                 master_pending_for_me = decision_q.qsize() + len(items)
-            except queue.Empty:
-                master_pending_for_me = decision_q.qsize()
-                if args.once:
-                    break
-                page.wait_for_timeout(int(max(args.poll_sec, 0.2) * 1000))
-                continue
 
             # Coalesce SWITCH_TABLE floods: keep only the latest SWITCH_TABLE in this batch.
             try:
@@ -4663,6 +4957,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if provider != "pragmatic" or not did:
                     continue
                 if not _seen_add(did):
+                    try:
+                        send_log(f"[loop] seen_dedup skipped did={did[-12:]}")
+                    except Exception:
+                        pass
                     continue
 
                 fa = d.get("friend_action") or {}
@@ -4746,7 +5044,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                         _amt = fa.get("amount")
                         if _amt: _sig_desc_parts.append(f"${_amt}")
                     send_action(" | ".join(_sig_desc_parts))
-                    send_log(f"[signal] RECEIVED {action} table='{_tn}' side='{side}' did={did[-12:]}")
+                    cap_ts = _parse_iso_ts(str(d.get("captured_at") or ""))
+                    age = (_server_time_now() - cap_ts) if cap_ts else None
+                    age_str = f"{age:.2f}s" if age is not None else "n/a"
+                    fetched_ts = float(d.get("_fetched_at_ts") or 0) or None
+                    queue_delay = (time.time() - fetched_ts) if fetched_ts else None
+                    q_str = f"{queue_delay:.2f}s" if queue_delay is not None else "n/a"
+                    send_log(
+                        f"[signal] RECEIVED {action} table='{_tn}' side='{side}' did={did[-12:]} age={age_str} "
+                        f"queue_delay={q_str} bet_open={_is_bet_window_open()} timer={state.last_timer or '-'}"
+                    )
                 except Exception:
                     pass
 
@@ -4924,6 +5231,30 @@ def main(argv: Optional[list[str]] = None) -> int:
                     continue
                 side = bet_side
 
+                # Stale decision guard (BET only).
+                cap_ts = _parse_iso_ts(str(d.get("captured_at") or ""))
+                if cap_ts is not None:
+                    age = _server_time_now() - cap_ts
+                    fetched_ts = float(d.get("_fetched_at_ts") or 0) or None
+                    queue_delay = (time.time() - fetched_ts) if fetched_ts else None
+                    if age > float(args.decision_stale_sec):
+                        _post_result(
+                            did,
+                            {
+                                "error": "decision_stale",
+                                "age_sec": age,
+                                "max_sec": args.decision_stale_sec,
+                                "queue_delay_sec": queue_delay,
+                            },
+                            status="error",
+                        )
+                        try:
+                            q_msg = f" queue_delay={queue_delay:.2f}s" if queue_delay is not None else ""
+                            send_log(f"[bet][warn] decision stale age={age:.2f}s > {args.decision_stale_sec}{q_msg}")
+                        except Exception:
+                            pass
+                        continue
+
                 if not (state.table_id and state.user_id and state.game_ws_url):
                     _post_result(did, {"error": "pragmatic session not ready (table/user/ws missing)"}, status="error")
                     continue
@@ -4940,35 +5271,34 @@ def main(argv: Optional[list[str]] = None) -> int:
                     )
                     continue
 
-                # BET 開始: ユーザ向け可視化 — 何が起きているか一目で分かるようにする.
-                try:
-                    send_action(f"⏳ BET 窓待機中... (最大 {int(args.bet_timeout_sec)}s)")
-                except Exception:
-                    pass
-
                 # BET 全体のハード期限. wait_bets_open + session dismiss + ws_send + confirm までで
                 # 最大 35 秒で必ず抜ける. これを超えたら "bet flow timeout" で明示的 error.
                 # (過去ログで session_elsewhere → page.reload が wait_bets_open 中に発火して
                 #  frame が detach → 予期しない 10+ 分の hang が確認された事故を防ぐ)
                 _bet_flow_deadline = time.time() + 35.0
 
-                # Wait for betting open & current game id
+                # BET 窓の即時性を優先: 窓が開いていない場合は遅延せずエラー返却.
                 _wait_open_start = time.time()
-                # bet_timeout_sec を最大 15s にキャップ (過去 19s 待ちが発生していた — 次ラウンドまで
-                # 待つのは UX 悪化の主因. 短くして "次窓で送り直してください" エラーの方がマシ).
-                _wbo_to = min(float(args.bet_timeout_sec), 15.0)
-                game_id = wait_bets_open(timeout_sec=_wbo_to)
+                _grace = float(os.getenv("BACOPY_BET_WINDOW_GRACE_SEC", "0.7") or 0.7)
+                _grace = max(0.0, min(_grace, float(args.bet_timeout_sec)))
+                game_id = state.bets_open_game_id if _is_bet_window_open() else None
+                if not game_id and _grace > 0:
+                    try:
+                        send_action(f"⏳ BET 窓待機中... (最大 {int(_grace)}s)")
+                    except Exception:
+                        pass
+                    game_id = wait_bets_open(timeout_sec=_grace)
                 _wait_open_ms = int((time.time() - _wait_open_start) * 1000)
                 if not game_id:
                     _post_result(
                         did,
-                        {"error": "betsopen timeout", "timeout_sec": _wbo_to, "waited_ms": _wait_open_ms},
+                        {"error": "bet_window_closed", "waited_ms": _wait_open_ms},
                         status="error",
                     )
                     consecutive_hard_errors += 1
-                    last_error = "betsopen timeout"
+                    last_error = "bet_window_closed"
                     try:
-                        send_action(f"⏰ 賭けウィンドウが開かずタイムアウト ({_wait_open_ms}ms) — 次ラウンドで再送してください")
+                        send_action("❌ BET不可: BET窓が開いていません (狙いハンドのみで再送)")
                     except Exception:
                         pass
                     heartbeat("error")
@@ -4989,17 +5319,19 @@ def main(argv: Optional[list[str]] = None) -> int:
                     heartbeat("error")
                     continue
 
-                # Session elsewhere — block せず log のみ. 理由:
-                # (1) Pragmatic 自体が intermittent にこのモーダルを出すため (user 検証済)
-                # (2) main loop で毎秒 dismiss しており, 通常数秒で resolved になる
-                # (3) block + retry loop を置くと _dismiss_session_elsewhere 内部の
-                #     page.reload (20s 経過で発火) と競合し BET 処理が無限 hang する事故あり
-                # → block は廃止. ws_send に進み, 失敗したら自然に error 返却.
+                # Session elsewhere — block bet while unresolved (user request).
                 if state.session_elsewhere_unresolved:
+                    _post_result(
+                        did,
+                        {"error": "session_elsewhere_blocked", "since": state.session_elsewhere_unresolved_since or 0},
+                        status="error",
+                    )
                     try:
-                        send_log("[bet][warn] session_elsewhere_unresolved=True — proceeding anyway (Pragmatic intermittent modal, not a real conflict)")
+                        send_action("❌ BET不可: 別端末セッション検知 (解消後に再送)")
                     except Exception:
                         pass
+                    heartbeat("error")
+                    continue
 
                 # Timer gating (best-effort)
                 tsec = _parse_timer_sec(state.last_timer)
@@ -5022,6 +5354,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                         {"error": "duplicate_bet_guard", "operator_table_id": op_tid, "game_id": game_id},
                         status="error",
                     )
+                    try:
+                        send_log(f"[bet][warn] duplicate_bet_guard skipped did={did[-12:]} game={game_id}")
+                    except Exception:
+                        pass
                     continue
                 try:
                     locked = try_lock_bet(executor_id=executor_id, provider=provider, table_id=str(op_tid), game_id=str(game_id), decision_id=did)

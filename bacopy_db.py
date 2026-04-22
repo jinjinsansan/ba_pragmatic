@@ -124,6 +124,8 @@ def init_db() -> None:
               caps_json TEXT,
               ws_json TEXT,
               bettable INTEGER,
+              bet_window_open INTEGER,
+              bet_window_open_age_sec REAL,
               session_elsewhere_unresolved INTEGER,
               daily_pnl REAL,
               daily_pnl_date TEXT,
@@ -145,6 +147,8 @@ def init_db() -> None:
             "ALTER TABLE executors ADD COLUMN caps_json TEXT",
             "ALTER TABLE executors ADD COLUMN ws_json TEXT",
             "ALTER TABLE executors ADD COLUMN bettable INTEGER",
+            "ALTER TABLE executors ADD COLUMN bet_window_open INTEGER",
+            "ALTER TABLE executors ADD COLUMN bet_window_open_age_sec REAL",
             "ALTER TABLE executors ADD COLUMN session_elsewhere_unresolved INTEGER",
             "ALTER TABLE executors ADD COLUMN gui_json TEXT",
             "ALTER TABLE executors ADD COLUMN phase_json TEXT",
@@ -396,9 +400,9 @@ def upsert_executor(executor_id: str, payload: dict[str, Any]) -> None:
         cur.execute(
             """
             INSERT INTO executors
-              (executor_id, label, username, user_email, user_id, provider, table_id, table_name, balance, seq_json, gui_json, phase_json, caps_json, ws_json, bettable, session_elsewhere_unresolved, daily_pnl, daily_pnl_date, os, recovering, recovering_reason, inactivity_dismissed_count, inactivity_modal_unresolved, status, error, updated_at)
+              (executor_id, label, username, user_email, user_id, provider, table_id, table_name, balance, seq_json, gui_json, phase_json, caps_json, ws_json, bettable, bet_window_open, bet_window_open_age_sec, session_elsewhere_unresolved, daily_pnl, daily_pnl_date, os, recovering, recovering_reason, inactivity_dismissed_count, inactivity_modal_unresolved, status, error, updated_at)
             VALUES
-              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(executor_id) DO UPDATE SET
               label=excluded.label,
               username=excluded.username,
@@ -414,6 +418,8 @@ def upsert_executor(executor_id: str, payload: dict[str, Any]) -> None:
               caps_json=excluded.caps_json,
               ws_json=excluded.ws_json,
               bettable=excluded.bettable,
+              bet_window_open=excluded.bet_window_open,
+              bet_window_open_age_sec=excluded.bet_window_open_age_sec,
               session_elsewhere_unresolved=excluded.session_elsewhere_unresolved,
               daily_pnl=excluded.daily_pnl,
               daily_pnl_date=excluded.daily_pnl_date,
@@ -442,6 +448,8 @@ def upsert_executor(executor_id: str, payload: dict[str, Any]) -> None:
                 json.dumps(payload.get("caps") or {}, ensure_ascii=False) if payload.get("caps") is not None else None,
                 json.dumps(payload.get("ws") or {}, ensure_ascii=False) if payload.get("ws") is not None else None,
                 int(bool(payload.get("bettable"))) if payload.get("bettable") is not None else None,
+                int(bool(payload.get("bet_window_open"))) if payload.get("bet_window_open") is not None else None,
+                float(payload.get("bet_window_open_age_sec")) if payload.get("bet_window_open_age_sec") is not None else None,
                 int(bool(payload.get("session_elsewhere_unresolved"))) if payload.get("session_elsewhere_unresolved") is not None else None,
                 float(payload.get("daily_pnl")) if payload.get("daily_pnl") is not None else None,
                 str(payload.get("daily_pnl_date") or ""),
@@ -466,7 +474,7 @@ def list_executors(limit: int = 200) -> list[dict[str, Any]]:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT executor_id, label, username, user_email, user_id, provider, table_id, table_name, balance, seq_json, gui_json, phase_json, caps_json, ws_json, bettable, session_elsewhere_unresolved, daily_pnl, daily_pnl_date, os, recovering, recovering_reason, inactivity_dismissed_count, inactivity_modal_unresolved, status, error, updated_at
+            SELECT executor_id, label, username, user_email, user_id, provider, table_id, table_name, balance, seq_json, gui_json, phase_json, caps_json, ws_json, bettable, bet_window_open, bet_window_open_age_sec, session_elsewhere_unresolved, daily_pnl, daily_pnl_date, os, recovering, recovering_reason, inactivity_dismissed_count, inactivity_modal_unresolved, status, error, updated_at
             FROM executors
             ORDER BY updated_at DESC
             LIMIT ?
@@ -492,6 +500,8 @@ def list_executors(limit: int = 200) -> list[dict[str, Any]]:
                 caps_json,
                 ws_json,
                 bettable,
+                bet_window_open,
+                bet_window_open_age_sec,
                 session_elsewhere_unresolved,
                 daily_pnl,
                 daily_pnl_date,
@@ -541,6 +551,8 @@ def list_executors(limit: int = 200) -> list[dict[str, Any]]:
                     "caps": caps,
                     "ws": ws,
                     "bettable": bool(bettable) if bettable is not None else False,
+                    "bet_window_open": (bool(bet_window_open) if bet_window_open is not None else None),
+                    "bet_window_open_age_sec": bet_window_open_age_sec,
                     "session_elsewhere_unresolved": bool(session_elsewhere_unresolved) if session_elsewhere_unresolved is not None else False,
                     "daily_pnl": daily_pnl,
                     "daily_pnl_date": daily_pnl_date or "",

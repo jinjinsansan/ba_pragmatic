@@ -245,6 +245,9 @@ body.sending-bet .big-btn.player::after,body.sending-bet .big-btn.banker::after,
 body.switching .big-btn.player::after,body.switching .big-btn.banker::after,body.switching .big-btn.tie::after{content:"切替中";position:absolute;top:6px;right:6px;background:var(--tie);color:#0a1020;padding:2px 6px;border-radius:3px;font-size:9px;font-family:var(--font-hud);letter-spacing:2px;font-weight:600}
 body.switching .table-cell.selected{animation:switchingPulse 1.4s ease-in-out infinite}
 @keyframes switchingPulse{0%,100%{box-shadow:0 0 10px rgba(255,200,60,0.25);border-color:var(--tie)}50%{box-shadow:0 0 20px rgba(255,200,60,0.55);border-color:var(--tie)}}
+@keyframes betOpenPulse{0%,100%{box-shadow:0 0 10px rgba(0,255,136,0.25)}50%{box-shadow:0 0 22px rgba(0,255,136,0.7)}}
+body.bet-open .big-btn.player,body.bet-open .big-btn.banker,body.bet-open .big-btn.tie{border-color:var(--win);animation:betOpenPulse 0.9s ease-in-out infinite}
+body.bet-open .big-btn.player::after,body.bet-open .big-btn.banker::after,body.bet-open .big-btn.tie::after{content:"BET可";position:absolute;top:6px;right:6px;background:var(--win);color:#0a1020;padding:2px 6px;border-radius:3px;font-size:9px;font-family:var(--font-hud);letter-spacing:2px;font-weight:600}
 
 /* 配信先 GUI リスト: email + 到着状態の一覧 */
 #broadcastList{display:flex;flex-direction:column;gap:4px;font-family:var(--font-mono);font-size:11px;padding-top:4px}
@@ -448,6 +451,7 @@ const LS = {
   favorites:'bacopy_master_favorites', mode:'bacopy_master_mode',
   stopped:'bacopy_master_stopped',
 };
+const BET_WINDOW_MAX_AGE_SEC = 12;
 let selected = { provider:'pragmatic', table_id:'', table_name:'', qpid_table_id:'' };
 let favorites = new Set();
 let prevHands = {};  // tid -> hands (for flash detection)
@@ -729,6 +733,7 @@ function renderPilots(){
       if(exec.recovering && exec.recovering_reason) pillHtml += ' <span class="pill warn">'+escHtml(exec.recovering_reason.slice(0,40))+'</span>';
       if(exec.inactivity_modal_unresolved) pillHtml += ' <span class="pill err">無操作モーダル</span>';
       if(!exec.bettable && !exec.recovering) pillHtml += ' <span class="pill err">BET不可</span>';
+      if(exec.bet_window_open != null) pillHtml += exec.bet_window_open ? ' <span class="pill ok">BET窓OPEN</span>' : ' <span class="pill warn">BET窓待ち</span>';
       if(exec.session_elsewhere_unresolved) pillHtml += ' <span class="pill err">セッション奪取</span>';
       execLine = `GUI: ${escHtml(exec.label||exec.executor_id)} &middot; OS: ${escHtml(exec.os||'-')} &middot; 最終通信: ${fmtAge(ageSec)}前`;
     }
@@ -776,6 +781,8 @@ function renderExecutors(){
     const ws=e.ws||{}, caps=e.caps||{}, seq=e.seq||{};
     const wsSil = (ws.silence_sec!=null) ? Number(ws.silence_sec).toFixed(0)+'s' : '-';
     const recExh = !!ws.recover_exhausted;
+    const timerVal = (ws.timer!=null && String(ws.timer).trim()!=='') ? String(ws.timer).trim()+'s' : '-';
+    const betOpenLabel = e.bet_window_open ? `OPEN (${timerVal})` : `CLOSED (${timerVal})`;
     const bal = (e.balance==null) ? '-' : ('$'+Number(e.balance).toFixed(2));
     const dpnlRaw = (e.daily_pnl!=null) ? Number(e.daily_pnl) : null;
     const dpnl = dpnlRaw==null ? '-' : ((dpnlRaw>=0?'+':'')+'$'+dpnlRaw.toFixed(2));
@@ -786,6 +793,7 @@ function renderExecutors(){
     pills += online ? '<span class="pill ok">オンライン</span>' : '<span class="pill offline">オフライン</span>';
     if(e.recovering) pills += ' <span class="pill warn" style="animation:pulseWarn 1s ease-in-out infinite">復旧中</span>';
     pills += e.bettable ? ' <span class="pill ok">BET可</span>' : ' <span class="pill err">BET不可</span>';
+    if(e.bet_window_open != null) pills += e.bet_window_open ? ' <span class="pill ok">BET窓OPEN</span>' : ' <span class="pill warn">BET窓待ち</span>';
     if(recExh) pills += ' <span class="pill err">復旧失敗</span>';
     if(e.inactivity_modal_unresolved) pills += ' <span class="pill err">無操作モーダル検知</span>';
     if((e.inactivity_dismissed_count||0) > 0) pills += ` <span class="pill">モーダル自動解除×${e.inactivity_dismissed_count}</span>`;
@@ -808,6 +816,7 @@ function renderExecutors(){
         <div class="stat"><div class="label">本日損益</div><div class="value ${dpnlCls}">${escHtml(dpnl)}</div></div>
         <div class="stat"><div class="label">次SEQ</div><div class="value">${seqStr}</div></div>
         <div class="stat"><div class="label">WS静寂</div><div class="value">${escHtml(wsSil)}</div></div>
+        <div class="stat"><div class="label">BET窓</div><div class="value">${escHtml(betOpenLabel)}</div></div>
         <div class="stat"><div class="label">権限</div><div class="value small">${escHtml(capsStr)}</div></div>
         <div class="stat"><div class="label">状態</div><div class="value small">${escHtml(e.status||'-')}</div></div>
       </div>
@@ -1119,6 +1128,14 @@ function _executorOnSelectedTable(exec){
   const b = _normTableName(selected.table_name);
   return !!(a && b && a === b);
 }
+function _isBetWindowOpen(exec){
+  if(!exec) return false;
+  if(exec.bet_window_open != null){
+    const age = Number(exec.bet_window_open_age_sec || 0);
+    return !!exec.bet_window_open && (!age || age < BET_WINDOW_MAX_AGE_SEC);
+  }
+  return !!exec.bettable;
+}
 
 function updateButtonsGating(){
   const provider=document.getElementById('providerSel').value;
@@ -1134,10 +1151,14 @@ function updateButtonsGating(){
   // 別テーブルで実 BET 発火する致命的事故を防ぐ.
   const onSelectedTargets = selected.table_id ? targets.filter(_executorOnSelectedTable) : targets;
   const nOnTarget = onSelectedTargets.length;
+  const betOpenTargets = onSelectedTargets.filter(_isBetWindowOpen);
+  const betReady = nOnTarget > 0 && betOpenTargets.length === nOnTarget && !document.body.classList.contains('stopped');
   const switching = selected.table_id && nTargets > 0 && nOnTarget < nTargets;
   document.body.classList.toggle('switching', !!switching);
+  document.body.classList.toggle('bet-open', !!betReady);
 
-  const allowAny = nOnTarget > 0 && !document.body.classList.contains('stopped');
+  const allowAny = betReady;
+  window.__betReady = !!betReady;
   // BANKER は PLAYER と同列のデフォルト BET. caps.allow_banker は廃止済 (executor 側で standard bc=1 使用).
   const allowB = allowAny;
   const allowT = allowAny && (!isPrag || anyAllowT);
@@ -1202,6 +1223,10 @@ function sendDecision(action, side){
   if(document.body.classList.contains('stopped')){ showToast('緊急停止中です','err'); return; }
   if(action==='BET' || action==='SWITCH_TABLE'){
     if(!selected.table_id){ showToast('テーブルを選択してください','err'); return; }
+  }
+  if(action==='BET' && !window.__betReady){
+    showToast('BET窓が開いていません (受け子GUIの BET可 を待って押してください)','err');
+    return;
   }
   const provider=document.getElementById('providerSel').value;
   const target_executor_id=document.getElementById('execSel').value||'';
@@ -1461,8 +1486,8 @@ document.addEventListener('keydown', (e)=>{
 });
 
 refreshOnce();
-// 500ms 間隔で refresh (レスポンシビリティ重視. heartbeat 1s と組合せて体感即時).
-setInterval(refreshOnce, 500);
+// 250ms 間隔で refresh (BET 窓の変化を即時反映).
+setInterval(refreshOnce, 250);
 </script>
 </body></html>
 """
