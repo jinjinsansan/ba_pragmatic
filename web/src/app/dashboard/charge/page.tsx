@@ -13,6 +13,7 @@ export default function ChargePage() {
   const [loading, setLoading] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [finalAmount, setFinalAmount] = useState(0)
+  const [requestedAmount, setRequestedAmount] = useState<number | null>(null)
   const [isFree, setIsFree] = useState(false)
   const router = useRouter()
 
@@ -55,6 +56,7 @@ export default function ChargePage() {
     const data = await res.json()
     if (res.ok) {
       setFinalAmount(data.amount)
+      setRequestedAmount(typeof data.requestedAmount === 'number' ? data.requestedAmount : null)
       setIsFree(data.isFree)
       setSubmitted(true)
     } else {
@@ -73,11 +75,18 @@ export default function ChargePage() {
             <p className="text-text-muted mb-8">Your account is now active with unlimited balance.</p>
           ) : (
             <>
-              <p className="text-text-muted mb-4">Send <span className="text-text font-bold">${finalAmount} USDT</span> ({network}) to:</p>
+              <p className="text-text-muted mb-4">
+                Send <span className="text-text font-bold">${Number(finalAmount || 0).toFixed(2)} USDT</span> ({network}) to:
+              </p>
               <div className="p-4 rounded-xl glass-soft font-mono text-sm text-player break-all mb-4">
                 {network === 'TRC-20' ? (process.env.NEXT_PUBLIC_USDT_TRC20 || 'TRC20 wallet not configured') : (process.env.NEXT_PUBLIC_USDT_ERC20 || 'ERC20 wallet not configured')}
               </div>
-              <p className="text-text-muted text-sm mb-8">We&apos;ll confirm within 30 minutes after receiving payment.</p>
+              {(requestedAmount !== null && Math.abs(requestedAmount - Number(finalAmount || 0)) >= 0.009) && (
+                <p className="text-text-dim text-xs mb-2">Requested: ${Number(requestedAmount || 0).toFixed(2)}</p>
+              )}
+              <p className="text-text-muted text-sm mb-8">
+                Please send the exact amount (including decimals). We use it to match your payment. We&apos;ll confirm within 30 minutes after receiving it.
+              </p>
             </>
           )}
           <button onClick={() => router.push('/dashboard')} className="btn-primary px-8 py-3 w-full sm:w-auto">

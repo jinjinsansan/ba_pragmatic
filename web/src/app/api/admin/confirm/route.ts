@@ -21,29 +21,53 @@ export async function POST(req: NextRequest) {
       profit_share_rate: 0.20,
     }, { onConflict: 'user_id' })
   } else if (type === 'charge') {
-    await admin.from('charges').update({ status: 'confirmed', confirmed_at: new Date().toISOString() }).eq('id', id)
-    const { data: billing } = await admin.from('billing').select('balance, total_charged').eq('user_id', userId).single()
-    const newBalance = (billing?.balance || 0) + (amount || 0)
-    const newTotal = (billing?.total_charged || 0) + (amount || 0)
+    // Don't trust client-provided amount/userId: load from DB to prevent mistakes.
+    const { data: charge, error: chargeErr } = await admin
+      .from('charges')
+      .select('user_id, amount, status')
+      .eq('id', id)
+      .single()
+    if (chargeErr || !charge) {
+      return NextResponse.json({ error: 'Charge not found' }, { status: 404 })
+    }
+    const chargeUserId = charge.user_id
+    const chargeAmount = Number(charge.amount || 0) || 0
+
+    if (charge.status !== 'confirmed') {
+      await admin.from('charges').update({ status: 'confirmed', confirmed_at: new Date().toISOString() }).eq('id', id)
+    }
+
+    const { data: billing } = await admin
+      .from('billing')
+      .select('balance, total_charged')
+      .eq('user_id', chargeUserId)
+      .single()
+
+    const newBalance = (Number(billing?.balance || 0) || 0) + chargeAmount
+    const newTotal = (Number(billing?.total_charged || 0) || 0) + chargeAmount
+
+    // Charge confirmation should immediately re-enable the bot.
     await admin.from('billing').upsert({
-      user_id: userId,
+      user_id: chargeUserId,
       balance: newBalance,
       total_charged: newTotal,
+      suspended: false,
+      grace_deadline: null,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id' })
 
     // Referral commission
-    const { data: userProfile } = await admin.from('profiles').select('referred_by').eq('id', userId).single()
+    const { data: userProfile } = await admin.from('profiles').select('referred_by').eq('id', chargeUserId).single()
     if (userProfile?.referred_by) {
       const { data: referrer } = await admin.from('profiles').select('id').eq('referral_code', userProfile.referred_by).single()
       if (referrer) {
         const { data: referrerBilling } = await admin.from('billing').select('profit_share_rate').eq('user_id', referrer.id).single()
         const commissionRate = 0.05
-        const commissionAmount = (amount || 0) * commissionRate
+        const commissionAmount = chargeAmount * commissionRate
         await admin.from('referral_commissions').insert({
           referrer_id: referrer.id,
-          referred_id: userId,
-          charge_amount: amount || 0,
+          referred_id: chargeUserId,
+          charge_amount: chargeAmount,
           commission_rate: commissionRate,
           commission_amount: commissionAmount,
         })
