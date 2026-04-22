@@ -41,6 +41,51 @@ function killAllByImage(imageName) {
     console.log(`[Main] killAllByImage ${imageName}`);
   } catch (_) {  }
 }
+function ensureCamoufoxAssets() {
+  if (process.platform !== 'win32') return;
+  try {
+    const localAppData = process.env.LOCALAPPDATA;
+    if (!localAppData) { console.warn('[camoufox] LOCALAPPDATA not set'); return; }
+    const target = path.join(localAppData, 'camoufox');
+    let needRestore = false;
+    try {
+      if (!fs.existsSync(target)) {
+        needRestore = true;
+      } else {
+        const entries = fs.readdirSync(target);
+        if (!entries || entries.length === 0) needRestore = true;
+      }
+    } catch (_) { needRestore = true; }
+    if (!needRestore) return;
+
+    let source = null;
+    try {
+      if (process.resourcesPath) {
+        const p = path.join(process.resourcesPath, 'camoufox_firefox');
+        if (fs.existsSync(p)) source = p;
+      }
+    } catch (_) {}
+    if (!source) {
+      console.warn('[camoufox] no bundled camoufox_firefox found; expecting runtime fetch');
+      return;
+    }
+
+    console.log(`[camoufox] restoring bundled Firefox -> ${target}`);
+    fs.mkdirSync(target, { recursive: true });
+    try {
+      fs.cpSync(source, target, { recursive: true, force: true });
+      console.log('[camoufox] restore complete');
+    } catch (e) {
+      console.warn('[camoufox] cpSync failed, trying robocopy:', e && e.message);
+      try {
+        execSync(`robocopy "${source}" "${target}" /E /NFL /NDL /NJH /NJS /NP`, { stdio: 'ignore' });
+      } catch (_) {}
+    }
+  } catch (e) {
+    console.warn('[camoufox] ensureCamoufoxAssets error:', e && e.message);
+  }
+}
+
 function cleanupOrphanCamoufox() {
 
 
@@ -1112,6 +1157,7 @@ app.whenReady().then(() => {
 
 
 
+  try { ensureCamoufoxAssets(); } catch (e) { console.warn('[Main] camoufox restore failed:', e.message); }
   try { cleanupOrphanCamoufox(); } catch (e) { console.warn('[Main] startup cleanup failed:', e.message); }
 
   createWindow();

@@ -28,7 +28,9 @@
           ]
         }
       ],
-      "icon": "../icon.ico"
+      "icon": "../icon.ico",
+      "publisherName": "BACOPY",
+      "signingHashAlgorithms": ["sha256"]
     },
     "directories": {
       "output": "dist"
@@ -53,6 +55,10 @@
       {
         "from": "build_staging/admin_pubkey.txt",
         "to": "admin_pubkey.txt"
+      },
+      {
+        "from": "build_staging/camoufox_firefox",
+        "to": "camoufox_firefox"
       },
       {
         "from": "scripts/setup-all.ps1",
