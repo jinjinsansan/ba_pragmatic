@@ -29,8 +29,10 @@
         }
       ],
       "icon": "../icon.ico",
-      "publisherName": "BACOPY",
-      "signingHashAlgorithms": ["sha256"]
+      "signtoolOptions": {
+        "publisherName": "BACOPY",
+        "signingHashAlgorithms": ["sha256"]
+      }
     },
     "directories": {
       "output": "dist"
