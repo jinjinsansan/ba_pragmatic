@@ -1530,6 +1530,85 @@ def _dismiss_stake_loader(page) -> None:
         pass
 
 
+# Injected once per frame: MutationObserver that hides session-elsewhere modal
+# Injected via page.add_init_script() — runs on every frame/page load automatically,
+# including after reloads. Uses setInterval (50ms) to catch modals in Shadow DOM too.
+# Hides session-elsewhere modal INSTANTLY before user sees it, then clicks "Stay here".
+_SESSION_ELSEWHERE_SUPPRESSOR_JS = r"""
+(() => {
+  if (window.__bacopy_se_suppressor_installed) return;
+  window.__bacopy_se_suppressor_installed = true;
+
+  const TEXT_RE = [/他の場所でセッション/, /セッションが開始/, /session.*elsewhere/i, /session.*another/i];
+  const BTN_RE  = [/ここに残る/, /このまま残る/, /このまま続ける/, /ここで続ける/,
+                   /^Stay\b/i, /^OK$/i, /^はい$/, /続ける$/, /残る$/];
+  const EXCL_RE = /facebook|google|ロビーに移動|go\s+to\s+lobby|leave/i;
+
+  function textOf(el) {
+    return (el.innerText || el.textContent || '').replace(/\s+/g,' ').trim();
+  }
+  function* walk(root) {
+    if (!root || !root.querySelectorAll) return;
+    yield root;
+    try {
+      const iter = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let n; while ((n = iter.nextNode())) {
+        yield n;
+        if (n.shadowRoot) { yield* walk(n.shadowRoot); }
+      }
+    } catch(_) {}
+  }
+  function tryDismiss() {
+    for (const el of walk(document.documentElement || document.body)) {
+      try {
+        const t = textOf(el);
+        if (!t || !TEXT_RE.some(p => p.test(t))) continue;
+        if (el.__bacopy_se_hidden) continue;
+        // Walk up to find modal container
+        let container = el;
+        for (let i = 0; i < 20 && container && container.parentElement; i++) {
+          container = container.parentElement;
+          const cls = (typeof container.className === 'string') ? container.className : '';
+          const role = container.getAttribute ? (container.getAttribute('role') || '') : '';
+          if (/modal|dialog|popup|overlay/i.test(cls) || /dialog|alertdialog/.test(role)) break;
+        }
+        if (!container) continue;
+        container.__bacopy_se_hidden = true;
+        // Hide immediately
+        container.style.setProperty('opacity', '0', 'important');
+        container.style.setProperty('visibility', 'hidden', 'important');
+        container.style.setProperty('pointer-events', 'none', 'important');
+        // Click "Stay here" after 60ms (hidden, so no flash)
+        setTimeout(() => {
+          try {
+            for (const btn of walk(container)) {
+              const tag = (btn.tagName||'').toUpperCase();
+              const role2 = btn.getAttribute ? (btn.getAttribute('role')||'') : '';
+              if (tag !== 'BUTTON' && tag !== 'A' && role2 !== 'button') continue;
+              const bt = textOf(btn);
+              if (!bt || EXCL_RE.test(bt)) continue;
+              if (BTN_RE.some(p => p.test(bt))) { try { btn.click(); } catch(_) {} break; }
+            }
+          } catch(_) {}
+          // Re-hide in case Pragmatic un-hides after click
+          setTimeout(() => {
+            try {
+              container.style.setProperty('opacity', '0', 'important');
+              container.style.setProperty('visibility', 'hidden', 'important');
+            } catch(_) {}
+          }, 100);
+        }, 60);
+      } catch(_) {}
+    }
+  }
+  // Run every 40ms — catches modal within 40ms regardless of Shadow DOM or reload timing
+  setInterval(tryDismiss, 40);
+  tryDismiss();
+})();
+"""
+# Keep for backwards compat reference — actual injection now done via add_init_script
+_SESSION_ELSEWHERE_OBSERVER_JS = _SESSION_ELSEWHERE_SUPPRESSOR_JS
+
 _SESSION_ELSEWHERE_DISMISS_JS = r"""
 (opts) => {
   const doClick = !(opts && opts.click === false);
@@ -4344,31 +4423,39 @@ def main(argv: Optional[list[str]] = None) -> int:
                     game_frame.evaluate("(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)", state.game_ws_url)
                 except Exception:
                     pass
-            # Inject Worker bridge into any existing Workers at ARMED time.
-            try:
-                _worker_list = page.workers
-                send_log(f"[session] page.workers count={len(_worker_list)}")
-                for _aw in _worker_list:
-                    try:
-                        _wurl = getattr(_aw, "url", lambda: "?")()
-                        _aw.evaluate(_WS_BRIDGE_WORKER_INIT)
-                        send_log(f"[session] injected Worker bridge at ARMED time url={_wurl}")
-                    except Exception as _we:
-                        send_log(f"[session] Worker bridge inject failed: {_we}")
-            except Exception as _we:
-                send_log(f"[session] page.workers failed: {_we}")
-            # Register worker listener for Workers created AFTER ARMED (game may lazy-create them).
-            def _on_worker(w) -> None:
+            pass  # session-elsewhere suppressor removed (caused browser freeze)
+            # page.workers=0 (Pragmatic uses SharedWorker/cross-origin worker not exposed by Playwright).
+            # Use CDP Target.getTargets to enumerate all worker targets and inject bridge via
+            # Runtime.evaluate on each worker session.
+            def _cdp_inject_worker_bridges() -> None:
                 try:
-                    _wurl = getattr(w, "url", lambda: "?")()
-                    w.evaluate(_WS_BRIDGE_WORKER_INIT)
-                    send_log(f"[session] injected Worker bridge into new worker url={_wurl}")
+                    cdp = page.context.new_cdp_session(page)
+                    targets = cdp.send("Target.getTargets")
+                    worker_targets = [
+                        t for t in (targets.get("targetInfos") or [])
+                        if t.get("type") in ("worker", "shared_worker", "service_worker")
+                    ]
+                    send_log(f"[session] CDP worker targets found: {len(worker_targets)}")
+                    for t in worker_targets:
+                        tid = t.get("targetId", "")
+                        turl = t.get("url", "")
+                        try:
+                            wsess = cdp.send("Target.attachToTarget", {"targetId": tid, "flatten": True})
+                            sid = wsess.get("sessionId", "")
+                            if not sid:
+                                continue
+                            cdp.send("Runtime.evaluate", {
+                                "expression": _WS_BRIDGE_WORKER_INIT,
+                                "sessionId": sid,
+                            })
+                            send_log(f"[session] CDP injected Worker bridge targetId={tid} url={turl}")
+                        except Exception as _we:
+                            send_log(f"[session] CDP Worker inject failed tid={tid}: {_we}")
+                    cdp.detach()
                 except Exception as _we:
-                    send_log(f"[session] new worker bridge inject failed: {_we}")
-            try:
-                page.on("worker", _on_worker)
-            except Exception as _we:
-                send_log(f"[session] page.on worker failed: {_we}")
+                    send_log(f"[session] CDP worker enumerate failed: {_we}")
+
+            _cdp_inject_worker_bridges()
 
         def send_bet_xml(xml_payload: str, match: str) -> dict[str, Any]:
             target_frames = []
@@ -4408,34 +4495,45 @@ def main(argv: Optional[list[str]] = None) -> int:
                 except Exception as e:
                     last_err = {"ok": False, "error": f"evaluate_failed: {e}"}
 
-            # Try Playwright Workers — Pragmatic WS may live inside a Web Worker.
+            # Try CDP Worker sessions — Pragmatic WS lives in a Worker not visible to page.workers.
             try:
-                workers = page.workers
-            except Exception:
-                workers = []
-            for _w in workers:
-                try:
-                    _w_installed = _w.evaluate("() => !!self.__bacopy_ws_bridge_installed")
-                except Exception:
-                    _w_installed = False
-                if not _w_installed:
+                _cdp2 = page.context.new_cdp_session(page)
+                _targets2 = _cdp2.send("Target.getTargets")
+                _worker_targets2 = [
+                    t for t in (_targets2.get("targetInfos") or [])
+                    if t.get("type") in ("worker", "shared_worker", "service_worker")
+                ]
+                for _t2 in _worker_targets2:
+                    _tid2 = _t2.get("targetId", "")
                     try:
-                        _w.evaluate(_WS_BRIDGE_WORKER_INIT)
-                        send_log(f"[bet][ws] injected Worker bridge into worker")
-                    except Exception:
-                        pass
-                try:
-                    res_w = _w.evaluate(
-                        "(args) => self.__bacopy_ws_send(args.match, args.payload)",
-                        {"match": match, "payload": xml_payload},
-                    )
-                    if isinstance(res_w, dict) and res_w.get("ok"):
-                        send_log(f"[bet][ws] sent via Worker bridge url={res_w.get('url','?')}")
-                        return res_w
-                    else:
-                        send_log(f"[bet][ws] Worker bridge result: {res_w}")
-                except Exception as _we:
-                    send_log(f"[bet][ws] Worker evaluate failed: {_we}")
+                        _wsess2 = _cdp2.send("Target.attachToTarget", {"targetId": _tid2, "flatten": True})
+                        _sid2 = _wsess2.get("sessionId", "")
+                        if not _sid2:
+                            continue
+                        # Inject bridge if not already installed
+                        _cdp2.send("Runtime.evaluate", {
+                            "expression": _WS_BRIDGE_WORKER_INIT,
+                            "sessionId": _sid2,
+                        })
+                        # Try to send via worker bridge
+                        _send_expr = f"self.__bacopy_ws_send({json.dumps(match)}, {json.dumps(xml_payload)})"
+                        _res_w2 = _cdp2.send("Runtime.evaluate", {
+                            "expression": _send_expr,
+                            "returnByValue": True,
+                            "sessionId": _sid2,
+                        })
+                        _val2 = (_res_w2.get("result") or {}).get("value")
+                        if isinstance(_val2, dict) and _val2.get("ok"):
+                            send_log(f"[bet][ws] sent via CDP Worker bridge tid={_tid2}")
+                            _cdp2.detach()
+                            return _val2
+                        else:
+                            send_log(f"[bet][ws] CDP Worker bridge result tid={_tid2}: {_val2}")
+                    except Exception as _we2:
+                        send_log(f"[bet][ws] CDP Worker send failed tid={_tid2}: {_we2}")
+                _cdp2.detach()
+            except Exception as _we:
+                send_log(f"[bet][ws] CDP Worker enumerate failed: {_we}")
 
             # All frames + Workers failed native bridge (Pragmatic WS is in Worker context).
             # Reuse the existing persistent socket opened at ARMED time (page top context).
