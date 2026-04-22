@@ -290,6 +290,69 @@ def mark_result(decision_id: str, result: dict[str, Any], status: str = "done") 
         conn.close()
 
 
+def get_decision_target_executor(decision_id: str) -> str:
+    """指定 decision の target_executor_id を返す（空文字=ブロードキャスト）。"""
+    conn = sqlite3.connect(_db_path())
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT target_executor_id FROM decisions WHERE decision_id=?", (decision_id,))
+        row = cur.fetchone()
+        return str(row[0] or "") if row else ""
+    finally:
+        conn.close()
+
+
+def cancel_pending_bets_for_executor(executor_id: str, superseded_by: str) -> int:
+    """SWITCH_TABLE ack 後に pending BET を自動キャンセル。
+    executor_id が空文字の場合はブロードキャスト扱いで全 BET をキャンセル。
+    stale BET が別テーブルで実行されるのを防ぐ。戻り値はキャンセルした件数。"""
+    if not superseded_by:
+        return 0
+    conn = sqlite3.connect(_db_path())
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT decision_id, payload_json FROM decisions
+            WHERE status = 'pending'
+            """,
+        )
+        rows = cur.fetchall()
+        cancelled = 0
+        for did, pjson in rows:
+            if did == superseded_by:
+                continue
+            try:
+                p = json.loads(pjson) if pjson else {}
+            except Exception:
+                continue
+            tgt = str(p.get("target_executor_id") or "")
+            if executor_id:
+                # 特定 executor 向け: 対象外 executor の BET はスキップ
+                if tgt and tgt != executor_id:
+                    continue
+            # executor_id が空(ブロードキャスト): 全 pending BET をキャンセル
+            fa = p.get("friend_action") or {}
+            if not isinstance(fa, dict):
+                continue
+            if str(fa.get("action") or "").upper() != "BET":
+                continue
+            result = {
+                "error": "cancelled: SWITCH_TABLE in progress",
+                "superseded_by": superseded_by,
+                "executor_id": executor_id,
+            }
+            cur.execute(
+                "UPDATE decisions SET status='error', result_json=? WHERE decision_id=?",
+                (json.dumps(result, ensure_ascii=False), did),
+            )
+            cancelled += 1
+        conn.commit()
+        return cancelled
+    finally:
+        conn.close()
+
+
 def get_stats() -> dict[str, Any]:
     conn = sqlite3.connect(_db_path())
     try:
@@ -567,5 +630,19 @@ def list_executors(limit: int = 200) -> list[dict[str, Any]]:
                 }
             )
         return out
+    finally:
+        conn.close()
+
+
+def get_executor_email(executor_id: str) -> str:
+    """Return the user_email stored for a given executor_id (empty string if not found)."""
+    if not executor_id:
+        return ""
+    conn = sqlite3.connect(_db_path())
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT user_email FROM executors WHERE executor_id=? LIMIT 1", (executor_id,))
+        row = cur.fetchone()
+        return str(row[0] or "") if row else ""
     finally:
         conn.close()

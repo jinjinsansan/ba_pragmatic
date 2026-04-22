@@ -37,9 +37,12 @@ from bacopy_db import (
     init_db,
     insert_decision,
     list_executors,
+    get_executor_email,
     mark_ack,
     mark_result,
     upsert_executor,
+    cancel_pending_bets_for_executor,
+    get_decision_target_executor,
 )
 
 from decision_logger import (
@@ -129,14 +132,70 @@ def _resolve_table_id_from_snapshots(provider: str, table_name: str) -> str:
     return ""
 
 
+def _compute_derived_roads(statistics: Any) -> dict[str, Any]:
+    """大路(statistics)から中国罫線(大眼仔・小路・曱甴路)を計算する。
+
+    統計グリッド: 列の配列。各列は ["PN0","BN0","---",...] 形式。
+    先頭文字 P/B が勝者。"---" は空セル。
+
+    各路の計算:
+      r==0 (新列開始): 基準列の長さと1つ前の基準列の長さを比較 → 同一=Red, 異なる=Blue
+      r>0  (列の継続):  基準列に同じ深さのエントリがあるか    → あり=Red, なし=Blue
+    """
+    try:
+        grid = json.loads(statistics) if isinstance(statistics, str) else statistics
+        if not isinstance(grid, list):
+            return {}
+    except Exception:
+        return {}
+
+    # 列を抽出 (空でないもののみ)
+    columns: list[list[str]] = []
+    for col in grid:
+        entries = [c[0] for c in col if isinstance(c, str) and c != "---" and c and c[0] in "PBT"]
+        if entries:
+            columns.append(entries)
+
+    def _road(offset: int) -> list[str]:
+        # offset=1: 大眼仔, offset=2: 小路, offset=3: 曱甴路
+        road: list[str] = []
+        start_col = offset + 1  # 最低限必要な列数
+        for c in range(start_col, len(columns) + 1):
+            col_c   = columns[c - 1]
+            col_ref = columns[c - 1 - offset]
+            for r in range(len(col_c)):
+                if r == 0:
+                    prev_ref = columns[c - 2 - offset] if (c - 2 - offset) >= 0 else []
+                    entry = "R" if len(col_ref) == len(prev_ref) else "B"
+                else:
+                    entry = "R" if r < len(col_ref) else "B"
+                road.append(entry)
+        return road
+
+    return {
+        "big_eye_boy":   _road(1)[-12:],
+        "small_road":    _road(2)[-12:],
+        "cockroach_road": _road(3)[-12:],
+    }
+
+
 def _fill_snapshot(provider: str, table_id: str, payload: dict[str, Any]) -> None:
     snap = payload.get("snapshot")
     if isinstance(snap, dict) and snap:
+        # 既存スナップショットにも中国罫線を補完する
+        if "derived_roads" not in snap:
+            stats = snap.get("statistics")
+            if stats:
+                snap["derived_roads"] = _compute_derived_roads(stats)
         return
     if not provider or not table_id:
         return
     s = get_snapshot(provider, table_id)
     if isinstance(s, dict) and s:
+        # 中国罫線を計算して付与
+        stats = s.get("statistics")
+        if stats and "derived_roads" not in s:
+            s["derived_roads"] = _compute_derived_roads(stats)
         payload["snapshot"] = s
 
 
@@ -408,10 +467,27 @@ class _Handler(BaseHTTPRequestHandler):
         if u.path == "/api/decisions":
             qs = parse_qs(u.query or "")
             status = (qs.get("status") or ["pending"])[0]
+            executor_id_qs = str((qs.get("executor_id") or [""])[0] or "")
             try:
                 limit = int((qs.get("limit") or ["50"])[0])
             except Exception:
                 limit = 50
+            # approved-users check: executor が pending を取得する時のみ検証
+            if status == "pending" and executor_id_qs:
+                email = get_executor_email(executor_id_qs)
+                if email:
+                    approved = _fetch_approved_users()
+                    if approved.get("ok"):
+                        approved_emails = {
+                            str(u.get("email") or "").lower()
+                            for u in (approved.get("users") or [])
+                        }
+                        if email.lower() not in approved_emails:
+                            return _send_json(self, 200, {
+                                "decisions": [],
+                                "approved": False,
+                                "reason": "not_approved",
+                            })
             return _send_json(self, 200, {"decisions": get_by_status(status, limit=limit)})
         if u.path == "/api/decisions/wait":
             qs = parse_qs(u.query or "")
@@ -427,6 +503,24 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception:
                 wait_sec = 20.0
             wait_sec = max(0.2, min(25.0, wait_sec))
+
+            # 承認済みユーザー確認 (executor_id が指定された場合のみ、キャッシュ使用で高速)
+            if status == "pending" and executor_id:
+                _email = get_executor_email(executor_id)
+                if _email:
+                    _approved = _fetch_approved_users()
+                    if _approved.get("ok"):
+                        _approved_emails = {
+                            str(u2.get("email") or "").lower()
+                            for u2 in (_approved.get("users") or [])
+                        }
+                        if _email.lower() not in _approved_emails:
+                            return _send_json(self, 200, {
+                                "ok": True,
+                                "decisions": [],
+                                "approved": False,
+                                "reason": "not_approved",
+                            })
 
             def _match(d: dict[str, Any]) -> bool:
                 if provider and str(d.get("provider") or "") != provider:
@@ -550,6 +644,16 @@ class _Handler(BaseHTTPRequestHandler):
                 mark_ack(decision_id, ack, status=status)
                 # ML 契約: JSONL にも ack event を追記
                 append_ack_event(decision_id, ack, status=status)
+                # SWITCH_TABLE が ack された場合、pending BET をキャンセル
+                # (テーブル移動中に BET が stale になるのを防ぐ)
+                if isinstance(ack, dict):
+                    action = str((ack.get("friend_action") or {}).get("action") or "").upper()
+                    if action == "SWITCH_TABLE":
+                        # DB から target_executor_id を取得 (ack body に含まれていないため)
+                        tgt_exec = get_decision_target_executor(decision_id)
+                        n = cancel_pending_bets_for_executor(tgt_exec, decision_id)
+                        if n:
+                            print(f"[ack] cancelled {n} stale BET(s) for executor={tgt_exec or 'broadcast'} after SWITCH_TABLE", flush=True)
                 _notify_decision_waiters()
                 return _send_json(self, 200, {"ok": True})
             if parts[3] == "result":

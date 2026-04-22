@@ -7,8 +7,8 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "build": "electron-builder --dir --config.win.signAndEditExecutable=false",
-    "build:installer": "electron-builder --win nsis --config.win.signAndEditExecutable=false"
+    "build": "python3 scripts/minify_js.py --inplace && electron-builder --dir --config.win.signAndEditExecutable=false",
+    "build:installer": "python3 scripts/minify_js.py --inplace && electron-builder --win nsis --config.win.signAndEditExecutable=false"
   },
   "devDependencies": {
     "electron": "^41.1.1",

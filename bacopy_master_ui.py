@@ -417,6 +417,12 @@ body.bet-open .big-btn.player::after,body.bet-open .big-btn.banker::after,body.b
       <!-- btnLook は削除済 (UX: LOOK は使われていない). JS も無効化. -->
       <button id="btnLook" style="display:none"></button>
       <div id="lastActionBox" class="act-status">待機中</div>
+      <!-- 学習セッション管理 -->
+      <div id="sessionPanel" style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <button id="btnSessionStart" class="big-btn" style="background:#1a7a3a;font-size:12px;padding:6px 12px;flex:1;min-width:80px" title="学習セッション開始: このボタンを押してから友人がプレイ。BETしなかったラウンドが自動でLOOKとして記録される。">▶ セッション開始</button>
+        <button id="btnSessionEnd" class="big-btn" style="background:#555;font-size:12px;padding:6px 12px;flex:1;min-width:80px;display:none" title="学習セッション終了">■ セッション終了</button>
+        <div id="sessionStatus" style="font-size:11px;color:var(--text-muted)">学習OFF</div>
+      </div>
     </div>
   </aside>
 </div>
@@ -568,6 +574,100 @@ let _state = {
   decisions: { pending:[], processing:[], done:[], error:[] }, stats: null,
 };
 
+// ===== 学習セッション管理 =====
+// セッション中はラウンド変化を監視し、BETしなかったラウンドを自動でLOOK記録する
+let _learnSession = {
+  active: false,
+  startedAt: null,
+  currentGameId: null,      // 現在追跡中のgameId
+  betSentThisRound: false,  // 今のラウンドでBETを送ったか
+  savedSnapshot: null,      // 今のラウンド開始時のスナップショット
+  autoLookCount: 0,         // 自動LOOK記録数
+};
+
+function _learnSessionCurrentSnap(){
+  const provider = document.getElementById('providerSel').value;
+  const snaps = (_state.snapshots && _state.snapshots.snapshots) || {};
+  const tableSnap = snaps[selected.table_id];
+  if(!tableSnap) return null;
+  try { return typeof tableSnap === 'string' ? JSON.parse(tableSnap) : tableSnap; } catch(_){ return null; }
+}
+
+function _learnSessionCheck(){
+  if(!_learnSession.active) return;
+  if(!selected.table_id) return;
+  const snap = _learnSessionCurrentSnap();
+  if(!snap) return;
+  const gameId = (snap.last_hand && snap.last_hand.gameId) ? String(snap.last_hand.gameId) : null;
+  if(!gameId) return;
+  if(_learnSession.currentGameId === null){
+    // 初回: ゲームIDを記録するだけ（最初のラウンドはLOOK不記録）
+    _learnSession.currentGameId = gameId;
+    _learnSession.savedSnapshot = snap;
+    _learnSession.betSentThisRound = false;
+    return;
+  }
+  if(gameId === _learnSession.currentGameId) return; // 同じラウンド中
+  // ─ ラウンド変化検知 ─
+  const prevGameId = _learnSession.currentGameId;
+  const prevSnap   = _learnSession.savedSnapshot;
+  const didBet     = _learnSession.betSentThisRound;
+  // 次ラウンドに更新
+  _learnSession.currentGameId   = gameId;
+  _learnSession.savedSnapshot   = snap;
+  _learnSession.betSentThisRound = false;
+  if(didBet) return; // BETしたラウンドはLOOK不要
+  // BETしなかった → 自動LOOKを記録
+  const did = 'look_auto_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+  const payload = {
+    decision_id: did,
+    provider: document.getElementById('providerSel').value,
+    table_id: selected.table_id,
+    table_name: selected.table_name,
+    qpid_table_id: String(selected.qpid_table_id||''),
+    target_executor_id: '',
+    friend_action: { action:'LOOK', side:'', amount:0, note:'auto' },
+    snapshot: prevSnap || {},
+    game_id: prevGameId || '',
+  };
+  apiPost('/api/decisions', payload).then(res=>{
+    if(res && res.accepted){
+      _learnSession.autoLookCount++;
+      _updateSessionStatus();
+    }
+  }).catch(()=>{});
+}
+
+function _updateSessionStatus(){
+  const el = document.getElementById('sessionStatus');
+  if(!el) return;
+  if(!_learnSession.active){ el.textContent='学習OFF'; el.style.color='var(--text-muted)'; return; }
+  const mins = Math.floor((Date.now() - _learnSession.startedAt) / 60000);
+  el.textContent = `学習中 ${mins}分 | LOOK自動:${_learnSession.autoLookCount}件`;
+  el.style.color = '#4caf50';
+}
+
+function _startSession(){
+  _learnSession.active = true;
+  _learnSession.startedAt = Date.now();
+  _learnSession.currentGameId = null;
+  _learnSession.betSentThisRound = false;
+  _learnSession.savedSnapshot = null;
+  _learnSession.autoLookCount = 0;
+  document.getElementById('btnSessionStart').style.display='none';
+  document.getElementById('btnSessionEnd').style.display='';
+  _updateSessionStatus();
+  showToast('学習セッション開始。BETしなかったラウンドは自動でLOOK記録されます。','ok');
+}
+
+function _endSession(){
+  _learnSession.active = false;
+  document.getElementById('btnSessionStart').style.display='';
+  document.getElementById('btnSessionEnd').style.display='none';
+  _updateSessionStatus();
+  showToast(`学習セッション終了。自動LOOK記録: ${_learnSession.autoLookCount}件`,'ok');
+}
+
 // 直近 fetch 結果のハッシュ (簡易 fingerprint) で差分検知し, 変化時のみ再描画.
 // 500ms 間隔 poll × innerHTML 丸ごと再構築 = 視覚的なフラッシュを防ぐ.
 let _lastRenderFingerprint = { snaps: '', execs: '', decs: '' };
@@ -591,6 +691,8 @@ async function refreshOnce(){
     ]);
     _state.stats = st;
     _state.snapshots = snaps;
+    _learnSessionCheck();   // ラウンド変化を監視→自動LOOK記録
+    _updateSessionStatus(); // セッション経過時間表示更新
     _state.executors = (execs && execs.executors)||[];
     _state.decisions.pending = (pend && pend.decisions)||[];
     _state.decisions.processing = (proc && proc.decisions)||[];
@@ -1247,6 +1349,7 @@ function sendDecision(action, side){
   // ===== 楽観 UI (Optimistic updates) =====
   // HTTP レスポンスを待たず, クリック瞬時に UI 反映. 後で heartbeat で確定状態で上書きされる.
   lastDecisionWatch = { id:did, action, side:side||'', startedAt:Date.now(), targetExecId:target_executor_id, targetTable:selected.table_name };
+  if(action === 'BET') _learnSession.betSentThisRound = true; // このラウンドはBET済→自動LOOK不要
   if(action === 'BET'){
     setActionBox('['+actJa+(side?('/'+side):'')+'] 📨 送信中...','processing');
     // BET 送信中は予測的に「切替中」扱いで連打防止
@@ -1470,6 +1573,8 @@ document.getElementById('btnLook').onclick = ()=> sendDecision('LOOK','');
 document.getElementById('btnP').onclick = ()=> sendDecision('BET','PLAYER');
 document.getElementById('btnB').onclick = ()=> sendDecision('BET','BANKER');
 document.getElementById('btnT').onclick = ()=> sendDecision('BET','TIE');
+document.getElementById('btnSessionStart').onclick = _startSession;
+document.getElementById('btnSessionEnd').onclick   = _endSession;
 document.getElementById('modeToggle').onclick = toggleMode;
 document.getElementById('emergencyStop').onclick = toggleStop;
 document.getElementById('favBtn').onclick = toggleFavorite;

@@ -1,4 +1,4 @@
-// BACOPYRECEIVER — Renderer (Receiver GUI)
+
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -7,23 +7,26 @@ let isRunning = false;
 let logVisible = true;
 let _billingOk = false;
 
-// 周回ネオンアニメーションは GUI ウィンドウがアクティブな時のみ動かす。
-// Camoufox (Evolution動画) と GPU を競合させないため。
-// ウィンドウフォーカス → body.animations-on / blur → 解除
+let _billingNetworkFailCount = 0;
+
+const _BILLING_FAIL_TOLERANCE = 3;
+
+let _balanceEmptyFirstAt = null;
+
+const _BALANCE_GRACE_MS = 30 * 60 * 1000;
+
 function _setAnimationsActive(active) {
   document.body.classList.toggle('animations-on', active);
 }
 window.addEventListener('focus', () => _setAnimationsActive(true));
 window.addEventListener('blur', () => _setAnimationsActive(false));
-// 初期状態: 起動直後はフォーカス想定で ON
+
 if (document.hasFocus()) _setAnimationsActive(true);
 
-// --- Title Bar ---
 $('#btnMinimize').addEventListener('click', () => window.valhalla.windowMinimize());
 $('#btnMaximize').addEventListener('click', () => window.valhalla.windowMaximize());
 $('#btnClose').addEventListener('click', () => window.valhalla.windowClose());
 
-// --- Setup / Auth Screen ---
 function showSetup(errorMsg) {
   const scr = $('#setupScreen');
   const main = $('#mainContent');
@@ -48,7 +51,6 @@ function showMain() {
   if (main) main.classList.remove('hidden');
 }
 
-// --- Master Status ---
 let _masterStatus = {
   connected: null,
   active: false,
@@ -118,7 +120,8 @@ function _msUntilNextJstMidnight() {
   const now = Date.now();
   const jst = new Date(now + 9 * 60 * 60 * 1000);
   const next = new Date(jst);
-  next.setUTCHours(0, 0, 5, 0); // 00:00:05 JST (avoid exact boundary)
+  next.setUTCHours(0, 0, 5, 0);
+
   next.setUTCDate(next.getUTCDate() + 1);
   const nextUtcMs = next.getTime() - 9 * 60 * 60 * 1000;
   return Math.max(1000, nextUtcMs - now);
@@ -133,6 +136,43 @@ async function refreshBilling({ silent = false } = {}) {
   }
   try {
     const b = await window.valhalla.getBillingStatus();
+
+
+
+    if (b && b.network_error) {
+      _billingNetworkFailCount++;
+      if (!silent) addLog(`CREDIT: ネットワーク障害 (${_billingNetworkFailCount}回目)。稼働継続。`, 'warn');
+
+
+      return b;
+    }
+    _billingNetworkFailCount = 0;
+
+
+
+    if (b && b.balance_empty && isRunning) {
+      if (!_balanceEmptyFirstAt) {
+        _balanceEmptyFirstAt = Date.now();
+        addLog(`CREDIT: 残高0を検出。${_BALANCE_GRACE_MS / 60000}分以内にチャージしてください。`, 'warn');
+      }
+      const elapsed = Date.now() - _balanceEmptyFirstAt;
+      if (elapsed < _BALANCE_GRACE_MS) {
+
+
+        const remaining = Math.ceil((_BALANCE_GRACE_MS - elapsed) / 60000);
+        if (!silent) addLog(`CREDIT: 残高0 猶予中 残り${remaining}分`, 'warn');
+        _billingOk = false;
+        const el = $('#creditBalance');
+        if (el) { el.textContent = `$0.00 (猶予${remaining}分)`; el.className = 'stat-value negative'; }
+        return b;
+      }
+
+
+    } else if (b && b.ok) {
+      _balanceEmptyFirstAt = null;
+
+    }
+
     _billingOk = !!(b && b.ok);
     const el = $('#creditBalance');
     if (el) {
@@ -141,7 +181,8 @@ async function refreshBilling({ silent = false } = {}) {
       else el.textContent = '-';
       el.className = 'stat-value ' + (_billingOk ? 'positive' : 'negative');
     }
-    // Disable START if billing is not OK
+
+
     if (!isRunning) {
       const startBtn = $('#btnStart');
       if (startBtn) startBtn.disabled = !_billingOk;
@@ -149,16 +190,26 @@ async function refreshBilling({ silent = false } = {}) {
     if (!_billingOk && !silent && b && b.reason) {
       addLog(`CREDIT: ${b.reason}`, 'warn');
     }
-    // Enforce stop if credit becomes invalid
-    if (!_billingOk && isRunning) {
-      await stopBotFlow({ forced: true, reason: b && b.reason ? b.reason : 'Credit is not active' });
-      showSetup(b && b.reason ? b.reason : 'Credit is not active');
+
+
+    if (!_billingOk && isRunning && b && !b.network_error && !b.balance_empty) {
+      await stopBotFlow({ forced: true, reason: b.reason || 'Credit is not active' });
+      showSetup(b.reason || 'Credit is not active');
+    }
+
+
+    if (!_billingOk && isRunning && b && b.balance_empty) {
+      addLog('CREDIT: 残高0の猶予期間が終了しました。ボットを停止します。', 'err');
+      await stopBotFlow({ forced: true, reason: b.reason || 'Balance is empty' });
+      showSetup(b.reason || 'Balance is empty');
     }
     return b || { ok: false, reason: 'Unknown billing status' };
   } catch (e) {
-    _billingOk = false;
-    if (!silent) addLog(`Billing check failed: ${e.message || e}`, 'warn');
-    return { ok: false, reason: 'Billing check failed' };
+
+
+    _billingNetworkFailCount++;
+    if (!silent) addLog(`Billing check failed (${_billingNetworkFailCount}): ${e.message || e}`, 'warn');
+    return { ok: false, network_error: true, reason: 'Billing check failed' };
   }
 }
 
@@ -196,7 +247,8 @@ async function initAuth() {
       showSetup();
       return;
     }
-    // Remember the authenticated user (used for master UI grouping / audit).
+
+
     window.__authEmail = sess.email || '';
     window.__authUserId = sess.user_id || '';
     const b = await refreshBilling({ silent: true });
@@ -206,10 +258,14 @@ async function initAuth() {
     }
     showMain();
     startBillingMonitors();
-    // Auto-arm unless user explicitly stopped
-    // NOTE: auto-start は廃止。START ボタンをユーザーが明示的に押すまで executor を起動しない.
-    // これで orphan camoufox / session_elsewhere 連発を防ぐ。
-    // (SEQ7 の続きから再開するか新規セッションにするかは START 時のダイアログで選ぶ)
+
+
+
+
+
+
+
+
   } catch (e) {
     showSetup(`Sign-in check failed: ${e.message || e}`);
   }
@@ -241,9 +297,12 @@ async function handleSignIn() {
     }
     showMain();
     startBillingMonitors();
-    // NOTE: auto-start は廃止。START ボタンをユーザーが明示的に押すまで executor を起動しない.
-    // これで orphan camoufox / session_elsewhere 連発を防ぐ。
-    // (SEQ7 の続きから再開するか新規セッションにするかは START 時のダイアログで選ぶ)
+
+
+
+
+
+
   } catch (e) {
     showSetup(`Sign-in failed: ${e.message || e}`);
   } finally {
@@ -258,20 +317,18 @@ $('#setupPassword')?.addEventListener('keydown', (e) => {
 });
 $('#linkBafather')?.addEventListener('click', () => window.valhalla.openExternal('https://bafather.uk'));
 
-// --- Start / Stop ---
-// ========== 残高スナップショット方式のPNL ==========
-// 真実の源: Python から届く session_open_balance / daily_open_balance + current balance。
-// Session PNL = currentBalance - sessionOpenBalance
-// Daily PNL   = currentBalance - dailyOpenBalance (日付変化時に open を更新)
-// GUI は計算・表示のみ担当。累積や加算はしない。
-let _startedAt = 0;  // START押下時刻 (stopped誤検知防止用)
-let _currentBalance = null;        // 最新残高 (Pythonから)
-let _sessionOpenBalance = null;    // セッション起点残高
-let _dailyOpenBalance = null;      // デイリー起点残高
-let _dailyOpenDate = null;         // デイリー起点日付 (JST YYYY-MM-DD)
-// 互換: sessionTotal は計算結果を保持する (他コードが参照するため)
+let _startedAt = 0;
+
+let _currentBalance = null;
+
+let _sessionOpenBalance = null;
+
+let _dailyOpenBalance = null;
+
+let _dailyOpenDate = null;
+
 let sessionTotal = 0;
-const results = [];  // 'W' | 'L' | 'T'
+const results = [];
 
 function _jstDateStrNow() {
   const now = new Date();
@@ -280,42 +337,49 @@ function _jstDateStrNow() {
   return `${jst.getFullYear()}-${String(jst.getMonth()+1).padStart(2,'0')}-${String(jst.getDate()).padStart(2,'0')}`;
 }
 
-// 残高として妥当 (正数) かチェック。0 や負値は「不明」扱い。
-// これを通らなければ _currentBalance 等に代入されない。
 function _isValidBalance(v) {
   return typeof v === 'number' && Number.isFinite(v) && v > 0;
 }
 
 function _computePnl() {
-  // 残高が未確定 (null / 0 / 負値) の場合は PNL=0 扱い
-  // これで GUI 開いた直後に古いスナップショットの dailyOpen と 0 残高で
-  // -$XXXX が出る事故を防ぐ。最初の status 到達で正しい値に回復する。
+
+
+
+
+
+
   if (!_isValidBalance(_currentBalance)) return { session: 0, daily: 0 };
-  // Daily: 日付ロールオーバーチェック (GUI側でもフォールバック処理)
+
+
   const today = _jstDateStrNow();
   if (_dailyOpenDate !== today) {
-    // Python から新しい date がまだ来ていない場合の暫定処理
+
+
     _dailyOpenDate = today;
     _dailyOpenBalance = _currentBalance;
     _persistBalanceSnapshot();
   }
   const session = _isValidBalance(_sessionOpenBalance) ? (_currentBalance - _sessionOpenBalance) : 0;
   const daily = _isValidBalance(_dailyOpenBalance) ? (_currentBalance - _dailyOpenBalance) : 0;
-  sessionTotal = session;  // 互換用
+  sessionTotal = session;
+
   return { session, daily };
 }
 
 function _persistBalanceSnapshot() {
   try {
-    // 無効値 (0 / null) は保存しない。古い有効データを壊さないため。
+
+
     const payload = {};
     if (_isValidBalance(_currentBalance)) payload.current = _currentBalance;
     if (_isValidBalance(_sessionOpenBalance)) payload.session_open = _sessionOpenBalance;
     if (_isValidBalance(_dailyOpenBalance)) payload.daily_open = _dailyOpenBalance;
     if (typeof _dailyOpenDate === 'string' && _dailyOpenDate) payload.daily_date = _dailyOpenDate;
-    // 何も有効値が無ければそもそも書かない (既存データ保持)
+
+
     if (Object.keys(payload).length === 0) return;
-    // 既存データとマージ (他フィールドを消さない)
+
+
     try {
       const existing = JSON.parse(localStorage.getItem('valhalla_balance_snapshot') || '{}');
       Object.assign(existing, payload);
@@ -367,18 +431,21 @@ async function startBotFlow({ auto = false } = {}) {
   }
 
   if (!config.resume) {
-    // NEW SESSION: UI も履歴もセッション起点も完全リセット.
+
+
     _sessionOpenBalance = null;
     sessionTotal = 0;
     _persistBalanceSnapshot();
     updateSessionDisplay();
     resetFeed();
-    // ログストリーム (terminal風の #logContent) を完全クリア.
+
+
     try {
       const logEl = document.getElementById('logContent');
       if (logEl) logEl.innerHTML = '';
     } catch (_) {}
-    // SIGNAL PANEL の O/X ストリーム (#sigStream) もクリア.
+
+
     try {
       const sig = document.getElementById('sigStream');
       if (sig) sig.innerHTML = '';
@@ -386,30 +453,35 @@ async function startBotFlow({ auto = false } = {}) {
       _streamTurnsInSet = 0;
       _lastRoundWon = null;
     } catch (_) {}
-    // CYCLE / RATIO / DRIFT / ROUND 表示もリセット.
+
+
     try {
       ['sigCycle','sigRatio','sigDrift','sigRound'].forEach(id => {
         const el = document.getElementById(id);
         if (el) { el.textContent = '--'; el.style.color = ''; }
       });
     } catch (_) {}
-    // LIVE FEED / dev sets なども.
+
+
     try {
       const lf = document.getElementById('feedList') || document.getElementById('liveFeed');
       if (lf) lf.innerHTML = '';
     } catch (_) {}
-    // 直近結果 / セット履歴なども localStorage に残っていたら消す.
+
+
     try {
       localStorage.removeItem('valhalla_session_state');
       localStorage.removeItem('valhalla_recent_results');
       localStorage.removeItem('valhalla_set_history');
     } catch (_) {}
-    // Phase / Action 表示を armed 待機に戻す.
+
+
     try {
       setPhase('idle', 'new session — waiting for master signal');
       setAction('NEW SESSION started');
     } catch (_) {}
-    // Flash overlay などが残っていれば消す.
+
+
     try {
       const fl = document.getElementById('flashOverlay');
       if (fl) fl.className = 'flash-overlay';
@@ -454,7 +526,8 @@ function updateSessionDisplay() {
   const el = $('#sessionPnl');
   el.textContent = `$${session >= 0 ? '+' : ''}${session.toFixed(2)}`;
   el.className = 'stat-value ' + (session >= 0 ? 'positive' : 'negative');
-  // Daily P&L もここで更新
+
+
   const todayEl = $('#todayPnl');
   if (todayEl) {
     todayEl.textContent = `${daily >= 0 ? '+$' : '-$'}${Math.abs(daily).toFixed(0)}`;
@@ -479,8 +552,10 @@ function restoreSessionState() {
     const raw = localStorage.getItem('valhalla_session_state');
     if (!raw) return false;
     const state = JSON.parse(raw);
-    // 互換: 旧 sessionTotal フィールドは残高スナップショット方式では不要。
-    // _restoreBalanceSnapshot() で session_open_balance を復元する。
+
+
+
+
     results.length = 0;
     if (Array.isArray(state.results)) {
       for (const r of state.results) results.push(r);
@@ -503,7 +578,6 @@ function setRunning(running) {
   $('#btnStop').disabled = !running;
 }
 
-// Continue/Reset dialog
 function showContinueDialog() {
   return new Promise((resolve) => {
     const modal = $('#continueModal');
@@ -516,13 +590,18 @@ function showContinueDialog() {
     };
     $('#btnContinue').onclick = () => { restoreSessionState(); cleanup(); resolve('continue'); };
     $('#btnResetAll').onclick = () => {
-      // セッション関連のみリセット。デイリー (dailyOpenBalance/Date) と 14日履歴は保持。
-      // 理由: Daily PNL は 20% 課金計算の基準で、管理パネルと同期必要。
-      // 0時ロールオーバー以外で消してはいけない。
+
+
+
+
+
+
       localStorage.removeItem('valhalla_session_state');
       sessionTotal = 0;
-      _sessionOpenBalance = null;  // セッション起点のみクリア
-      // _currentBalance / _dailyOpenBalance / _dailyOpenDate は温存
+      _sessionOpenBalance = null;
+
+
+
       _persistBalanceSnapshot();
       updateSessionDisplay();
       resetFeed();
@@ -533,7 +612,6 @@ function showContinueDialog() {
   });
 }
 
-// --- Settings ---
 const DEFAULT_SETTINGS = {
   chip_base: 1,
   profit_target: 50,
@@ -542,16 +620,23 @@ const DEFAULT_SETTINGS = {
   executor_id: 'gui-1',
   executor_label: 'MAIN-PC',
   stake_username: '',
-  // 空がデフォルト. executor は Master API の最後の SWITCH_TABLE を優先し,
-  // なければ空 → lobby 自動 click しない (= admin が Master UI から選ぶのを待つ).
-  // 以前 "Speed Baccarat" をデフォルトにしていたが, これが lobby 先頭カード
-  // (= Speed Baccarat 6) に毎回入る原因だったので削除.
+
+
+
+
+
+
+
+
   table_name_substr: '',
   auto_click_wait_sec: 90,
   allow_switch_table: true,
-  allow_banker: true,   // Pragmatic bet code 0/1/2 が標準なので BANKER デフォルト有効.
-  allow_tie: false,     // TIE は任意 (ペイアウト 8x でハイリスク).
-  assume_bc_012: true,  // BC code は standard pragmatic (0=P/1=B/2=T).
+  allow_banker: true,
+
+  allow_tie: false,
+
+  assume_bc_012: true,
+
   headless: false,
   dry_run: false,
   bet_mode: 'counter_seq7',
@@ -573,7 +658,8 @@ const LAPLACE_API_KEY = '';
 let _paramCandidates = [];
 
 function _formatParamCandidate(c, idx) {
-  // シンプル化: "Auto2" / "Auto3" 等の表記のみ (内部パラメータは非表示)
+
+
   return `Auto${idx + 2}`;
 }
 
@@ -610,7 +696,6 @@ async function loadParamCandidates(selected) {
   }
 }
 
-// --- Recommended Tables (Supabase) ---
 async function fetchRecommendedTables() {
   const email = loadSettings().user_email;
   const qs = email
@@ -627,7 +712,8 @@ async function fetchRecommendedTables() {
   } catch (e) {
     console.warn('[sync] recommended-tables fetch failed:', e);
   }
-  // fallback
+
+
   const cached = localStorage.getItem('recommended_tables');
   return cached ? JSON.parse(cached) : [
     { name: 'Japanese Speed Baccarat A', enabled: true, priority: 1 },
@@ -663,15 +749,17 @@ function getEnabledRecommendedTables() {
   }
 }
 
-// --- GUI State Persistence (Supabase) ---
 let _guiSyncTimer = null;
 let _guiSyncPending = false;
 
 function _getGuiState() {
-  // 無効値 (null/0/負値) は送らない。サーバーの有効データを 0 で上書きして
-  // 再起動時に -$XXXX を発生させないため。
+
+
+
+
   const payload = {
-    // 互換: 旧フィールド
+
+
     session_total: sessionTotal,
     daily_pnl: loadDailyPnl(),
     results: results.slice(-200),
@@ -700,7 +788,8 @@ async function syncGuiStateToServer() {
 }
 
 function scheduleGuiStateSync() {
-  // Disabled in BACOPYRECEIVER.
+
+
 }
 
 async function loadGuiStateFromServer() {
@@ -719,8 +808,10 @@ async function loadGuiStateFromServer() {
 async function restoreGuiStateFromServer() {
   const state = await loadGuiStateFromServer();
   if (!state) return false;
-  // サーバに保存されている残高スナップショットを復元 (Python から最新値が届くまでの暫定表示)
-  // _isValidBalance で 0/負値を除外。古い有効値を 0 で上書きしない (デイリーPNL -$XXXX バグ防止)。
+
+
+
+
   if (_isValidBalance(state.current_balance)) _currentBalance = state.current_balance;
   if (_isValidBalance(state.session_open_balance)) _sessionOpenBalance = state.session_open_balance;
   if (_isValidBalance(state.daily_open_balance)) _dailyOpenBalance = state.daily_open_balance;
@@ -741,19 +832,14 @@ async function restoreGuiStateFromServer() {
   return true;
 }
 
-// =============================================================
-// Settings モーダル: Tabs + Telegram + SYSTEM (SSH サポート)
-// ba GUI から移植. 既存のベット設定ロジックは壊さない.
-// =============================================================
-
-// Tab 切り替え (BOT / SYSTEM)
 function _settingsSwitchTab(which) {
   $$('.modal-tab').forEach(t => t.classList.remove('active'));
   $$('.tab-content').forEach(c => c.classList.add('hidden'));
   if (which === 'system') {
     $('#tabSystemBtn')?.classList.add('active');
     $('#tabSystemContent')?.classList.remove('hidden');
-    _refreshSupportInfo();  // SYSTEM 開いた時に最新化
+    _refreshSupportInfo();
+
   } else {
     $('#tabBotBtn')?.classList.add('active');
     $('#tabBotContent')?.classList.remove('hidden');
@@ -763,11 +849,11 @@ $('#tabBotBtn')?.addEventListener('click', () => _settingsSwitchTab('bot'));
 $('#tabSystemBtn')?.addEventListener('click', () => _settingsSwitchTab('system'));
 
 function initModalTabs() {
-  // 互換用. 実際のセットアップは上の listener + _settingsSwitchTab で完結.
+
+
   _settingsSwitchTab('bot');
 }
 
-// Tiny toast (Settings 内のテスト結果等に使う).
 function _settingsToast(msg, type = 'info') {
   let el = $('#settingsToast');
   if (!el) {
@@ -784,17 +870,25 @@ function _settingsToast(msg, type = 'info') {
   _settingsToast._tm = setTimeout(() => el.classList.remove('show'), 3600);
 }
 
-// Support ID / Port / Tunnel status 表示更新.
 async function _refreshSupportInfo() {
   try {
     if (!window.bacopy?.getSupportInfo) return;
     const info = await window.bacopy.getSupportInfo();
     const $e = $('#supportIdEmail'), $p = $('#supportIdPort'), $s = $('#supportIdStatus');
     if ($e) $e.textContent = info.email || '—';
-    if ($p) $p.textContent = info.port || '—';
+    if ($p) $p.textContent = info.port ? `${info.port} (接続待ち)` : '—';
     if ($s) {
-      $s.textContent = info.tunnel_status || 'unknown';
-      $s.style.color = (info.tunnel_status === 'running') ? 'var(--win)' : 'var(--text-muted)';
+      const isRunning = info.tunnel_status === 'running';
+      if (isRunning) {
+        $s.textContent = '接続中 ✓';
+        $s.style.color = 'var(--win)';
+      } else if (info.last_error) {
+        $s.textContent = `停止 (${info.fail_count}回失敗: ${info.last_error.slice(0, 60)})`;
+        $s.style.color = 'var(--lose)';
+      } else {
+        $s.textContent = '停止';
+        $s.style.color = 'var(--text-muted)';
+      }
     }
   } catch (e) {
     console.warn('[Settings] getSupportInfo failed:', e);
@@ -823,7 +917,8 @@ $('#btnSettings')?.addEventListener('click', async () => {
   if ($('#inputAssumeBc012')) $('#inputAssumeBc012').checked = !!s.assume_bc_012;
   $('#inputHeadless').checked = !!s.headless;
 
-  // .env 由来の Telegram / Support 値を取得して pre-fill
+
+
   try {
     if (window.bacopy?.getSettings) {
       const remote = await window.bacopy.getSettings();
@@ -838,15 +933,16 @@ $('#btnSettings')?.addEventListener('click', async () => {
     console.warn('[Settings] getSettings failed:', e);
   }
 
-  // 初期タブは BOT
+
+
   _settingsSwitchTab('bot');
 });
 $('#settingsClose')?.addEventListener('click', () => $('#settingsModal')?.classList.add('hidden'));
 
-// TEST TELEGRAM: .env に保存済みの token/chat で疎通確認
 $('#btnTestTelegram')?.addEventListener('click', async () => {
   try {
-    // 未保存の値で Test したい場合に備えて, 先に現在の入力を .env へ保存する.
+
+
     const token = $('#inputTelegramToken')?.value.trim() || '';
     const chat  = $('#inputTelegramChat')?.value.trim()  || '';
     if (!token || !chat) {
@@ -865,7 +961,6 @@ $('#btnTestTelegram')?.addEventListener('click', async () => {
   }
 });
 
-// SUPPORT toggle: 変更即 .env 保存 + tunnel start/stop
 $('#inputSupportToggle')?.addEventListener('change', async (ev) => {
   const on = !!ev.target.checked;
   try {
@@ -877,7 +972,6 @@ $('#inputSupportToggle')?.addEventListener('change', async (ev) => {
   }
 });
 
-// INSTALL ON THIS PC: PowerShell を昇格起動
 $('#btnInstallDeps')?.addEventListener('click', async () => {
   try {
     _settingsToast('セットアップを起動中... (UAC 承認)', 'info');
@@ -889,7 +983,6 @@ $('#btnInstallDeps')?.addEventListener('click', async () => {
   }
 });
 
-// OPEN SETUP LOG
 $('#btnOpenSetupLog')?.addEventListener('click', async () => {
   try {
     const res = await window.bacopy.openSetupLog();
@@ -899,7 +992,6 @@ $('#btnOpenSetupLog')?.addEventListener('click', async () => {
   }
 });
 
-// install-deps 結果の非同期通知
 if (window.bacopy?.onInstallDepsResult) {
   window.bacopy.onInstallDepsResult((data) => {
     const msg = data?.message || (data?.success ? 'Setup launched' : 'Setup failed');
@@ -907,8 +999,10 @@ if (window.bacopy?.onInstallDepsResult) {
   });
 }
 $('#btnSaveSettings')?.addEventListener('click', async () => {
-  // IME/composition の入力が確定していないと value が古いまま読まれる事があるため、
-  // クリック時にフォーカスを外して 1tick 待ってから値を読む。
+
+
+
+
   try { document.activeElement?.blur?.(); } catch {}
   await new Promise((r) => setTimeout(r, 0));
 
@@ -933,14 +1027,16 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
 
   localStorage.setItem('bacopy_settings', JSON.stringify(settings));
 
-  // Telegram / Support も .env へ保存 (preload 経由).
+
+
   try {
     if (window.bacopy?.saveSettings) {
       const envPayload = {
         telegram_bot_token: $('#inputTelegramToken')?.value.trim() || '',
         telegram_chat_id:   $('#inputTelegramChat')?.value.trim()  || '',
       };
-      // support_enabled は toggle 側で即時保存しているので, SAVE では上書きしない.
+
+
       await window.bacopy.saveSettings(envPayload);
     }
   } catch (e) {
@@ -960,16 +1056,20 @@ function loadSettings() {
     merged.executor_id = String(merged.executor_id || DEFAULT_SETTINGS.executor_id);
     merged.executor_label = String(merged.executor_label || DEFAULT_SETTINGS.executor_label);
     merged.stake_username = String(merged.stake_username || '');
-    // legacy migration: 旧デフォルト "Speed Baccarat" が localStorage に残っていたら空にする.
-    // (毎回 Speed Baccarat 6 に入ってしまう原因だった).
+
+
+
+
     if (String(merged.table_name_substr || '').trim() === 'Speed Baccarat') {
       merged.table_name_substr = '';
     } else {
       merged.table_name_substr = String(merged.table_name_substr || '');
     }
     merged.auto_click_wait_sec = Number.isFinite(Number(merged.auto_click_wait_sec)) ? Math.max(10, Math.floor(Number(merged.auto_click_wait_sec))) : DEFAULT_SETTINGS.auto_click_wait_sec;
-    // Hardcoded (UI チェックボックス撤廃済): SWITCH_TABLE / BANKER / assume_bc_012 は常時 ON, TIE は常時 OFF.
-    // localStorage に古い false が残っていても無視して上書きする.
+
+
+
+
     merged.allow_switch_table = true;
     merged.allow_banker = true;
     merged.allow_tie = false;
@@ -981,16 +1081,17 @@ function loadSettings() {
   }
 }
 
-// --- Developer Mode ---
 const DEV_PASSWORD = 'laplace1749';
 
 function isDevMode() {
-  // Always on for BACOPYRECEIVER (SEQ7 / OS stream is a required display).
+
+
   return true;
 }
 
 function setDevMode(on) {
-  // no-op (developer mode UI removed)
+
+
   applyDevMode();
 }
 
@@ -1036,7 +1137,6 @@ if (inputDevPassword) inputDevPassword.addEventListener('keypress', (e) => {
   if (e.key === 'Enter') $('#btnDevAuth').click();
 });
 
-// Encrypted signal helpers (same logic as Telegram)
 const _SIG_PREFIXES = 'CDEFG';
 const _SIG_WL_PREFIXES = 'QRSTM';
 const _SIG_OS_PREFIXES = 'UVWXY';
@@ -1045,15 +1145,6 @@ function _turnToCode(turn) { return _rndChar(_SIG_PREFIXES) + String.fromCharCod
 function _ratioToCode(w, l) { return _rndChar(_SIG_WL_PREFIXES) + w + _rndChar(_SIG_WL_PREFIXES) + l; }
 function _driftToCode(os) { return _rndChar(_SIG_OS_PREFIXES) + os; }
 
-// =============================================================
-// Signal Stream — シンプル版 (タイ無視 / ROUNDと色同期)
-//
-// 唯一の真実: ローカルの _streamSetIdx / _streamTurnsInSet。
-//  - Stream は round_result (O/X) のみで追加。Tieは完全無視。
-//  - 色は _STREAM_SET_COLORS[_streamSetIdx % 6]。セット完了で +1。
-//  - ROUND 表示色も同じローカル state を参照 → 必ず同期。
-//  - shoe_history で履歴を再構築する時、同じルールで色付け。
-// =============================================================
 const _STREAM_SET_COLORS = ['#ff3366', '#ffcc00', '#00b8d4', '#ffffff', '#00ff88', '#c084fc'];
 function _setSizeForMode(mode) { return mode === 'counter_seq7' ? 7 : 5; }
 let _streamSetSize = _setSizeForMode(loadSettings().bet_mode || 'counter');
@@ -1075,7 +1166,6 @@ function _appendStreamMark(el, mark, color) {
   else el.scrollTop = el.scrollHeight;
 }
 
-// O/X を 1つ Stream に追加してローカル状態を進める (Tie は呼ばれない)
 function _pushStreamMark(mark) {
   if (mark !== 'O' && mark !== 'X') return;
   if (!isDevMode()) {
@@ -1087,7 +1177,8 @@ function _pushStreamMark(mark) {
     return;
   }
   const el = $('#sigStream');
-  if (el && el.querySelector('[style*="rgba"]')) el.innerHTML = '';  // Clear "AWAITING SIGNAL"
+  if (el && el.querySelector('[style*="rgba"]')) el.innerHTML = '';
+
   const color = _currentSetColor();
   if (el) _appendStreamMark(el, mark, color);
   _streamTurnsInSet += 1;
@@ -1117,7 +1208,8 @@ function updateDevPanel(msg) {
     }
   }
   if (sd && typeof msg.overshoot === 'number') sd.textContent = _driftToCode(msg.overshoot);
-  // ROUND = 累計O/X数, 色は Stream と同じローカル state
+
+
   if (srd) {
     const roundNum = _streamSetIdx * _streamSetSize + _streamTurnsInSet;
     srd.textContent = `#${roundNum}`;
@@ -1126,15 +1218,19 @@ function updateDevPanel(msg) {
 }
 
 function renderDevSets(sets) {
-  // shoe_history: Python からの完了セット履歴で Stream を再同期。
-  // ローカル state を履歴の最後に合わせる（信頼できる真実の源）。
+
+
+
+
   if (!isDevMode()) return;
   const el = $('#sigStream');
   if (!el) return;
   const list = Array.isArray(sets) ? sets : [];
-  // ライブ更新で既に反映済みなら何もしない (全再構築は不要)
+
+
   if (el.children.length > 0 && _streamSetIdx === list.length && _streamTurnsInSet === 0) return;
-  // 完全再構築
+
+
   el.innerHTML = '';
   for (let i = 0; i < list.length; i += 1) {
     const results = (list[i] && list[i].results) || '';
@@ -1147,7 +1243,6 @@ function renderDevSets(sets) {
   _streamTurnsInSet = 0;
 }
 
-// --- Log ---
 $('#logToggle').addEventListener('click', () => {
   logVisible = !logVisible;
   $('#logPanel').classList.toggle('hidden', !logVisible);
@@ -1161,9 +1256,11 @@ function addLog(text, type = '') {
   if (type) span.className = `log-${type}`;
   span.textContent = `[${t}] ${text}`;
   el.appendChild(span);
-  // Cap history to avoid DOM bloat
+
+
   while (el.childElementCount > 500) el.removeChild(el.firstChild);
-  // Auto-scroll to latest (terminal-like)
+
+
   requestAnimationFrame(() => {
     const panel = el.parentElement;
     if (panel) panel.scrollTop = panel.scrollHeight;
@@ -1176,7 +1273,6 @@ function esc(text) {
   return d.innerHTML;
 }
 
-// --- Flash Effect ---
 function flashScreen(type) {
   const el = $('#flashOverlay');
   el.className = 'flash-overlay ' + type;
@@ -1184,7 +1280,6 @@ function flashScreen(type) {
   setTimeout(() => { el.className = 'flash-overlay'; }, duration);
 }
 
-// --- Reset Toast (big banner for profit/loss lock) ---
 function showResetToast(title, amount, isProfit) {
   let toast = $('#resetToast');
   if (!toast) {
@@ -1202,12 +1297,10 @@ function showResetToast(title, amount, isProfit) {
   setTimeout(() => { toast.className = 'reset-toast ' + (isProfit ? 'profit' : 'losscut'); }, 3500);
 }
 
-// --- Action Text ---
 function setAction(text) {
   $('#actionText').textContent = text;
 }
 
-// --- Phase Badge (状態バッジ) ---
 const _PHASE_LABELS = {
   idle: 'IDLE',
   scanning: 'SCANNING',
@@ -1237,7 +1330,8 @@ function _renderPhaseBadge(isStale) {
   const badge = $('#phaseBadge');
   const textEl = $('#phaseBadgeText');
   if (!badge || !textEl) return;
-  // Reset all phase-* classes
+
+
   badge.className = 'phase-badge';
   const phaseCls = isStale ? 'stale' : _currentPhase;
   badge.classList.add('phase-' + phaseCls);
@@ -1250,7 +1344,6 @@ function _renderPhaseBadge(isStale) {
   }
 }
 
-// 60秒以上 phase 更新がなければ STALE 表示。Bot実行中のみ監視。
 function _startPhaseStaleMonitor() {
   if (_phaseStaleCheckTimer) return;
   _phaseStaleCheckTimer = setInterval(() => {
@@ -1264,10 +1357,6 @@ function _startPhaseStaleMonitor() {
 _startPhaseStaleMonitor();
 setPhase('idle', '');
 
-// --- Result Buffer (W/L/T list) ---
-// Append-only list of individual hand results.
-// - feedRow: shows last 5
-// - recentGrid: shows last 20
 const MAX_FEED = 10;
 const MAX_RECENT = 100;
 
@@ -1311,8 +1400,6 @@ function resetFeed() {
   renderRecent();
 }
 
-// --- Daily P&L tracking (JST timezone, per-round delta aggregation) ---
-// Stored as { "YYYY-MM-DD": pnl_amount, ... }
 function loadDailyPnl() {
   try { return JSON.parse(localStorage.getItem('valhalla_daily_pnl') || '{}'); }
   catch { return {}; }
@@ -1323,18 +1410,19 @@ function saveDailyPnl(data) {
 }
 
 function todayKeyJST() {
-  // JST = UTC+9
+
+
   const now = new Date();
   const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
   const jst = new Date(utcMs + 9 * 3600000);
   return `${jst.getFullYear()}-${String(jst.getMonth()+1).padStart(2,'0')}-${String(jst.getDate()).padStart(2,'0')}`;
 }
 
-// 日付ロールオーバー時: 前日のPNL(=直前のdaily値)をlocalStorageに凍結
 function _freezeDailyIfRollover(newDate) {
   if (!newDate || !_dailyOpenDate) return;
   if (_dailyOpenDate === newDate) return;
-  // 前日の最終値を凍結 (currentBalance は直近更新前の値)
+
+
   if (_currentBalance !== null && _dailyOpenBalance !== null) {
     const prevPnl = _currentBalance - _dailyOpenBalance;
     const data = loadDailyPnl();
@@ -1347,7 +1435,8 @@ function renderDailyPnl() {
   const row = $('#dailyRow');
   const data = loadDailyPnl();
 
-  // Today value = 残高スナップショット計算 (updateSessionDisplay で更新済みだがここでも念のため)
+
+
   const today = _dailyOpenDate || todayKeyJST();
   const { daily } = _computePnl();
   const todayEl = $('#todayPnl');
@@ -1355,7 +1444,8 @@ function renderDailyPnl() {
     todayEl.textContent = `${daily >= 0 ? '+$' : '-$'}${Math.abs(daily).toFixed(0)}`;
     todayEl.className = 'today-pnl ' + (daily >= 0 ? 'positive' : 'negative');
   }
-  // 今日の値もlocalStorage に反映 (リアルタイム凍結)
+
+
   data[today] = daily;
   saveDailyPnl(data);
 
@@ -1379,7 +1469,6 @@ function renderDailyPnl() {
   row.innerHTML = html;
 }
 
-// --- Agent Messages ---
 window.valhalla.onAgentMessage((msg) => {
   switch (msg.type) {
     case 'action':
@@ -1402,7 +1491,8 @@ window.valhalla.onAgentMessage((msg) => {
       const r = msg.result;
       const won = msg.won;
       _lastRoundWon = won;
-      // Tieは完全無視。O/Xのみストリームへ即append (ローカル state で色決定)。
+
+
       if (r !== 'tie') {
         const streamMark = won === true ? 'O' : won === false ? 'X' : '';
         if (streamMark) _pushStreamMark(streamMark);
@@ -1418,7 +1508,8 @@ window.valhalla.onAgentMessage((msg) => {
         addResult('L');
       }
 
-      // Update balance (スナップショット方式: Python から届く balance と open で PNL 再計算)
+
+
       if (typeof msg.balance === 'number' && msg.balance > 0) {
         _currentBalance = msg.balance;
         $('#balance').textContent = `$${msg.balance.toFixed(2)}`;
@@ -1426,7 +1517,8 @@ window.valhalla.onAgentMessage((msg) => {
       if (typeof msg.session_open_balance === 'number' && msg.session_open_balance > 0) {
         _sessionOpenBalance = msg.session_open_balance;
       }
-      // 日付ロールオーバー検出 → 前日PNLを凍結してから開く
+
+
       if (typeof msg.daily_open_date === 'string' && msg.daily_open_date) {
         _freezeDailyIfRollover(msg.daily_open_date);
         _dailyOpenDate = msg.daily_open_date;
@@ -1442,7 +1534,8 @@ window.valhalla.onAgentMessage((msg) => {
     }
 
     case 'set_complete':
-      // In dev mode, show a log line
+
+
       if (isDevMode()) {
         const s = msg;
         const sign = s.set_profit >= 0 ? '+' : '';
@@ -1451,14 +1544,16 @@ window.valhalla.onAgentMessage((msg) => {
       break;
 
     case 'shoe_history':
-      // In dev mode, render all sets
+
+
       if (isDevMode() && Array.isArray(msg.sets)) {
         renderDevSets(msg.sets);
       }
       break;
 
     case 'test_status': {
-      // Pattern Test mode: 別カウンタ表示 (sessionPNL等は更新しない)
+
+
       const tw = msg.wins || 0;
       const tl = msg.losses || 0;
       const tt = msg.ties || 0;
@@ -1469,7 +1564,8 @@ window.valhalla.onAgentMessage((msg) => {
         el.style.display = 'block';
         el.textContent = `🧪 TEST: ${tw}W ${tl}L ${tt}T (${wr}%)`;
       }
-      // 視覚フィードバック (フラッシュのみ、PNL は更新しない)
+
+
       if (msg.last_won === true) flashScreen('win');
       else if (msg.last_won === false) flashScreen('lose');
       break;
@@ -1486,7 +1582,8 @@ window.valhalla.onAgentMessage((msg) => {
         _currentBalance = msg.balance;
         $('#balance').textContent = `$${msg.balance.toFixed(2)}`;
       }
-      // 残高スナップショット (Python側の真実の源を受信)
+
+
       if (typeof msg.session_open_balance === 'number' && msg.session_open_balance > 0) {
         _sessionOpenBalance = msg.session_open_balance;
       }
@@ -1500,7 +1597,8 @@ window.valhalla.onAgentMessage((msg) => {
       _persistBalanceSnapshot();
       updateSessionDisplay();
       renderDailyPnl();
-      // OS (overshoot) tag in BETS card (removed from HTML, guard with null check)
+
+
       if (typeof msg.overshoot === 'number') {
         const osEl = $('#osValue');
         if (osEl) {
@@ -1509,7 +1607,8 @@ window.valhalla.onAgentMessage((msg) => {
           osEl.className = 'os-tag ' + (os === 0 ? '' : os <= 2 ? 'safe' : os <= 4 ? 'warn' : 'danger');
         }
       }
-      // Developer panel
+
+
       updateDevPanel(msg);
       break;
     }
@@ -1529,9 +1628,12 @@ window.valhalla.onAgentMessage((msg) => {
       showResetToast(title, `${sign}$${Math.abs(amt).toFixed(0)}`, isProfit);
       flashScreen(isProfit ? 'profit' : 'losscut');
       addLog(`=== ${title} ===  ${sign}$${Math.abs(amt).toFixed(0)}`, isProfit ? 'win' : 'lose');
-      // 残高スナップショット方式: session_open_balance は Python 側で現残高に更新済み。
-      // 次の status/round_result で新しい session_open_balance が届いてPNL=0に戻る。
-      // 暫定的にローカルでも 0 にしておく (即時反映のため)。
+
+
+
+
+
+
       if (_currentBalance !== null) {
         _sessionOpenBalance = _currentBalance;
       }
@@ -1546,7 +1648,8 @@ window.valhalla.onAgentMessage((msg) => {
       break;
 
     case 'stopped':
-      // START直後(3秒以内)の stopped は旧プロセスの遅延シグナル→無視
+
+
       if (_startedAt && Date.now() - _startedAt < 3000) {
         console.log('[UI] Ignoring stale stopped signal from old process');
         break;
@@ -1558,8 +1661,10 @@ window.valhalla.onAgentMessage((msg) => {
       break;
 
     case 'started':
-      // 自動再起動 (watchdog / Electron auto-restart) で新しい Python が起動した時
-      // ボタン状態 (START disabled / STOP enabled) を再同期
+
+
+
+
       _startedAt = Date.now();
       setRunning(true);
       setAction('Running (auto-restarted)');
@@ -1572,8 +1677,10 @@ window.valhalla.onAgentMessage((msg) => {
 
     case 'mode_changed': {
       const nextMode = normalizeBetMode(msg.mode);
-      // Settings モーダル操作中に backend 側の mode_changed で select が上書きされると、
-      // ユーザーが選んだ値が SAVE 時に失われることがあるため、開いている間は触らない。
+
+
+
+
       const modal = $('#settingsModal');
       const modalOpen = modal && !modal.classList.contains('hidden');
       if (!modalOpen && $('#inputBetMode')) $('#inputBetMode').value = nextMode;
@@ -1592,11 +1699,10 @@ window.valhalla.onAgentLog((text) => {
   text.trim().split('\n').forEach(line => { if (line.trim()) addLog(line); });
 });
 
-// --- Init ---
 sessionTotal = 0;
 results.length = 0;
 setRunning(false);
-// Restore previous state (for resume / auto-arm)
+
 restoreSessionState();
 _restoreBalanceSnapshot();
 updateSessionDisplay();

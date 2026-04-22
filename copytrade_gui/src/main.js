@@ -9,9 +9,6 @@ let mainWindow = null;
 let botProcess = null;
 let watchdogProcess = null;
 
-// ===== Process hygiene: PID 永続化 + orphan camoufox 掃除 =====
-// GUI 起動時・stopBot 時・auto-restart 前に必ず呼ばれる。
-// 前回 run が SIGKILL で落ちて Camoufox がゾンビになるのを防ぐ。
 function _pidFilePath() {
   try { return path.join(app.getPath('userData'), 'bacopy_process_tree.json'); }
   catch (_) { return path.join(os.tmpdir(), 'bacopy_process_tree.json'); }
@@ -35,24 +32,26 @@ function killTreeWin(pid) {
   try {
     execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' });
     console.log(`[Main] killTreeWin pid=${pid}`);
-  } catch (_) { /* process already dead — fine */ }
+  } catch (_) {  }
 }
 function killAllByImage(imageName) {
   if (!imageName) return;
   try {
     execSync(`taskkill /F /T /IM "${imageName}"`, { stdio: 'ignore' });
     console.log(`[Main] killAllByImage ${imageName}`);
-  } catch (_) { /* no process — fine */ }
+  } catch (_) {  }
 }
 function cleanupOrphanCamoufox() {
-  // Called before each startBot + on app quit. Kills any stray camoufox/firefox.
+
+
   if (process.platform !== 'win32') return;
   const prev = loadPidTree();
   if (prev && Array.isArray(prev.camoufox_pids)) {
     for (const pid of prev.camoufox_pids) killTreeWin(pid);
   }
   if (prev && prev.executor_pid) killTreeWin(prev.executor_pid);
-  // Safety net: kill ALL camoufox.exe before spawn.
+
+
   killAllByImage('camoufox.exe');
   try { fs.unlinkSync(_pidFilePath()); } catch (_) {}
 }
@@ -69,8 +68,6 @@ function listCamoufoxPids() {
   } catch (_) { return []; }
 }
 
-// === Auto-Restart on Engine Crash ===
-// userInitiatedStop=false (= 予期しない終了) かつ lastStartConfig がある場合のみ自動再開。
 let userInitiatedStop = false;
 let lastStartConfig = null;
 let autoRestartCount = 0;
@@ -78,11 +75,8 @@ let lastSpawnAt = 0;
 let autoRestartTimer = null;
 const MAX_AUTO_RESTARTS = 10;
 const AUTO_RESTART_DELAY = 5000;
-const STABLE_RUN_THRESHOLD = 5 * 60 * 1000; // 5分以上動いたら成功扱いでカウンタリセット
+const STABLE_RUN_THRESHOLD = 5 * 60 * 1000;
 
-// === Periodic Preventive Restart (24/7 運用用) ===
-// メモリリーク / Stake セッション劣化 を予防的に掃除する.
-// BACOPY_PERIODIC_RESTART_HOURS=6 (default). 0 で無効.
 let periodicRestartTimer = null;
 
 function _periodicRestartHours() {
@@ -95,7 +89,8 @@ function _periodicRestartHours() {
 }
 
 function _telegramNotifyFromMain(text) {
-  // main.js から Telegram に通知. env から token/chat_id を都度読む.
+
+
   try {
     const env = loadDotEnv();
     const token = (env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
@@ -121,17 +116,20 @@ function schedulePeriodicRestart() {
   const ms = Math.floor(h * 3600 * 1000);
   console.log(`[periodic-restart] scheduled every ${h}h`);
   periodicRestartTimer = setInterval(() => {
-    if (!botProcess) return; // bot 停止中なら skip
+    if (!botProcess) return;
+
     console.log('[periodic-restart] firing (preventive restart)');
     _telegramNotifyFromMain('🔄 bacopy periodic restart (' + h + 'h maintenance)');
     try {
       const cfg = lastStartConfig;
-      userInitiatedStop = false; // auto-restart を作動させる
+      userInitiatedStop = false;
+
       const pid = botProcess.pid;
       if (process.platform === 'win32' && pid) killTreeWin(pid);
       try { botProcess.kill(); } catch (_) {}
       botProcess = null;
-      // 5秒後に再起動 (既存 auto-restart ロジックが拾う)
+
+
       setTimeout(() => {
         if (!botProcess && cfg) {
           try { _doStartBot && _doStartBot(cfg); } catch (e) { console.warn('[periodic-restart] respawn err:', e && e.message); }
@@ -152,16 +150,15 @@ process.on('uncaughtException', (err) => {
 });
 
 function repoRoot() {
-  // copytrade_gui/src -> bacopy repo root
+
+
   return path.join(__dirname, '..', '..');
 }
 
-// ===== Watchdog helpers =====
-// 外部 Python プロセスで executor / camoufox / engine.log を監視。
-// scripts/watchdog_bacopy.py を spawn。GUI 停止時に確実に kill。
 function startWatchdog() {
   if (app.isPackaged) {
-    // Packaged では watchdog スクリプトが無い可能性 — skip.
+
+
     console.log('[Main] watchdog skipped (packaged build)');
     return;
   }
@@ -245,8 +242,6 @@ function loadDotEnv() {
   return env;
 }
 
-// .env を部分更新 (既存キーは置換、無ければ末尾に追記).
-// ba/gui/src/main.js の saveDotEnv を移植.
 function saveDotEnv(updates) {
   const envPath = resolveEnvPath();
   let content = '';
@@ -270,8 +265,6 @@ function saveDotEnv(updates) {
   }
 }
 
-// Telegram Bot API に getMe 相当のテストメッセージを送る.
-// 成功なら { ok: true }、失敗なら { ok: false, error }.
 function _telegramSendTest(botToken, chatId) {
   return new Promise((resolve) => {
     if (!botToken || !chatId) {
@@ -310,17 +303,17 @@ function _telegramSendTest(botToken, chatId) {
   });
 }
 
-// SSH 支援トンネル関連 (簡易版)
-// ===== SSH Reverse Tunnel for Remote Support =====
-// 友人の Windows Desktop Cloud で稼働中の bacopy GUI に遠隔支援するための reverse tunnel.
-// 踏み台 VPS (210.131.215.116) の support ユーザーに -R で port forward.
 let _supportTunnelProc = null;
 let _supportTunnelReconnectTimer = null;
+let _supportTunnelLastError = '';
+let _supportTunnelFailCount = 0;
+const _SUPPORT_TUNNEL_MAX_BACKOFF_MS = 5 * 60 * 1000;
 
 const crypto = require('crypto');
 
 function _decryptSupportKey(encryptedB64, email) {
-  // AES-256-CBC + PBKDF2 (email派生). ba と同じ仕様.
+
+
   const SALT = Buffer.from(process.env.BACOPY_KEY_SALT || 'bacopy-support-v1-2026', 'utf-8');
   const key = crypto.pbkdf2Sync(String(email || '').toLowerCase(), SALT, 100000, 32, 'sha256');
   const data = Buffer.from(String(encryptedB64 || '').trim(), 'base64');
@@ -332,12 +325,14 @@ function _decryptSupportKey(encryptedB64, email) {
 
 function _resolveSupportKeyPath(rawPath) {
   if (!rawPath) return '';
-  // ~/.ssh/... の展開 + relative path 解決.
+
+
   if (rawPath.startsWith('~')) {
     return path.join(os.homedir(), rawPath.slice(1).replace(/^[\\/]/, ''));
   }
   if (path.isAbsolute(rawPath)) return rawPath;
-  // packaged build では resources 配下優先.
+
+
   if (app.isPackaged) {
     const cand = path.join(process.resourcesPath, rawPath);
     if (fs.existsSync(cand)) return cand;
@@ -348,7 +343,8 @@ function _resolveSupportKeyPath(rawPath) {
 function startSupportTunnel() {
   if (_supportTunnelProc) return;
   const envFile = loadDotEnv();
-  // packaged build は default ON, dev は default OFF.
+
+
   const defaultEnabled = app.isPackaged ? '1' : '0';
   const enabled = (envFile.BACOPY_SUPPORT_ENABLED || process.env.BACOPY_SUPPORT_ENABLED || defaultEnabled).trim();
   if (!['1', 'true', 'yes', 'on'].includes(enabled.toLowerCase())) {
@@ -392,11 +388,17 @@ function startSupportTunnel() {
     sshHost,
   ];
   console.log('[support] starting tunnel → ' + sshHost + ' (-R ' + remotePort + ':22)');
+  _supportTunnelLastError = '';
+  _supportTunnelFailCount = 0;
+
   _supportTunnelProc = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-  _supportTunnelProc.on('error', (err) => console.error('[support] spawn error:', err.message));
+  _supportTunnelProc.on('error', (err) => {
+    console.error('[support] spawn error:', err.message);
+    _supportTunnelLastError = err.message;
+  });
   _supportTunnelProc.stderr.on('data', (d) => {
     const s = String(d || '').trim();
-    if (s) console.error('[support]', s);
+    if (s) { console.error('[support]', s); _supportTunnelLastError = s; }
   });
   _supportTunnelProc.on('exit', (code) => {
     console.log('[support] tunnel exited code=' + code);
@@ -404,12 +406,16 @@ function startSupportTunnel() {
     if (isEncrypted && actualKeyPath !== sshKeyPath) {
       try { fs.unlinkSync(actualKeyPath); } catch (_) {}
     }
-    // 自動再接続 (10s後). 明示的 stop 時は reconnect しない.
+
+
     if (_supportTunnelReconnectTimer) { clearTimeout(_supportTunnelReconnectTimer); _supportTunnelReconnectTimer = null; }
     const envNow = loadDotEnv();
     const stillEnabled = (envNow.BACOPY_SUPPORT_ENABLED || '0') === '1';
     if (stillEnabled) {
-      _supportTunnelReconnectTimer = setTimeout(() => { _supportTunnelReconnectTimer = null; startSupportTunnel(); }, 10000);
+      _supportTunnelFailCount++;
+      const delay = Math.min(10000 * Math.pow(1.5, _supportTunnelFailCount - 1), _SUPPORT_TUNNEL_MAX_BACKOFF_MS);
+      console.log(`[support] reconnect in ${Math.round(delay/1000)}s (attempt ${_supportTunnelFailCount})`);
+      _supportTunnelReconnectTimer = setTimeout(() => { _supportTunnelReconnectTimer = null; startSupportTunnel(); }, delay);
     }
   });
 }
@@ -422,7 +428,6 @@ function stopSupportTunnel() {
   }
 }
 
-// 後方互換 stub alias (Agent A が参照している関数名).
 function _startSupportTunnelStub() { startSupportTunnel(); }
 function _stopSupportTunnelStub() { stopSupportTunnel(); }
 
@@ -488,13 +493,16 @@ function buildSpawnSpec(config) {
   const envFile = loadDotEnv();
   const childEnv = { ...process.env, ...envFile, PYTHONIOENCODING: 'utf-8' };
 
-  // Hidden master config (no GUI inputs)
+
+
   if (!childEnv.BACOPY_API_URL) childEnv.BACOPY_API_URL = 'https://master.bafather.uk';
   if (!childEnv.BACOPY_API_CONNECT_TIMEOUT_SEC) childEnv.BACOPY_API_CONNECT_TIMEOUT_SEC = '5';
   if (!childEnv.BACOPY_API_TIMEOUT_SEC) childEnv.BACOPY_API_TIMEOUT_SEC = '15';
 
-  // DNS instability workaround: allow the executor to skip DNS by using direct IP + SNI.
-  // (Still verifies TLS cert for master.bafather.uk.)
+
+
+
+
   try {
     const u = new URL(childEnv.BACOPY_API_URL);
     if (u.hostname === 'master.bafather.uk') {
@@ -504,14 +512,16 @@ function buildSpawnSpec(config) {
     }
   } catch (_) {}
 
-  // Per-user/executor config (from GUI settings)
+
+
   if (config && config.executor_id) childEnv.BACOPY_EXECUTOR_ID = String(config.executor_id);
   if (config && config.executor_label) childEnv.BACOPY_EXECUTOR_LABEL = String(config.executor_label);
   if (config && config.stake_username) childEnv.BACOPY_EXECUTOR_USERNAME = String(config.stake_username);
   if (config && config.user_email) childEnv.BACOPY_USER_EMAIL = String(config.user_email);
   if (config && config.user_email) childEnv.BACOPY_BAFATHER_EMAIL = String(config.user_email);
   if (config && config.user_id) childEnv.BACOPY_USER_ID = String(config.user_id);
-  // OS info for Master UI display
+
+
   try {
     const osName = `${process.platform} ${process.arch}`;
     childEnv.BACOPY_OS = osName;
@@ -522,7 +532,8 @@ function buildSpawnSpec(config) {
     args.push('executor-pragmatic');
   }
 
-  // SEQ7 config
+
+
   if (config && config.allow_switch_table) args.push('--allow-switch-table');
   if (config && config.allow_banker) args.push('--allow-banker');
   if (config && config.allow_tie) args.push('--allow-tie');
@@ -545,7 +556,8 @@ function buildSpawnSpec(config) {
 
   if (config && config.headless) args.push('--headless');
 
-  // Persistent browser profile (manual Stake login is stored here)
+
+
   const profileDir = path.join(app.getPath('userData'), 'profiles', 'executor_pragmatic');
   try { fs.mkdirSync(profileDir, { recursive: true }); } catch (_) {}
   args.push('--profile-dir', profileDir);
@@ -558,17 +570,23 @@ function buildSpawnSpec(config) {
 }
 
 function _mergedEnvForValidation() {
-  // Keep consistent with buildSpawnSpec() merge order: .env wins over process.env
+
+
   const envFile = loadDotEnv();
   return { ...process.env, ...envFile };
 }
 
 function _validateConfigForSpawn(cfg) {
-  // 以前は BANKER/TIE を有効化する際に sniff_pragmatic_bet_ws.py で
-  // BC code (BACOPY_PRAGMATIC_BC_*) を取得する必要があった.
-  // Pragmatic Baccarat の bet code は 0=Player / 1=Banker / 2=Tie が業界標準で
-  // 全テーブル共通. sniff 不要で executor がデフォルト値を使う.
-  // env で override も可能なので検証 gate は撤廃.
+
+
+
+
+
+
+
+
+
+
   return null;
 }
 
@@ -581,7 +599,8 @@ function startBot(config) {
   }
 
   if (botProcess) {
-    // Restart requested while engine is still running.
+
+
     const old = botProcess;
     botProcess = null;
     try { old.removeAllListeners('exit'); } catch (_) {}
@@ -606,13 +625,18 @@ function startBot(config) {
 }
 
 function _doStartBot(config) {
-  // Clean any orphan camoufox / executor before spawning a fresh one.
-  // Stake session conflicts (session elsewhere) をこれで抑制.
+
+
+
+
   try { cleanupOrphanCamoufox(); } catch (_) {}
 
-  // NEW SESSION (config.resume === false): executor 側の seq7 state を消して
-  // Stream / SEQ7 を真にリセット. これをしないと Python が過去の history
-  // を shoe_history として client に再送してしまう。
+
+
+
+
+
+
   if (config && config.resume === false) {
     try {
       const profileDir = path.join(app.getPath('userData'), 'profiles', 'executor_pragmatic');
@@ -638,7 +662,8 @@ function _doStartBot(config) {
   }
   const spec = buildSpawnSpec(cfg);
 
-  // Commit config for auto-restart only after validation passes.
+
+
   lastStartConfig = cfg;
   userInitiatedStop = false;
   lastSpawnAt = Date.now();
@@ -652,8 +677,10 @@ function _doStartBot(config) {
     windowsHide: true,
   });
 
-  // PID tree 記録: 次回 cleanupOrphanCamoufox で確実に kill するため.
-  // Camoufox は spawn 後数秒遅れて launch するので、10 秒後にスナップショットを取る.
+
+
+
+
   savePidTree({ executor_pid: botProcess.pid, camoufox_pids: [], started_at: Date.now() });
   setTimeout(() => {
     try {
@@ -665,15 +692,18 @@ function _doStartBot(config) {
   botProcess.stdout.on('data', _emitStdoutLines);
   botProcess.stderr.on('data', _emitStderr);
 
-  // ===== watchdog spawn (外部監視) =====
-  // botProcess と同時に起動。GUI 停止時に自動 kill される (stopBot/before-quit)。
+
+
+
+
   startWatchdog();
 
   const thisProcess = botProcess;
   const thisSpawnAt = lastSpawnAt;
 
   botProcess.on('exit', (code) => {
-    // flush remainder
+
+
     const rem = _stdoutRemainder.trim();
     if (rem) sendToRenderer('agent-message', { type: 'log', message: rem });
     _stdoutRemainder = '';
@@ -682,7 +712,8 @@ function _doStartBot(config) {
       sendToRenderer('agent-message', { type: 'stopped', code });
       botProcess = null;
 
-      // === 自動再起動: ユーザーの STOP でない場合のみ ===
+
+
       const ranDuration = Date.now() - thisSpawnAt;
       if (!userInitiatedStop && lastStartConfig) {
         if (ranDuration > STABLE_RUN_THRESHOLD) {
@@ -717,7 +748,8 @@ function _doStartBot(config) {
     sendToRenderer('agent-message', { type: 'error', message: err && err.message ? err.message : String(err) });
   });
 
-  // 自動再起動の場合は renderer に "started" を送信して UI 状態を再同期
+
+
   if (autoRestartCount > 0) {
     sendToRenderer('agent-message', { type: 'started' });
   }
@@ -734,7 +766,8 @@ function stopBot() {
     clearTimeout(autoRestartTimer);
     autoRestartTimer = null;
   }
-  // tree kill: executor + Camoufox children を一発で終了 (orphan 防止).
+
+
   const pid = botProcess.pid;
   if (process.platform === 'win32' && pid) {
     try { killTreeWin(pid); } catch (_) {}
@@ -745,9 +778,9 @@ function stopBot() {
   stopWatchdog();
 }
 
-// === Supabase Auth (bafather.uk) ===
-let _supabaseConfig = null; // { url, anonKey }
-let _supabaseSession = null; // { access_token, refresh_token, expires_at, user:{id,email} }
+let _supabaseConfig = null;
+
+let _supabaseSession = null;
 
 function _sessionPath() {
   return path.join(app.getPath('userData'), 'bafather_supabase_session.json');
@@ -830,7 +863,8 @@ function _httpsGetJsonFollow(url, redirectsLeft) {
 }
 
 function _loadSupabaseFromWebEnvLocal() {
-  // Dev-only convenience: use web/.env.local NEXT_PUBLIC_* when root .env is missing.
+
+
   if (app.isPackaged) return null;
   const p = path.join(repoRoot(), 'web', '.env.local');
   if (!fs.existsSync(p)) return null;
@@ -1008,13 +1042,16 @@ async function billingStatus() {
     rows = await _fetchBillingRows(session.access_token);
   } catch (e) {
     if (e && e.statusCode === 401) {
-      // force refresh and retry once
+
+
       _supabaseSession = { ...session, expires_at: 0 };
       const s2 = await ensureSession();
       if (!s2) return { ok: false, reason: 'Not signed in', balance: 0 };
       rows = await _fetchBillingRows(s2.access_token);
     } else {
-      return { ok: false, reason: e && e.message ? e.message : 'Billing query failed', balance: 0 };
+
+
+      return { ok: false, network_error: true, reason: e && e.message ? e.message : 'Billing query failed', balance: 0 };
     }
   }
 
@@ -1037,7 +1074,9 @@ async function billingStatus() {
       return { ok: false, reason: 'Your account is suspended. Please contact admin.', balance };
     }
     if ((balance || 0) <= 0) {
-      return { ok: false, reason: 'Balance is empty. Please charge to enable live betting.', balance };
+
+
+      return { ok: false, balance_empty: true, reason: 'Balance is empty. Please charge to enable live betting.', balance };
     }
   }
 
@@ -1052,7 +1091,6 @@ async function billingStatus() {
   };
 }
 
-// === Window ===
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1100,
@@ -1069,16 +1107,20 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  // 起動時: 前回 run が SIGKILL 等で落ちて残した orphan camoufox を掃除.
-  // これをやらないと Stake が複数セッション検知 → session_elsewhere 連発.
+
+
+
+
   try { cleanupOrphanCamoufox(); } catch (e) { console.warn('[Main] startup cleanup failed:', e.message); }
 
   createWindow();
 
-  // 24/7 運用: 6時間ごとの予防再起動 + 起動通知.
+
+
   schedulePeriodicRestart();
   _telegramNotifyFromMain('🟢 bacopy GUI started');
-  // SSH support tunnel (BACOPY_SUPPORT_ENABLED=1 時のみ起動).
+
+
   try { startSupportTunnel(); } catch (e) { console.warn('[support] startup err:', e && e.message); }
 
   ipcMain.handle('window-minimize', () => { if (mainWindow) mainWindow.minimize(); return { ok: true }; });
@@ -1134,8 +1176,10 @@ app.whenReady().then(() => {
     }
   });
 
-  // === Settings モーダル (Telegram / SYSTEM タブ) ===
-  // .env 読み取り. 未設定キーは '' を返す.
+
+
+
+
   ipcMain.handle('get-settings', () => {
     const env = loadDotEnv();
     return {
@@ -1185,11 +1229,15 @@ app.whenReady().then(() => {
       email: env.BACOPY_SUPPORT_USER_EMAIL || env.LAPLACE_SUPPORT_USER_EMAIL || '',
       port:  env.BACOPY_SUPPORT_REMOTE_PORT || env.LAPLACE_SUPPORT_REMOTE_PORT || '',
       tunnel_status: _supportTunnelProc ? 'running' : 'stopped',
+      last_error: _supportTunnelLastError || '',
+      fail_count: _supportTunnelFailCount,
     };
   });
 
-  // 管理者権限 setup-all.ps1 を起動. bacopy 版は packaged/dev とも
-  // extraResources 経由の setup-all.ps1 を想定 (未配置なら not found).
+
+
+
+
   ipcMain.handle('install-deps', () => {
     let scriptPath;
     if (app.isPackaged) {
@@ -1208,7 +1256,15 @@ app.whenReady().then(() => {
       return { ok: false, error: msg };
     }
     const psq = (p) => `'${String(p).replace(/'/g, "''")}'`;
-    const cmd = `Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',${psq(scriptPath)})`;
+
+
+    const pubKeyPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'admin_pubkey.txt')
+      : path.join(__dirname, '..', 'build_staging', 'admin_pubkey.txt');
+    const pubKeyArg = fs.existsSync(pubKeyPath)
+      ? `'-AdminPubKeyPath',${psq(pubKeyPath)},`
+      : '';
+    const cmd = `Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',${psq(scriptPath)},${pubKeyArg}'-HardenSshdConfig')`;
     try {
       const cp = spawn('powershell.exe', ['-NoProfile', '-Command', cmd], { detached: true, windowsHide: true });
       cp.unref();
