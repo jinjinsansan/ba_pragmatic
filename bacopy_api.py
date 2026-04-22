@@ -504,24 +504,6 @@ class _Handler(BaseHTTPRequestHandler):
                 wait_sec = 20.0
             wait_sec = max(0.2, min(25.0, wait_sec))
 
-            # 承認済みユーザー確認 (executor_id が指定された場合のみ、キャッシュ使用で高速)
-            if status == "pending" and executor_id:
-                _email = get_executor_email(executor_id)
-                if _email:
-                    _approved = _fetch_approved_users()
-                    if _approved.get("ok"):
-                        _approved_emails = {
-                            str(u2.get("email") or "").lower()
-                            for u2 in (_approved.get("users") or [])
-                        }
-                        if _email.lower() not in _approved_emails:
-                            return _send_json(self, 200, {
-                                "ok": True,
-                                "decisions": [],
-                                "approved": False,
-                                "reason": "not_approved",
-                            })
-
             def _match(d: dict[str, Any]) -> bool:
                 if provider and str(d.get("provider") or "") != provider:
                     return False

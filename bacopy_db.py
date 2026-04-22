@@ -290,6 +290,23 @@ def mark_result(decision_id: str, result: dict[str, Any], status: str = "done") 
         conn.close()
 
 
+def get_decision_payload(decision_id: str) -> dict:
+    """指定 decision の payload_json を返す。"""
+    conn = sqlite3.connect(_db_path())
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT payload_json FROM decisions WHERE decision_id=?", (decision_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return {}
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return {}
+    finally:
+        conn.close()
+
+
 def get_decision_target_executor(decision_id: str) -> str:
     """指定 decision の target_executor_id を返す（空文字=ブロードキャスト）。"""
     conn = sqlite3.connect(_db_path())
