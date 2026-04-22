@@ -13,6 +13,8 @@ Push-Location $ROOT
 try {
   python -m pip install --upgrade pip | Out-Null
   python -m pip install -r requirements.txt | Out-Null
+  # Ensure camoufox Firefox binary is downloaded (required at runtime).
+  python -m camoufox fetch | Out-Null
 
   $dist = Join-Path $ROOT "dist"
   $build = Join-Path $ROOT "build"
@@ -21,10 +23,12 @@ try {
 
   python -m PyInstaller --noconfirm --clean --onefile `
     --name bacopy_engine `
-    --collect-data apify_fingerprint_datapoints `
-    --collect-data browserforge `
-    --collect-data camoufox `
-    --collect-data language_tags `
+    --collect-all camoufox `
+    --collect-all browserforge `
+    --collect-all apify_fingerprint_datapoints `
+    --collect-all language_tags `
+    --collect-submodules playwright `
+    --hidden-import tzdata `
     --distpath (Join-Path $ROOT "copytrade_gui/build_staging/engine") `
     --workpath $build `
     --specpath $build `
