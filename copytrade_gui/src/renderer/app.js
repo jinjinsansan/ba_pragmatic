@@ -1141,9 +1141,32 @@ const _SIG_PREFIXES = 'CDEFG';
 const _SIG_WL_PREFIXES = 'QRSTM';
 const _SIG_OS_PREFIXES = 'UVWXY';
 function _rndChar(s) { return s[Math.floor(Math.random() * s.length)]; }
-function _turnToCode(turn) { return _rndChar(_SIG_PREFIXES) + String.fromCharCode(65 + Math.max(0, turn - 1)); }
-function _ratioToCode(w, l) { return _rndChar(_SIG_WL_PREFIXES) + w + _rndChar(_SIG_WL_PREFIXES) + l; }
-function _driftToCode(os) { return _rndChar(_SIG_OS_PREFIXES) + os; }
+
+const _sigCodeCache = { turn: { key: null, code: '' }, ratio: { key: null, code: '' }, drift: { key: null, code: '' } };
+function _turnToCode(turn) {
+  const key = String(turn);
+  if (_sigCodeCache.turn.key !== key) {
+    _sigCodeCache.turn.key = key;
+    _sigCodeCache.turn.code = _rndChar(_SIG_PREFIXES) + String.fromCharCode(65 + Math.max(0, turn - 1));
+  }
+  return _sigCodeCache.turn.code;
+}
+function _ratioToCode(w, l) {
+  const key = w + '/' + l;
+  if (_sigCodeCache.ratio.key !== key) {
+    _sigCodeCache.ratio.key = key;
+    _sigCodeCache.ratio.code = _rndChar(_SIG_WL_PREFIXES) + w + _rndChar(_SIG_WL_PREFIXES) + l;
+  }
+  return _sigCodeCache.ratio.code;
+}
+function _driftToCode(os) {
+  const key = String(os);
+  if (_sigCodeCache.drift.key !== key) {
+    _sigCodeCache.drift.key = key;
+    _sigCodeCache.drift.code = _rndChar(_SIG_OS_PREFIXES) + os;
+  }
+  return _sigCodeCache.drift.code;
+}
 
 const _STREAM_SET_COLORS = ['#ff3366', '#ffcc00', '#00b8d4', '#ffffff', '#00ff88', '#c084fc'];
 function _setSizeForMode(mode) { return mode === 'counter_seq7' ? 7 : 5; }
