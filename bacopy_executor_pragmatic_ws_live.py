@@ -22,13 +22,14 @@ import ssl
 import sys
 import threading
 import time
+import random
 import uuid
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import parse_qs, urlparse, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlparse, urlsplit, urlunsplit, urlencode
 
 import requests
 from email.utils import parsedate_to_datetime
@@ -40,6 +41,27 @@ from urllib3.poolmanager import PoolManager
 # 旧コードで append_decision_event をここで呼んでいたが削除済 (Master 側で完結).
 from bacopy_db import init_db, try_lock_bet, try_mark_decision_executed
 from marubatsu_strategy import MaruBatsuTracker, SEQ_COUNTER, SetData
+
+# ======== BET MODE / SEQ (7-turn) ========
+BET_MODE_FLAT_1USD = "flat_1usd"
+BET_MODE_SEQ_USER10 = "seq_user10"
+BET_MODE_COUNTER_SEQ7 = "counter_seq7"  # legacy
+
+SEQ_USER10 = [
+    10, 20, 30, 40, 50,
+    70, 90, 110, 130, 150, 170, 200,
+    230, 260, 300, 340, 380, 420, 460, 500,
+    550, 600, 650, 700, 750, 800, 850, 900, 950, 1000,
+]
+
+
+def _seq_for_bet_mode(mode: str) -> list[int]:
+    m = str(mode or "").strip().lower()
+    if m == BET_MODE_SEQ_USER10:
+        return list(SEQ_USER10)
+    if m == BET_MODE_FLAT_1USD:
+        return [1]
+    return list(SEQ_COUNTER)  # legacy fallback
 
 BA_ROOT = Path(__file__).parent.parent / "ba"
 sys.path.insert(0, str(BA_ROOT))
@@ -118,17 +140,21 @@ class Seq7Session:
         self,
         *,
         chip_base: float,
+        seq: list[int] | None = None,
+        bet_mode: str = "counter_seq7",
         profit_stop_chips: int,
         loss_cut_chips: int,
         state_path: Path,
         profit_session_limit: int = 0,
     ) -> None:
         self.chip_base = float(chip_base)
+        self.bet_mode = str(bet_mode or "counter_seq7")
+        self.seq = list(seq) if isinstance(seq, list) and seq else list(SEQ_COUNTER)
         self.profit_stop = int(profit_stop_chips)
         self.loss_cut = int(loss_cut_chips)
         self.profit_session_limit = int(profit_session_limit or 0)
 
-        self.tracker = MaruBatsuTracker(chip_base=self.chip_base, seq=SEQ_COUNTER, set_size=7)
+        self.tracker = MaruBatsuTracker(chip_base=self.chip_base, seq=self.seq, set_size=7)
         self.session_count = 0
         self.profit_sessions = 0
 
@@ -155,6 +181,14 @@ class Seq7Session:
             return
         try:
             data = json.loads(self.state_path.read_text("utf-8"))
+        except Exception:
+            return
+        # bet_mode/seq が変わったら状態を引き継がない (誤った単位idxを防止)
+        try:
+            if str(data.get("bet_mode") or "") and str(data.get("bet_mode") or "") != self.bet_mode:
+                return
+            if isinstance(data.get("seq"), list) and data.get("seq") and list(data.get("seq")) != self.seq:
+                return
         except Exception:
             return
 
@@ -189,6 +223,8 @@ class Seq7Session:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "schema_version": 1,
+                "bet_mode": self.bet_mode,
+                "seq": self.seq,
                 "chip_base": self.chip_base,
                 "profit_stop": self.profit_stop,
                 "loss_cut": self.loss_cut,
@@ -227,7 +263,7 @@ class Seq7Session:
 
     def bet_unit(self) -> int:
         idx = self.tracker.current_unit_idx
-        unit = SEQ_COUNTER[min(idx, len(SEQ_COUNTER) - 1)]
+        unit = self.seq[min(idx, len(self.seq) - 1)]
         return int(unit)
 
     def bet_amount(self) -> float:
@@ -239,7 +275,7 @@ class Seq7Session:
         if turns:
             wins = turns.count("O")
             losses = turns.count("X")
-            unit = SEQ_COUNTER[min(self.tracker.current_unit_idx, len(SEQ_COUNTER) - 1)]
+            unit = self.seq[min(self.tracker.current_unit_idx, len(self.seq) - 1)]
             cp += (wins - losses) * int(unit)
         return cp
 
@@ -1080,6 +1116,9 @@ class _PragmaticState:
     inactivity_reload_at: float = 0.0
     # Keep-alive: 最終ジェスチャー (mousemove) を送った時刻.
     keep_alive_last_at: float = 0.0
+    keep_alive_next_at: float = 0.0
+    keep_alive_count: int = 0
+    last_master_decision_at: float = 0.0
     # 自動復旧状態 (Master 画面にリアルタイム通知するフラグ).
     recovering: bool = False
     recovering_reason: str = ""
@@ -1349,20 +1388,43 @@ def _drain_ws_events(page_or_frame, *, max_items: int = 300) -> list[dict[str, A
         return []
 
 
+def _normalize_game_ws_url(url: str) -> str:
+    """Normalize Pragmatic game WS URL to reduce harmless churn (e.g. pageRefresh=true)."""
+    try:
+        if not url or "pragmaticplaylive.net/game" not in url:
+            return str(url or "")
+        u = urlsplit(url)
+        qs = parse_qs(u.query or "", keep_blank_values=True)
+        # Pragmatic sometimes toggles this; it should not be treated as a session change.
+        qs.pop("pageRefresh", None)
+        qs.pop("pagerefresh", None)
+        items: list[tuple[str, str]] = []
+        for k in sorted(qs.keys()):
+            vals = qs.get(k) or [""]
+            for v in sorted(str(x) for x in vals):
+                items.append((str(k), str(v)))
+        q = urlencode(items, doseq=True)
+        return urlunsplit((u.scheme, u.netloc, u.path, q, ""))
+    except Exception:
+        return str(url or "")
+
+
 def _maybe_update_from_game_ws_url(state: _PragmaticState, url: str) -> None:
     if not url or "pragmaticplaylive.net/game" not in url:
         return
     # Log every unique game WS URL seen (for diagnosing PLAYER vs BANKER channel differences).
     _redacted = _redact_jsession(url)
-    if url != state.game_ws_url and not getattr(state, "_seen_game_ws_urls", None):
+    norm = _normalize_game_ws_url(url)
+    stored_norm = _normalize_game_ws_url(state.game_ws_url) if state.game_ws_url else ""
+    if norm != stored_norm and not getattr(state, "_seen_game_ws_urls", None):
         state._seen_game_ws_urls = set()  # type: ignore[attr-defined]
-    if hasattr(state, "_seen_game_ws_urls") and url not in state._seen_game_ws_urls:
-        state._seen_game_ws_urls.add(url)  # type: ignore[attr-defined]
+    if hasattr(state, "_seen_game_ws_urls") and norm and norm not in state._seen_game_ws_urls:
+        state._seen_game_ws_urls.add(norm)  # type: ignore[attr-defined]
         print(f"[ws-discover] new game_ws_url seen: {_redacted}", flush=True)
     if not state.game_ws_url:
         state.game_ws_url = url
         print(f"[ws-discover] game_ws_url set (first): {_redacted}", flush=True)
-    elif url != state.game_ws_url:
+    elif norm != stored_norm:
         print(f"[ws-discover] game_ws_url DIFFERENT from stored: {_redacted}", flush=True)
     try:
         u = urlparse(url)
@@ -2712,31 +2774,54 @@ def _send_keep_alive(page, state: Optional[_PragmaticState] = None) -> None:
     """
     try:
         now = time.time()
+        if state is not None:
+            if float(state.keep_alive_next_at or 0) and now < float(state.keep_alive_next_at or 0):
+                return
         last = float((state.keep_alive_last_at if state is not None else 0) or 0)
         elapsed = now - last
-        if elapsed < 60.0:
+
+        idle_after_sec = float(os.getenv("BACOPY_KEEP_ALIVE_IDLE_AFTER_SEC", "300") or 300)
+        active_min_sec = float(os.getenv("BACOPY_KEEP_ALIVE_ACTIVE_MIN_SEC", "60") or 60)
+        active_max_sec = float(os.getenv("BACOPY_KEEP_ALIVE_ACTIVE_MAX_SEC", "150") or 150)
+        idle_min_sec = float(os.getenv("BACOPY_KEEP_ALIVE_IDLE_MIN_SEC", "90") or 90)
+        idle_max_sec = float(os.getenv("BACOPY_KEEP_ALIVE_IDLE_MAX_SEC", "180") or 180)
+
+        is_idle = True
+        if state is not None and float(state.last_master_decision_at or 0):
+            is_idle = (now - float(state.last_master_decision_at or 0)) >= idle_after_sec
+
+        min_sec = idle_min_sec if is_idle else active_min_sec
+        max_sec = idle_max_sec if is_idle else active_max_sec
+        if max_sec < min_sec:
+            max_sec = min_sec
+
+        # Safety: even if last_at isn't set properly, never spam.
+        if elapsed < max(30.0, min_sec * 0.6):
             return
 
         # Phase 1: 軽量マウス微動 (inactive timer リセット)
         try:
-            page.mouse.move(10, 10)
-            page.mouse.move(12, 11)
+            x = random.randint(10, 200)
+            y = random.randint(10, 140)
+            page.mouse.move(x, y)
+            page.mouse.move(x + random.randint(1, 6), y + random.randint(1, 6))
         except Exception:
             pass
         try:
-            page.evaluate(
-                """() => {
-                  try {
-                    window.dispatchEvent(new Event('focus'));
-                    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 10, clientY: 10 }));
-                  } catch (_) {}
-                }"""
-            )
+            if random.random() < 0.7:
+                page.evaluate(
+                    """() => {
+                      try {
+                        window.dispatchEvent(new Event('focus'));
+                        document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 10, clientY: 10 }));
+                      } catch (_) {}
+                    }"""
+                )
         except Exception:
             pass
 
-        # Phase 2: 180s 以上経過で強化. 動画エリアでマウス移動 (inactive 判定を確実回避).
-        if elapsed >= 180.0:
+        # Phase 2: 時々だけ強化. 動画エリアでマウス移動 (inactive 判定を確実回避).
+        if elapsed >= 180.0 or random.random() < (0.15 if is_idle else 0.35):
             try:
                 pos = page.evaluate(_LIVE_VIDEO_LOCATE_JS)
                 if isinstance(pos, dict):
@@ -2762,6 +2847,11 @@ def _send_keep_alive(page, state: Optional[_PragmaticState] = None) -> None:
 
         if state is not None:
             state.keep_alive_last_at = now
+            state.keep_alive_count = int(state.keep_alive_count or 0) + 1
+            try:
+                state.keep_alive_next_at = now + float(random.uniform(min_sec, max_sec))
+            except Exception:
+                state.keep_alive_next_at = now + max(60.0, float(min_sec or 60))
     except Exception:
         pass
 
@@ -3623,6 +3713,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     ap.add_argument("--poll-sec", type=float, default=0.5)
     ap.add_argument("--limit", type=int, default=20)
+    ap.add_argument(
+        "--bet-mode",
+        default=os.getenv("BACOPY_BET_MODE", BET_MODE_FLAT_1USD),
+        help="BET mode: flat_1usd | seq_user10 (legacy: counter_seq7)",
+    )
     ap.add_argument("--flat-amount", type=float, default=1.0)
     ap.add_argument("--chip-base", type=float, default=0.0, help="Base bet ($) for SEQ7 (falls back to --flat-amount)")
     ap.add_argument("--profit-target", type=float, default=50.0, help="Session profit target in $ (converted to chips by chip_base)")
@@ -3775,11 +3870,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     atexit.register(lambda: stop_fetcher.set())
     threading.Thread(target=_decision_fetcher, name="decision_fetcher", daemon=True).start()
 
-    chip_base = float(args.chip_base) if float(args.chip_base or 0) > 0 else float(args.flat_amount or 1.0)
+    bet_mode = str(args.bet_mode or BET_MODE_FLAT_1USD).strip().lower()
+    seq_for_mode = _seq_for_bet_mode(bet_mode)
+    # flat_1usd / seq_user10 は「SEQの値=USD」として扱うため chip_base=1 固定
+    if bet_mode in (BET_MODE_FLAT_1USD, BET_MODE_SEQ_USER10):
+        chip_base = 1.0
+    else:
+        chip_base = float(args.chip_base) if float(args.chip_base or 0) > 0 else float(args.flat_amount or 1.0)
     profit_stop_chips = max(1, int(round(float(args.profit_target) / max(chip_base, 0.01))))
     loss_cut_chips = max(1, int(round(float(args.loss_cut) / max(chip_base, 0.01))))
     seq7 = Seq7Session(
         chip_base=chip_base,
+        seq=seq_for_mode,
+        bet_mode=bet_mode,
         profit_stop_chips=profit_stop_chips,
         loss_cut_chips=loss_cut_chips,
         profit_session_limit=int(args.profit_session_limit or 0),
@@ -3966,7 +4069,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "phase": {"name": phase_name, "detail": phase_detail},
             "gui": seq7_payload,
             "seq": {
-                "mode": "counter_seq7",
+                "mode": bet_mode,
                 "chip_base": chip_base,
                 "unit_idx": seq7.tracker.current_unit_idx,
                 "unit": seq7.bet_unit(),
@@ -4031,7 +4134,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     def on_ws(ws):
         url = str(ws.url or "")
         if "pragmaticplaylive.net/game" in url:
-            state.game_ws_url = url
+            # Avoid harmless churn: ignore differences only in pageRefresh or query ordering
+            if _normalize_game_ws_url(url) != _normalize_game_ws_url(state.game_ws_url):
+                state.game_ws_url = url
 
         def on_recv(frame_data):
             try:
@@ -4948,6 +5053,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         while True:
             heartbeat("running")
             items = _drain_decisions_nowait()
+            if items:
+                try:
+                    state.last_master_decision_at = time.time()
+                except Exception:
+                    pass
             _now = time.time()
             if _now - _last_modal_check_at >= _MODAL_CHECK_INTERVAL:
                 _last_modal_check_at = _now

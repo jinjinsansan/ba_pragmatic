@@ -263,6 +263,15 @@
           <div style="height:1px; background:var(--border); margin:14px 0 16px;"></div>
 
           <div class="form-group">
+            <label>BET MODE</label>
+            <select id="inputBetMode">
+              <option value="flat_1usd">TEST — $1 fixed</option>
+              <option value="seq_user10">SEQ — $10 start (10,20,30...)</option>
+            </select>
+          </div>
+
+          <!-- BET単位(=chip_base) は廃止: モード側で金額を固定/SEQで決定する -->
+          <div class="form-group" id="chipBaseGroup" style="display:none;">
             <label>Base Bet ($)</label>
             <input type="number" id="inputChipBase" value="1" min="0.5" step="0.5">
           </div>

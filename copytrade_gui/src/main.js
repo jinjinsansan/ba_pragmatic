@@ -538,6 +538,7 @@ function buildSpawnSpec(config) {
   if (config && config.allow_banker) args.push('--allow-banker');
   if (config && config.allow_tie) args.push('--allow-tie');
   if (config && config.assume_bc_012) args.push('--assume-bc-012');
+  if (config && config.bet_mode) args.push('--bet-mode', String(config.bet_mode));
   const chipBase = (config && typeof config.chip_base === 'number') ? config.chip_base : 1;
   args.push('--chip-base', String(chipBase));
 

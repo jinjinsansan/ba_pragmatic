@@ -408,7 +408,7 @@ function buildStartConfig() {
     ...s,
     user_email: (window.__authEmail || ''),
     user_id: (window.__authUserId || ''),
-    bet_mode: 'counter_seq7',
+    bet_mode: normalizeBetMode(s.bet_mode),
     resume_results: Array.isArray(results) ? results.slice() : [],
   };
 }
@@ -639,12 +639,12 @@ const DEFAULT_SETTINGS = {
 
   headless: false,
   dry_run: false,
-  bet_mode: 'counter_seq7',
+  bet_mode: 'flat_1usd',
 };
-const ALLOWED_BET_MODES = new Set(['counter_seq7']);
+const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10']);
 
 function normalizeBetMode(mode) {
-  return ALLOWED_BET_MODES.has(mode) ? mode : 'counter_seq7';
+  return ALLOWED_BET_MODES.has(mode) ? mode : 'flat_1usd';
 }
 
 function normalizeProfitSessionLimit(value) {
@@ -763,7 +763,7 @@ function _getGuiState() {
     session_total: sessionTotal,
     daily_pnl: loadDailyPnl(),
     results: results.slice(-200),
-    bet_mode: (loadSettings().bet_mode || 'counter'),
+    bet_mode: normalizeBetMode(loadSettings().bet_mode),
     updated_at: new Date().toISOString(),
   };
   if (_isValidBalance(_currentBalance)) payload.current_balance = _currentBalance;
@@ -898,6 +898,7 @@ async function _refreshSupportInfo() {
 $('#btnSettings')?.addEventListener('click', async () => {
   $('#settingsModal')?.classList.remove('hidden');
   const s = loadSettings();
+  if ($('#inputBetMode')) $('#inputBetMode').value = normalizeBetMode(s.bet_mode);
   $('#inputChipBase').value = s.chip_base;
   $('#inputProfitTarget').value = s.profit_target;
   if ($('#inputProfitSessionLimit')) $('#inputProfitSessionLimit').value = s.profit_session_limit ?? 0;
@@ -1007,12 +1008,13 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
   await new Promise((r) => setTimeout(r, 0));
 
   const settings = {
-    chip_base: parseFloat($('#inputChipBase').value) || 1,
+    // bet_mode が金額を決めるため chip_base は固定 (UIも非表示)
+    chip_base: 1,
     profit_target: parseFloat($('#inputProfitTarget').value) || 50,
     profit_session_limit: normalizeProfitSessionLimit($('#inputProfitSessionLimit')?.value),
     loss_cut: parseFloat($('#inputLossCut').value) || 200,
     dry_run: $('#inputDryRun').checked,
-    bet_mode: 'counter_seq7',
+    bet_mode: normalizeBetMode($('#inputBetMode')?.value),
     executor_id: $('#inputExecutorId').value.trim(),
     executor_label: $('#inputExecutorLabel').value.trim(),
     stake_username: $('#inputStakeUsername').value.trim(),
@@ -1044,7 +1046,7 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
   }
 
   $('#settingsModal')?.classList.add('hidden');
-  addLog(`Settings saved. Base:$${settings.chip_base} Target:$${settings.profit_target} LossCut:$${settings.loss_cut}`, 'info');
+  addLog(`Settings saved. Mode:${settings.bet_mode} Target:$${settings.profit_target} LossCut:$${settings.loss_cut}`, 'info');
 });
 
 function loadSettings() {
@@ -1169,8 +1171,8 @@ function _driftToCode(os) {
 }
 
 const _STREAM_SET_COLORS = ['#ff3366', '#ffcc00', '#00b8d4', '#ffffff', '#00ff88', '#c084fc'];
-function _setSizeForMode(mode) { return mode === 'counter_seq7' ? 7 : 5; }
-let _streamSetSize = _setSizeForMode(loadSettings().bet_mode || 'counter');
+function _setSizeForMode(mode) { return 7; } // 全モード7ターン制
+let _streamSetSize = _setSizeForMode(normalizeBetMode(loadSettings().bet_mode));
 let _streamSetIdx = 0;
 let _streamTurnsInSet = 0;
 let _lastRoundWon = null;
