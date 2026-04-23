@@ -4597,6 +4597,23 @@ def main(argv: Optional[list[str]] = None) -> int:
                 except Exception:
                     print(f"[Stage 5] waiting... elapsed={time.time()-t0:.0f}s", flush=True)
                 send_action("Waiting for Stake table entry... (login/click a table in the browser window)")
+                # Master UI に pending SWITCH_TABLE があれば自動でクリック試行
+                try:
+                    _s5_tn, _s5_qpid = _fetch_master_last_table()
+                    if _s5_tn or _s5_qpid:
+                        send_log(f"[stage5] pending SWITCH_TABLE found: '{_s5_tn}' qpid={_s5_qpid or '-'} — attempting click")
+                        _join_table(
+                            page,
+                            table_substr=_s5_tn,
+                            qpid_table_id=_s5_qpid,
+                            auto_click_wait_sec=30,
+                            state=state,
+                            on_tick=lambda: heartbeat("running"),
+                            is_initial=False,
+                        )
+                except Exception as _s5e:
+                    try: send_log(f"[stage5] auto-click failed: {_s5e}")
+                    except Exception: pass
             page.wait_for_timeout(500)
 
         send_phase("idle", "ARMED")
