@@ -4518,6 +4518,32 @@ def main(argv: Optional[list[str]] = None) -> int:
                     return tn, qpid
             except Exception:
                 pass
+            # done 履歴なし (AI学習リセット直後など) → pending SWITCH_TABLE を fallback で使う
+            try:
+                import urllib.request as _ur2
+                base = (os.getenv("BACOPY_API_URL") or "https://master.bafather.uk").rstrip("/")
+                key = os.getenv("BACOPY_API_KEY") or ""
+                req = _ur2.Request(
+                    f"{base}/api/decisions?status=pending&limit=50",
+                    headers={"Authorization": f"Bearer {key}"},
+                )
+                with _ur2.urlopen(req, timeout=5) as resp:
+                    data = json.load(resp)
+                decisions = data.get("decisions", []) or []
+                decisions.sort(key=lambda x: (x.get("captured_at") or x.get("received_at") or ""), reverse=True)
+                for d in decisions:
+                    fa = d.get("friend_action") or {}
+                    if not (isinstance(fa, dict) and str(fa.get("action") or "").upper() == "SWITCH_TABLE"):
+                        continue
+                    tn = str(d.get("table_name") or "").strip()
+                    qpid = str(d.get("qpid_table_id") or "").strip()
+                    if not qpid and isinstance(d.get("snapshot"), dict):
+                        qpid = str(d["snapshot"].get("qpid_table_id") or "").strip()
+                    if tn:
+                        print(f"[startup] no done history — using pending SWITCH_TABLE: '{tn}' qpid={qpid or '-'}", flush=True)
+                        return tn, qpid
+            except Exception:
+                pass
             return "", ""
 
         _master_target, _master_qpid = _fetch_master_last_table()
