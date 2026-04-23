@@ -1093,6 +1093,13 @@ class _PragmaticState:
     stake_balance_delta_by_currency: dict[str, float] = None
     last_stake_balance_at: float = 0.0
 
+    # Diagnostic: Stake WS message capture (for root-causing missing balance).
+    # Enabled by BACOPY_STAKE_WS_DEBUG=1 (default on). Logs first N messages per URL
+    # and any message containing 'balance' keyword.
+    _stake_ws_seen_urls: set[str] = None
+    _stake_ws_msg_counts: dict[str, int] = None
+    _stake_ws_balance_hits: int = 0
+
     # Stake session takeover safety
     session_elsewhere_observed: bool = False
     session_elsewhere_unresolved: bool = False
@@ -1133,6 +1140,10 @@ class _PragmaticState:
             self.stake_balance_by_currency = {}
         if self.stake_balance_delta_by_currency is None:
             self.stake_balance_delta_by_currency = {}
+        if self._stake_ws_seen_urls is None:
+            self._stake_ws_seen_urls = set()
+        if self._stake_ws_msg_counts is None:
+            self._stake_ws_msg_counts = {}
         if self.dga_subscribed_keys is None:
             self.dga_subscribed_keys = set()
         if not self.last_ws_recv_at:
@@ -1312,6 +1323,44 @@ def _update_from_lobby_msg(state: _PragmaticState, msg: dict[str, Any]) -> None:
             continue
         state._seen_table_game.add(key)
         state.winners_by_table_game_id.setdefault(table_id, {})[gid] = win
+
+
+def _stake_ws_diagnostic_log(state: _PragmaticState, url: str, data_str: str, is_recv: bool) -> None:
+    """診断用: Stake 関連 WS の URL と最初のメッセージを捕捉してログ出力する.
+    BACOPY_STAKE_WS_DEBUG=0 で無効化.
+    目的: state.stake_balance_by_currency が埋まらない真の原因特定.
+    """
+    try:
+        if os.getenv("BACOPY_STAKE_WS_DEBUG", "1") == "0":
+            return
+        low = (url or "").lower()
+        # Stake 関連の候補 URL を広めに捕捉する (現行の `_api/websockets` 以外も).
+        if ("stake.com" not in low) and ("stake" not in low):
+            return
+        # 既知 Pragmatic 系は除外 (既にログしている).
+        if "pragmaticplaylive.net" in low or "dga.pragmaticplaylive.net" in low:
+            return
+        max_per_url = int(os.getenv("BACOPY_STAKE_WS_DEBUG_PER_URL", "20") or 20)
+        # 初出 URL のみ目立つログ.
+        if url not in state._stake_ws_seen_urls:
+            state._stake_ws_seen_urls.add(url)
+            send_log(f"[stake-ws][new-url] {url[:250]}")
+        cnt = int(state._stake_ws_msg_counts.get(url, 0))
+        if cnt < max_per_url:
+            state._stake_ws_msg_counts[url] = cnt + 1
+            trimmed = (data_str or "")[:600]
+            tag = "recv" if is_recv else "send"
+            send_log(f"[stake-ws][{cnt+1}/{max_per_url}][{tag}] url=...{url[-100:]} msg={trimmed}")
+        # balance キーワードを含むメッセージは別カウンタで最大 10 件まで追加ログ.
+        if "balance" in (data_str or "").lower() and state._stake_ws_balance_hits < 10:
+            state._stake_ws_balance_hits += 1
+            trimmed = (data_str or "")[:800]
+            send_log(
+                f"[stake-ws][balance-hit {state._stake_ws_balance_hits}/10] "
+                f"url=...{url[-100:]} msg={trimmed}"
+            )
+    except Exception:
+        pass
 
 
 def _update_from_stake_ws_msg(state: _PragmaticState, msg: dict[str, Any]) -> None:
@@ -1558,6 +1607,12 @@ def _pump_ws_events(page, game_frame, state: _PragmaticState) -> None:
             if "pragmaticplaylive.net/game" in url:
                 _maybe_update_from_game_ws_url(state, url)
             data = ev.get("data")
+            # 診断ログ: Stake 関連 WS を広めに捕捉 (真の balance WS URL を特定するため).
+            try:
+                _data_str_for_diag = data if isinstance(data, str) else (json.dumps(data) if data is not None else "")
+            except Exception:
+                _data_str_for_diag = str(data or "")
+            _stake_ws_diagnostic_log(state, url, _data_str_for_diag, is_recv)
             obj = _maybe_json(data)
             if not obj and isinstance(data, str) and "<" in data:
                 if is_recv and "pragmaticplaylive.net/game" in url:
@@ -4137,6 +4192,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             # Avoid harmless churn: ignore differences only in pageRefresh or query ordering
             if _normalize_game_ws_url(url) != _normalize_game_ws_url(state.game_ws_url):
                 state.game_ws_url = url
+        # 診断: Stake 関連 WS が接続されたら URL をログ出力 (初出のみ).
+        try:
+            if (
+                os.getenv("BACOPY_STAKE_WS_DEBUG", "1") != "0"
+                and "stake" in url.lower()
+                and "pragmaticplaylive.net" not in url.lower()
+                and url not in state._stake_ws_seen_urls
+            ):
+                state._stake_ws_seen_urls.add(url)
+                send_log(f"[stake-ws][new-url][on_ws] {url[:250]}")
+        except Exception:
+            pass
 
         def on_recv(frame_data):
             try:
@@ -4151,6 +4218,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             except Exception:
                 pass
             p = frame_data.payload if hasattr(frame_data, "payload") else frame_data
+            # 診断ログ: Stake 関連 WS を広めに捕捉 (真の balance WS URL を特定するため).
+            try:
+                _p_for_diag = p
+                if isinstance(_p_for_diag, bytes):
+                    _p_for_diag = _p_for_diag.decode("utf-8", errors="replace")
+                if not isinstance(_p_for_diag, str):
+                    _p_for_diag = str(_p_for_diag or "")
+                _stake_ws_diagnostic_log(state, url, _p_for_diag, True)
+            except Exception:
+                pass
             obj = _maybe_json(p)
             if not obj:
                 try:
