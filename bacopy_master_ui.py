@@ -218,6 +218,15 @@ details > .content{padding:10px 0}
 .exec-card .stat .label{font-size:9px}
 .exec-card .stat .value{font-size:13px;word-break:break-all}
 .exec-card .err{color:var(--lose);font-family:var(--font-mono);font-size:11px;padding:6px 8px;background:rgba(255,51,102,0.06);border:1px solid rgba(255,51,102,0.28);border-radius:6px;margin-top:8px}
+.exec-card .signal-panel{margin-top:10px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.exec-card .signal-panel-title{font-family:var(--font-hud);font-size:9px;letter-spacing:2px;color:var(--text-muted);background:rgba(255,255,255,0.03);padding:4px 8px;border-bottom:1px solid var(--border)}
+.exec-card .signal-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:0}
+.exec-card .signal-item{padding:5px 8px;border-right:1px solid var(--border);border-bottom:1px solid var(--border)}
+.exec-card .signal-item:nth-child(3n){border-right:none}
+.exec-card .signal-item .sl{font-size:9px;color:var(--text-muted);letter-spacing:1px}
+.exec-card .signal-item .sv{font-family:var(--font-mono);font-size:12px;margin-top:1px;word-break:break-all}
+.exec-card .turns-bar{padding:5px 8px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:12px;letter-spacing:2px}
+.exec-card .phase-row{padding:5px 8px;font-family:var(--font-mono);font-size:11px;color:var(--accent);border-bottom:1px solid var(--border)}
 
 /* 履歴 */
 .history-wrap{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -764,7 +773,7 @@ function renderStatsBar(){
     pnlTile.className = 'stat-tile';
   }
   // 学習進捗
-  const bets = _state.decisions.done.concat(_state.decisions.error).filter(x=>String((x.friend_action||{}).action||'').toUpperCase()==='BET');
+  const bets = _state.decisions.done.concat(_state.decisions.error).filter(x=>{const fa=x.friend_action||{};if(String(fa.action||'').toUpperCase()!=='BET') return false;if(fa.in_learning_session===false||fa.in_learning_session===0) return false;return true;});
   document.getElementById('sbLearn').textContent = `${bets.length} / 5000`;
   // 勝率
   const wr = computeWinrate(_state.decisions.done);
@@ -880,7 +889,7 @@ function renderExecutors(){
     const online = !explicitlyStopped && ageSec<60;
     const c=document.createElement('div'); c.className='glass-card exec-card';
     if(selExecId && selExecId===e.executor_id) c.classList.add('active');
-    const ws=e.ws||{}, caps=e.caps||{}, seq=e.seq||{};
+    const ws=e.ws||{}, caps=e.caps||{}, seq=e.seq||{}, gui=e.gui||{}, ph=e.phase||{};
     const wsSil = (ws.silence_sec!=null) ? Number(ws.silence_sec).toFixed(0)+'s' : '-';
     const recExh = !!ws.recover_exhausted;
     const timerVal = (ws.timer!=null && String(ws.timer).trim()!=='') ? String(ws.timer).trim()+'s' : '-';
@@ -891,6 +900,21 @@ function renderExecutors(){
     const dpnlCls = dpnlRaw==null ? '' : (dpnlRaw>0?'win':(dpnlRaw<0?'lose':''));
     const seqStr = (seq && seq.bet_amount!=null) ? `単位=${escHtml(seq.unit||1)} 額=${escHtml(seq.bet_amount)}` : '-';
     const capsStr = [caps.allow_banker?'B':'-', caps.allow_tie?'T':'-', caps.allow_switch_table?'SW':'-'].join('/');
+    // --- signal panel (gui / phase) ---
+    const phaseLabel = ph.name ? ph.name+(ph.detail?' / '+ph.detail:'') : (e.status||'-');
+    const spnlRaw = (gui.session_pnl!=null) ? Number(gui.session_pnl) : null;
+    const spnl = spnlRaw==null ? '-' : ((spnlRaw>=0?'+':'')+'$'+spnlRaw.toFixed(2));
+    const spnlCls = spnlRaw==null ? '' : (spnlRaw>0?'win':(spnlRaw<0?'lose':''));
+    const turns = String(gui.turns_display||'');
+    const turnsHtml = turns ? turns.split('').map(t=>t==='O'?'<span style="color:var(--win)">O</span>':'<span style="color:var(--lose)">X</span>').join(' ') : '<span style="color:var(--text-muted)">-</span>';
+    const curTurn = (gui.current_turn!=null) ? String(gui.current_turn) : '-';
+    const os = (gui.overshoot!=null) ? Number(gui.overshoot).toFixed(2) : '-';
+    const winsStr = (gui.wins!=null) ? gui.wins+'W '+String(gui.losses||0)+'L '+String(gui.ties||0)+'T' : '-';
+    const totalBets = (gui.total_bets!=null) ? String(gui.total_bets) : '-';
+    const sessStr = (gui.session_count!=null) ? gui.session_count+'回 (利'+String(gui.profit_sessions||0)+')' : '-';
+    const losscut = (gui.loss_cut_chips!=null) ? String(gui.loss_cut_chips) : '-';
+    const profstop = (gui.profit_stop_chips!=null) ? String(gui.profit_stop_chips) : '-';
+    const shouldReset = gui.should_reset ? ' <span style="color:var(--lose);font-weight:bold">⚠ RESET推奨</span>' : '';
     let pills='';
     pills += online ? '<span class="pill ok">オンライン</span>' : '<span class="pill offline">オフライン</span>';
     if(e.recovering) pills += ' <span class="pill warn" style="animation:pulseWarn 1s ease-in-out infinite">復旧中</span>';
@@ -921,6 +945,19 @@ function renderExecutors(){
         <div class="stat"><div class="label">BET窓</div><div class="value">${escHtml(betOpenLabel)}</div></div>
         <div class="stat"><div class="label">権限</div><div class="value small">${escHtml(capsStr)}</div></div>
         <div class="stat"><div class="label">状態</div><div class="value small">${escHtml(e.status||'-')}</div></div>
+      </div>
+      <div class="signal-panel">
+        <div class="signal-panel-title">シグナルパネル</div>
+        <div class="phase-row">${escHtml(phaseLabel)}${shouldReset}</div>
+        <div class="turns-bar">ターン: ${turnsHtml} &nbsp;<span style="color:var(--text-muted);font-size:10px">(${curTurn}手目)</span></div>
+        <div class="signal-grid">
+          <div class="signal-item"><div class="sl">セッション損益</div><div class="sv ${spnlCls}">${escHtml(spnl)}</div></div>
+          <div class="signal-item"><div class="sl">OS</div><div class="sv">${escHtml(os)}</div></div>
+          <div class="signal-item"><div class="sl">W/L/T</div><div class="sv">${escHtml(winsStr)}</div></div>
+          <div class="signal-item"><div class="sl">総BET数</div><div class="sv">${escHtml(totalBets)}</div></div>
+          <div class="signal-item"><div class="sl">セッション</div><div class="sv">${escHtml(sessStr)}</div></div>
+          <div class="signal-item"><div class="sl">損切/利確</div><div class="sv">${escHtml(losscut)}/±${escHtml(profstop)}</div></div>
+        </div>
       </div>
       ${errHtml}`;
     wrap.appendChild(c);
@@ -954,6 +991,7 @@ function renderLearning(){
   for(const d of all){
     const fa = d.friend_action||{};
     if(String(fa.action||'').toUpperCase()!=='BET') continue;
+    if(fa.in_learning_session===false||fa.in_learning_session===0) continue;
     betCount++;
     const rcv = Date.parse(d.received_at||'') || 0;
     if(rcv >= cutoff24) last24++;
@@ -1342,7 +1380,7 @@ function sendDecision(action, side){
     // unique key として使って「バカラ 1 と バカラ 10 の取り違え」等の誤爆を根絶する.
     qpid_table_id:String(selected.qpid_table_id||''),
     target_executor_id,
-    friend_action:{action, side:side||'', amount:0, note},
+    friend_action:{action, side:side||'', amount:0, note, in_learning_session:_learnSession.active},
   };
   const actJa = {LOOK:'様子見','BET':'BET','SWITCH_TABLE':'テーブル移動'}[action]||action;
 

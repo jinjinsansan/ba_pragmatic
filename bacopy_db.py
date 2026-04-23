@@ -384,7 +384,14 @@ def get_stats() -> dict[str, Any]:
         except Exception:
             bet_total = 0
         try:
-            cur.execute("SELECT COUNT(*) FROM decisions WHERE action = 'BET' AND status = 'done'")
+            # in_learning_session フラグがある場合は true のみカウント
+            # フラグなし (旧データ) は後方互換でカウント対象のまま
+            cur.execute("""SELECT COUNT(*) FROM decisions
+                WHERE action = 'BET' AND status = 'done'
+                AND (
+                    json_extract(payload_json, '$.friend_action.in_learning_session') IS NULL
+                    OR json_extract(payload_json, '$.friend_action.in_learning_session') = 1
+                )""")
             bet_done = int(cur.fetchone()[0] or 0)
         except Exception:
             bet_done = 0
