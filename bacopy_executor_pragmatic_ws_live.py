@@ -5532,6 +5532,40 @@ def main(argv: Optional[list[str]] = None) -> int:
                     heartbeat("error")
                     continue
 
+                # Next-hand mismatch guard (Speed Baccarat 等の短窓対策).
+                # 現在開いている BET 窓が decision の captured_at より明らかに後に開いた場合,
+                # マスターが狙っていたハンドの窓は既に閉じており, 今開いている窓は「次ハンド」の窓.
+                # この状態で BET を送ると意図しない次ハンドに入ってしまう事故が起きるため,
+                # スキップして error 返却する.
+                if cap_ts is not None and state.last_bets_open_at > 0:
+                    _window_age = time.time() - float(state.last_bets_open_at)
+                    _decision_age = _server_time_now() - cap_ts
+                    _nh_tol = float(os.getenv("BACOPY_NEXT_HAND_TOLERANCE_SEC", "0.5") or 0.5)
+                    if (_decision_age - _window_age) > _nh_tol:
+                        _post_result(
+                            did,
+                            {
+                                "error": "next_hand_mismatch",
+                                "reason": "bet window opened after decision captured_at — would bet on next hand",
+                                "window_age_sec": round(_window_age, 3),
+                                "decision_age_sec": round(_decision_age, 3),
+                                "tolerance_sec": _nh_tol,
+                                "bets_open_game_id": state.bets_open_game_id,
+                            },
+                            status="error",
+                        )
+                        try:
+                            send_log(
+                                f"[bet][warn] next_hand_mismatch: window_age={_window_age:.2f}s < "
+                                f"decision_age={_decision_age:.2f}s (tol={_nh_tol}s) — "
+                                f"狙いハンドの窓は既に終了. 次窓 game={state.bets_open_game_id} には置かない."
+                            )
+                            send_action("❌ BET不可: 狙いハンドの窓は既に終了 (次ハンドには置かない)")
+                        except Exception:
+                            pass
+                        heartbeat("skip")
+                        continue
+
                 # deadline 超過チェック.
                 if time.time() > _bet_flow_deadline:
                     _post_result(did, {"error": "bet_flow_timeout_after_bets_open", "waited_ms": _wait_open_ms}, status="error")
