@@ -3852,6 +3852,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     stop_fetcher = threading.Event()
     seen_ids_order: deque[str] = deque()
     seen_ids_set: set[str] = set()
+    _fetcher_dedup: dict[str, float] = {}  # did -> last_put_ts
 
     def _seen_add(did: str, *, maxlen: int = 2000) -> bool:
         if not did:
@@ -3915,8 +3916,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                 did = str(d.get("decision_id") or "")
                 if not did:
                     continue
-                # Don't drop duplicates here; ack timing can cause pending re-appearance. Main loop dedupes.
-                d["_fetched_at_ts"] = time.time()
+                # Fetcher dedup: 同じdidを60s以内に再投入しない（queue膨張防止）
+                _now_ft = time.time()
+                if _now_ft - _fetcher_dedup.get(did, 0.0) < 60.0:
+                    continue
+                _fetcher_dedup[did] = _now_ft
+                if len(_fetcher_dedup) > 500:
+                    _cutoff = _now_ft - 300.0
+                    for _k in [_k for _k, _v in list(_fetcher_dedup.items()) if _v < _cutoff]:
+                        _fetcher_dedup.pop(_k, None)
+                d["_fetched_at_ts"] = _now_ft
                 decision_q.put(d)
             backoff = 0.5
             # A safety sleep prevents tight loops if server returns instantly with same pending items.
@@ -5392,7 +5401,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     # 古い SWITCH_TABLE は捨てる (マスター長時間オフライン → 復帰時に溜まった古い指示で
                     # ロビー遷移が連鎖するのを防ぐ). 既定 60s 超で破棄. env で調整可.
                     try:
-                        _stale_switch_sec = float(os.getenv("BACOPY_SWITCH_STALE_SEC", "60") or 60)
+                        _stale_switch_sec = float(os.getenv("BACOPY_SWITCH_STALE_SEC", "300") or 300)
                         _cap_ts = _parse_iso_ts(str(d.get("captured_at") or ""))
                         if _cap_ts and _stale_switch_sec > 0:
                             _age_sec = _server_time_now() - _cap_ts
