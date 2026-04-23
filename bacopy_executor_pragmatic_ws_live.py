@@ -5269,6 +5269,26 @@ def main(argv: Optional[list[str]] = None) -> int:
                     if not args.allow_switch_table:
                         _post_result(did, {"error": "switch_table disabled (start executor with --allow-switch-table)"}, status="error")
                         continue
+                    # 古い SWITCH_TABLE は捨てる (マスター長時間オフライン → 復帰時に溜まった古い指示で
+                    # ロビー遷移が連鎖するのを防ぐ). 既定 60s 超で破棄. env で調整可.
+                    try:
+                        _stale_switch_sec = float(os.getenv("BACOPY_SWITCH_STALE_SEC", "60") or 60)
+                        _cap_ts = _parse_iso_ts(str(d.get("captured_at") or ""))
+                        if _cap_ts and _stale_switch_sec > 0:
+                            _age_sec = _server_time_now() - _cap_ts
+                            if _age_sec > _stale_switch_sec:
+                                _post_result(
+                                    did,
+                                    {"error": f"stale SWITCH_TABLE ignored (age={_age_sec:.0f}s > {_stale_switch_sec:.0f}s)"},
+                                    status="error",
+                                )
+                                try:
+                                    send_log(f"[switch] stale ignored did={did[-12:]} age={_age_sec:.0f}s")
+                                except Exception:
+                                    pass
+                                continue
+                    except Exception:
+                        pass
                     target = decision_table_name or (decision_snapshot.get("table_name") if isinstance(decision_snapshot, dict) else "") or ""
                     # qpid 優先: decision root に qpid_table_id があればそれを使い, 無ければ
                     # snapshot 内の qpid_table_id を使い, 無ければ snapshots API で補完.
