@@ -1,4 +1,18 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
+
+// Single instance lock — prevent multiple GUI windows from running simultaneously.
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // If user opens a second instance, focus the existing window instead.
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
