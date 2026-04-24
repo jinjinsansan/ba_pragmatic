@@ -1,25 +1,25 @@
 # =============================================================
-# BACOPY 初回セットアップ (統合版)
+# BACOPY Initial Setup (All-in-One)
 # =============================================================
 #
-# GUI の "INSTALL ON THIS PC" ボタンから起動される。
-# このスクリプト1つで以下を全て自動実行:
+# Launched by the "INSTALL ON THIS PC" button in the GUI.
+# This script handles all of the following automatically:
 #
-#   1. 必須ランタイムのインストール (winget 優先 / 直接DL フォールバック)
-#        - Visual C++ Redistributable (Camoufox/エンジン動作に必要)
-#        - Edge WebView2 Runtime     (Electron GUI に必要)
-#   2. OpenSSH Server のインストール + サービス起動 + 自動起動
-#   3. 管理者公開鍵を administrators_authorized_keys に配置 + ACL
-#   4. sshd_config を公開鍵認証のみに強化 (opt-in)
-#   5. Windows Firewall に 22 番ポート受信規則を追加
+#   1. Install required runtimes (winget preferred / direct download fallback)
+#        - Visual C++ Redistributable (required for Camoufox/engine)
+#        - Edge WebView2 Runtime     (required for Electron GUI)
+#   2. Install OpenSSH Server + start service + enable auto-start
+#   3. Install admin public key in administrators_authorized_keys + set ACL
+#   4. Harden sshd_config to pubkey-only auth (opt-in)
+#   5. Add Windows Firewall inbound rule for port 22
 #
-# 管理者権限必須 (UAC 承認後、GUI から自動起動される)。
+# Requires administrator privileges (auto-launched by GUI after UAC approval).
 #
-# 引数:
-#   -AdminPubKeyPath  管理者公開鍵ファイルパス (任意)
-#   -DryRun           実際には変更せずログのみ出力
-#   -HardenSshdConfig パスワード認証を無効化 (強化モード)
-#   -LogPath          ログ保存先 (既定: C:\ProgramData\BACOPY\setup-all.log)
+# Parameters:
+#   -AdminPubKeyPath  Path to admin public key file (optional)
+#   -DryRun           Log only, no actual changes
+#   -HardenSshdConfig Disable password auth (hardened mode)
+#   -LogPath          Log file path (default: C:\ProgramData\BACOPY\setup-all.log)
 # =============================================================
 
 param(
@@ -31,7 +31,7 @@ param(
 
 $ErrorActionPreference = "Continue"
 
-# --- ログ初期化 ---
+# --- Log init ---
 $logDir = Split-Path -Parent $LogPath
 if (-not (Test-Path $logDir)) { New-Item -Path $logDir -ItemType Directory -Force | Out-Null }
 function Write-Log {
@@ -48,21 +48,21 @@ Write-Log "DryRun=$DryRun AdminPubKey=$AdminPubKeyPath"
 Write-Log "OS: $([System.Environment]::OSVersion.VersionString)"
 Write-Log "================================"
 
-# --- 0. 管理者権限チェック ---
+# --- 0. Admin check ---
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    Write-Log "管理者権限で実行されていません。中断します。" "ERROR"
+    Write-Log "Not running as administrator. Aborting." "ERROR"
     Write-Host ""
-    Write-Host "このスクリプトは管理者権限で実行する必要があります。"
-    Write-Host "GUI から起動した場合は UAC 承認ダイアログで [はい] をクリックしてください。"
-    Read-Host "何かキーを押すと終了します"
+    Write-Host "This script must be run as administrator."
+    Write-Host "If launched from GUI, click [Yes] in the UAC approval dialog."
+    Read-Host "Press any key to exit"
     exit 1
 }
 
-# --- 1. ランタイムのインストール ---
+# --- 1. Runtime install ---
 Write-Log "--- Phase 1: Runtime packages ---"
 
-# winget の有無を確認
+# Check for winget
 $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
 
 function Install-WithWinget {
@@ -84,54 +84,54 @@ function Install-WithWinget {
 }
 
 function Install-VCRedist {
-    # VCRedist: winget 優先、失敗時は Microsoft 直接 DL
+    # VCRedist: winget preferred, fallback to direct DL
     if ($wingetCmd) {
         $ok = Install-WithWinget "Microsoft.VCRedist.2015+.x64" "VCRedist 2015+x64"
         if ($ok) { return }
     }
-    if ($DryRun) { Write-Log "[DryRun] VCRedist 直接DL"; return }
-    Write-Log "VCRedist: 直接ダウンロードを試みます..."
+    if ($DryRun) { Write-Log "[DryRun] VCRedist direct DL"; return }
+    Write-Log "VCRedist: Trying direct download..."
     $url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
     $dest = "$env:TEMP\vc_redist.x64.exe"
     try {
         Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -TimeoutSec 60
         Start-Process -FilePath $dest -ArgumentList "/install", "/quiet", "/norestart" -Wait -NoNewWindow
-        Write-Log "VCRedist: 直接DL インストール完了"
+        Write-Log "VCRedist: direct download install complete"
     } catch {
-        Write-Log "VCRedist 直接DL 失敗: $($_.Exception.Message)" "WARN"
+        Write-Log "VCRedist direct download failed: $($_.Exception.Message)" "WARN"
     } finally {
         if (Test-Path $dest) { Remove-Item $dest -Force -ErrorAction SilentlyContinue }
     }
 }
 
 function Install-EdgeWebView2 {
-    # Edge WebView2: winget 優先、失敗時は Microsoft 直接 DL
+    # Edge WebView2: winget preferred, fallback to direct DL
     if ($wingetCmd) {
         $ok = Install-WithWinget "Microsoft.EdgeWebView2Runtime" "Edge WebView2 Runtime"
         if ($ok) { return }
     }
-    if ($DryRun) { Write-Log "[DryRun] WebView2 直接DL"; return }
-    # 既にインストール済みか確認
+    if ($DryRun) { Write-Log "[DryRun] WebView2 direct DL"; return }
+    # Check if already installed
     $wv2 = Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" `
         -ErrorAction SilentlyContinue
-    if ($wv2) { Write-Log "Edge WebView2: 既にインストール済み"; return }
-    Write-Log "Edge WebView2: 直接ダウンロードを試みます..."
+    if ($wv2) { Write-Log "Edge WebView2: already installed"; return }
+    Write-Log "Edge WebView2: Trying direct download..."
     $url = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
     $dest = "$env:TEMP\MicrosoftEdgeWebview2Setup.exe"
     try {
         Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -TimeoutSec 60
         Start-Process -FilePath $dest -ArgumentList "/silent", "/install" -Wait -NoNewWindow
-        Write-Log "Edge WebView2: 直接DL インストール完了"
+        Write-Log "Edge WebView2: direct download install complete"
     } catch {
-        Write-Log "Edge WebView2 直接DL 失敗: $($_.Exception.Message)" "WARN"
+        Write-Log "Edge WebView2 direct download failed: $($_.Exception.Message)" "WARN"
     } finally {
         if (Test-Path $dest) { Remove-Item $dest -Force -ErrorAction SilentlyContinue }
     }
 }
 
 if (-not $wingetCmd) {
-    Write-Log "winget が見つかりません。直接ダウンロードで代替します。" "WARN"
-    Write-Log "(winget は Windows 10 バージョン 1709 以降の App Installer で利用可能)" "WARN"
+    Write-Log "winget not found. Falling back to direct download." "WARN"
+    Write-Log "(winget requires Windows 10 v1709+ with App Installer)" "WARN"
 }
 
 Install-VCRedist
@@ -141,16 +141,16 @@ Install-EdgeWebView2
 Write-Log "--- Phase 2: OpenSSH Server ---"
 $sshdCap = Get-WindowsCapability -Online -Name "OpenSSH.Server*" -ErrorAction SilentlyContinue
 if ($sshdCap -and $sshdCap.State -eq "Installed") {
-    Write-Log "OpenSSH Server: 既にインストール済み"
+    Write-Log "OpenSSH Server: already installed"
 } else {
     if ($DryRun) {
         Write-Log "[DryRun] Add-WindowsCapability OpenSSH.Server"
     } else {
         try {
             Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
-            Write-Log "OpenSSH Server: インストール完了"
+            Write-Log "OpenSSH Server: install complete"
         } catch {
-            Write-Log "OpenSSH Server インストール失敗: $($_.Exception.Message)" "ERROR"
+            Write-Log "OpenSSH Server install failed: $($_.Exception.Message)" "ERROR"
         }
     }
 }
@@ -158,18 +158,18 @@ if (-not $DryRun) {
     try {
         Start-Service sshd -ErrorAction SilentlyContinue
         Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
-        Write-Log "sshd: 起動 + 自動起動 ON"
+        Write-Log "sshd: started + auto-start ON"
     } catch {
-        Write-Log "sshd 起動失敗: $($_.Exception.Message)" "WARN"
+        Write-Log "sshd start failed: $($_.Exception.Message)" "WARN"
     }
 }
 
-# --- 3. 管理者公開鍵 ---
+# --- 3. Admin public key ---
 if ($AdminPubKeyPath -and (Test-Path $AdminPubKeyPath)) {
     Write-Log "--- Phase 3: Admin public key ---"
     $adminPubKey = (Get-Content $AdminPubKeyPath -Raw).Trim()
     if ([string]::IsNullOrWhiteSpace($adminPubKey)) {
-        Write-Log "公開鍵ファイルが空" "WARN"
+        Write-Log "Public key file is empty" "WARN"
     } else {
         $authKeysPath = "$env:ProgramData\ssh\administrators_authorized_keys"
         if ($DryRun) {
@@ -181,39 +181,39 @@ if ($AdminPubKeyPath -and (Test-Path $AdminPubKeyPath)) {
             $isNewFile = -not (Test-Path $authKeysPath)
             if ($isNewFile) {
                 Set-Content -Path $authKeysPath -Value $adminPubKey -Encoding ASCII
-                Write-Log "admin 公開鍵: ファイル作成"
+                Write-Log "admin pubkey: file created"
                 icacls $authKeysPath /inheritance:r 2>&1 | Out-Null
                 icacls $authKeysPath /grant "Administrators:F" /grant "SYSTEM:F" 2>&1 | Out-Null
-                Write-Log "ACL 設定完了"
+                Write-Log "ACL configured"
             } else {
                 $existing = Get-Content $authKeysPath -Raw -ErrorAction SilentlyContinue
                 if ($existing -and $existing.Contains($adminPubKey)) {
-                    Write-Log "admin 公開鍵: 登録済み (スキップ)"
+                    Write-Log "admin pubkey: already registered (skip)"
                 } else {
                     Add-Content -Path $authKeysPath -Value "`n$adminPubKey" -Encoding ASCII
-                    Write-Log "admin 公開鍵: 追記完了"
+                    Write-Log "admin pubkey: appended"
                 }
             }
         }
     }
 } else {
-    Write-Log "--- Phase 3: 管理者公開鍵なし (スキップ) ---"
+    Write-Log "--- Phase 3: No admin pubkey (skip) ---"
 }
 
-# --- 4. sshd_config 強化 (opt-in) ---
+# --- 4. sshd_config hardening (opt-in) ---
 Write-Log "--- Phase 4: sshd_config (harden=$HardenSshdConfig) ---"
 $sshConfig = "$env:ProgramData\ssh\sshd_config"
 if (-not $HardenSshdConfig) {
-    Write-Log "sshd_config 強化: スキップ (既存設定を尊重)"
+    Write-Log "sshd_config hardening: skip (preserve existing config)"
 } elseif ($DryRun) {
-    Write-Log "[DryRun] sshd_config 編集"
+    Write-Log "[DryRun] edit sshd_config"
 } else {
     if (Test-Path $sshConfig) {
         try {
             $cfg = Get-Content $sshConfig -Raw
             $backup = "$sshConfig.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
             Copy-Item $sshConfig $backup -Force
-            Write-Log "sshd_config バックアップ: $backup"
+            Write-Log "sshd_config backup: $backup"
             if ($cfg -match "(?m)^#?PasswordAuthentication\s+\w+") {
                 $cfg = $cfg -replace "(?m)^#?PasswordAuthentication\s+\w+", "PasswordAuthentication no"
             } else { $cfg += "`r`nPasswordAuthentication no`r`n" }
@@ -222,12 +222,12 @@ if (-not $HardenSshdConfig) {
             }
             Set-Content -Path $sshConfig -Value $cfg -Encoding ASCII
             Restart-Service sshd -ErrorAction SilentlyContinue
-            Write-Log "sshd_config: 公開鍵認証のみ設定完了"
+            Write-Log "sshd_config: pubkey-only auth configured"
         } catch {
-            Write-Log "sshd_config 編集失敗: $($_.Exception.Message)" "WARN"
+            Write-Log "sshd_config edit failed: $($_.Exception.Message)" "WARN"
         }
     } else {
-        Write-Log "sshd_config 未作成 — スキップ" "WARN"
+        Write-Log "sshd_config not yet created - skip" "WARN"
     }
 }
 
@@ -236,29 +236,29 @@ Write-Log "--- Phase 5: Windows Firewall ---"
 if ($DryRun) {
     Write-Log "[DryRun] New-NetFirewallRule BACOPY-sshd"
 } else {
-    # 旧LAPLACE用ルールがあれば削除して置き換え
+    # Remove old LAPLACE rule if present
     $oldRule = Get-NetFirewallRule -Name "LAPLACE-sshd" -ErrorAction SilentlyContinue
     if ($oldRule) {
         Remove-NetFirewallRule -Name "LAPLACE-sshd" -ErrorAction SilentlyContinue
-        Write-Log "旧 LAPLACE-sshd ルール削除"
+        Write-Log "removed old LAPLACE-sshd rule"
     }
     $existingRule = Get-NetFirewallRule -Name "BACOPY-sshd" -ErrorAction SilentlyContinue
     if ($existingRule) {
-        Write-Log "Firewall rule BACOPY-sshd: 既に存在"
+        Write-Log "Firewall rule BACOPY-sshd: already exists"
     } else {
         try {
             New-NetFirewallRule -Name "BACOPY-sshd" `
                 -DisplayName "BACOPY Copytrade - SSH Remote Support" `
                 -Enabled True -Direction Inbound -Protocol TCP -LocalPort 22 `
                 -Action Allow | Out-Null
-            Write-Log "Firewall rule BACOPY-sshd: 作成完了"
+            Write-Log "Firewall rule BACOPY-sshd: created"
         } catch {
-            Write-Log "Firewall rule 作成失敗: $($_.Exception.Message)" "WARN"
+            Write-Log "Firewall rule create failed: $($_.Exception.Message)" "WARN"
         }
     }
 }
 
-# --- 6. SSH リバーストンネル をタスクスケジューラに登録 (GUI から独立) ---
+# --- 6. SSH reverse tunnel registered in Task Scheduler (GUI-independent) ---
 Write-Log "--- Phase 6: SSH Support Tunnel (Task Scheduler) ---"
 
 $resDir = Split-Path -Parent $PSCommandPath
@@ -290,21 +290,21 @@ $isEncrypted    = ($env['BACOPY_SUPPORT_SSH_KEY_ENCRYPTED'] -eq '1')
 $userEmail      = $env['BACOPY_SUPPORT_USER_EMAIL']
 
 if (-not $tunnelEnabled -or -not $sshHost -or -not $remotePort) {
-    Write-Log "SSH トンネル: 設定不足のためスキップ (BACOPY_SUPPORT_ENABLED/SSH_HOST/REMOTE_PORT を確認)"
+    Write-Log "SSH tunnel: config missing, skip (check BACOPY_SUPPORT_ENABLED/SSH_HOST/REMOTE_PORT)"
 } else {
-    # 鍵ファイルのパス解決
+    # Resolve key file path
     $sshKeyPath = if ([System.IO.Path]::IsPathRooted($sshKeyRaw)) {
         $sshKeyRaw
     } else {
         Join-Path $resDir $sshKeyRaw
     }
 
-    # 鍵を復号して永続パスに書き出す
+    # Decrypt key and write to persistent path
     $plainKeyPath = "$env:ProgramData\BACOPY\support_key_plain"
     $keyOk = $false
 
     if ($DryRun) {
-        Write-Log "[DryRun] SSH鍵処理スキップ"
+        Write-Log "[DryRun] skip SSH key processing"
         $keyOk = $true
     } elseif ($isEncrypted -and $userEmail -and (Test-Path $sshKeyPath)) {
         try {
@@ -326,26 +326,26 @@ if (-not $tunnelEnabled -or -not $sshHost -or -not $remotePort) {
             New-Item -Path (Split-Path $plainKeyPath) -ItemType Directory -Force | Out-Null
             [System.IO.File]::WriteAllBytes($plainKeyPath, $plain)
             icacls $plainKeyPath /inheritance:r /grant "SYSTEM:F" /grant "Administrators:F" 2>&1 | Out-Null
-            Write-Log "SSH鍵: 復号完了 -> $plainKeyPath"
+            Write-Log "SSH key: decrypted -> $plainKeyPath"
             $keyOk = $true
         } catch {
-            Write-Log "SSH鍵 復号失敗: $($_.Exception.Message)" "WARN"
+            Write-Log "SSH key decrypt failed: $($_.Exception.Message)" "WARN"
         }
     } elseif (-not $isEncrypted -and (Test-Path $sshKeyPath)) {
         New-Item -Path (Split-Path $plainKeyPath) -ItemType Directory -Force | Out-Null
         Copy-Item $sshKeyPath $plainKeyPath -Force
         icacls $plainKeyPath /inheritance:r /grant "SYSTEM:F" /grant "Administrators:F" 2>&1 | Out-Null
-        Write-Log "SSH鍵: コピー完了 -> $plainKeyPath"
+        Write-Log "SSH key: copied -> $plainKeyPath"
         $keyOk = $true
     } else {
-        Write-Log "SSH鍵ファイルが見つかりません: $sshKeyPath" "WARN"
+        Write-Log "SSH key file not found: $sshKeyPath" "WARN"
     }
 
     if ($keyOk -and -not $DryRun) {
-        # トンネル維持スクリプトを書き出す
+        # Write tunnel persistence script
         $tunnelScriptPath = "$env:ProgramData\BACOPY\run_tunnel.ps1"
         $tunnelScript = @"
-# BACOPY SSH Support Tunnel — GUI から独立して動作
+# BACOPY SSH Support Tunnel -- runs independently of GUI
 while (`$true) {
     try {
         & ssh.exe -i "$plainKeyPath" ``
@@ -361,14 +361,14 @@ while (`$true) {
 }
 "@
         Set-Content -Path $tunnelScriptPath -Value $tunnelScript -Encoding UTF8
-        Write-Log "トンネルスクリプト: $tunnelScriptPath"
+        Write-Log "Tunnel script written: $tunnelScriptPath"
 
-        # タスクスケジューラに登録
+        # Register in Task Scheduler
         $taskName = "BACOPY-SupportTunnel"
         $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         if ($existing) {
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-            Write-Log "既存タスク削除: $taskName"
+            Write-Log "Removed existing task: $taskName"
         }
         $action  = New-ScheduledTaskAction -Execute "powershell.exe" `
             -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$tunnelScriptPath`""
@@ -380,13 +380,13 @@ while (`$true) {
         $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
             -Settings $settings -Principal $principal -Force | Out-Null
-        # 即時起動
+        # Start immediately
         Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-        Write-Log "タスクスケジューラ登録完了: $taskName (SYSTEM, ログオン時 + 即時起動)"
+        Write-Log "Scheduled task registered: $taskName (SYSTEM, AtLogon + immediate start)"
     }
 }
 
-# --- 完了 ---
+# --- Done ---
 Write-Log "================================"
 Write-Log "BACOPY Setup Complete"
 Write-Log "Log: $LogPath"
@@ -395,13 +395,13 @@ Write-Log "================================"
 if (-not $DryRun) {
     Write-Host ""
     Write-Host "==============================="
-    Write-Host " BACOPY セットアップ完了"
+    Write-Host " BACOPY Setup Complete"
     Write-Host "==============================="
-    Write-Host "ログ: $LogPath"
+    Write-Host "Log: $LogPath"
     Write-Host ""
-    Write-Host "次のステップ:"
-    Write-Host "  1. GUI を再起動してください"
-    Write-Host "  2. SSH サポートトンネルはシステム起動時に自動接続されます (GUI 不要)"
+    Write-Host "Next steps:"
+    Write-Host "  1. Restart the GUI"
+    Write-Host "  2. SSH support tunnel will auto-connect at system startup (no GUI required)"
     Write-Host ""
     Start-Sleep -Seconds 5
 }

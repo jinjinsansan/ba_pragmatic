@@ -148,6 +148,27 @@ function main() {
   const envPath = path.join(STAGING, '.env');
   let existing = '';
   try { existing = fs.readFileSync(envPath, 'utf-8'); } catch (_) { existing = ''; }
+
+  // executor_id: email の @ 前部分 or port番号から生成
+  const executorId = email.split('@')[0].replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 16) || `port${port}`;
+
+  // 必須キーを環境変数またはローカル .env から読み込む
+  const localEnvPath = path.join(ROOT, 'web', '.env.local');
+  const localEnv = {};
+  try {
+    for (const line of fs.readFileSync(localEnvPath, 'utf-8').split(/\r?\n/)) {
+      const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)/);
+      if (m) localEnv[m[1]] = m[2];
+    }
+  } catch (_) {}
+
+  const apiKey = process.env.BACOPY_API_KEY || localEnv.BACOPY_API_KEY || '';
+  const supabaseUrl = localEnv.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const supabaseAnonKey = localEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+
+  if (!apiKey) console.warn('[warn] BACOPY_API_KEY not found - exe will fail to connect to master');
+  if (!supabaseUrl) console.warn('[warn] NEXT_PUBLIC_SUPABASE_URL not found - login will fail');
+
   const merge = {
     BACOPY_SUPPORT_ENABLED: '1',
     BACOPY_SUPPORT_SSH_HOST: 'support@210.131.215.116',
@@ -156,6 +177,12 @@ function main() {
     BACOPY_SUPPORT_USER_EMAIL: email,
     BACOPY_SUPPORT_REMOTE_PORT: String(port),
     BACOPY_SUPPORT_LOCAL_PORT: '22',
+    BACOPY_API_URL: 'https://master.bafather.uk',
+    ...(apiKey ? { BACOPY_API_KEY: apiKey } : {}),
+    ...(supabaseUrl ? { NEXT_PUBLIC_SUPABASE_URL: supabaseUrl } : {}),
+    ...(supabaseAnonKey ? { NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey } : {}),
+    BACOPY_EXECUTOR_ID: executorId,
+    BACOPY_EXECUTOR_LABEL: executorId,
   };
   let out = existing;
   for (const [k, v] of Object.entries(merge)) {

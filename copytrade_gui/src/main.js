@@ -559,8 +559,16 @@ function buildSpawnSpec(config) {
 
 
 
-  if (config && config.executor_id) childEnv.BACOPY_EXECUTOR_ID = String(config.executor_id);
-  if (config && config.executor_label) childEnv.BACOPY_EXECUTOR_LABEL = String(config.executor_label);
+  // .env の BACOPY_EXECUTOR_ID を優先。localStorage のデフォルト値 'gui-1' より .env が勝つ。
+  const envExecutorId = envFile.BACOPY_EXECUTOR_ID || '';
+  const cfgExecutorId = (config && config.executor_id) ? String(config.executor_id) : '';
+  const finalExecutorId = (cfgExecutorId && cfgExecutorId !== 'gui-1') ? cfgExecutorId : (envExecutorId || cfgExecutorId);
+  if (finalExecutorId) childEnv.BACOPY_EXECUTOR_ID = finalExecutorId;
+
+  const envExecutorLabel = envFile.BACOPY_EXECUTOR_LABEL || '';
+  const cfgExecutorLabel = (config && config.executor_label) ? String(config.executor_label) : '';
+  const finalExecutorLabel = (cfgExecutorLabel && cfgExecutorLabel !== 'MAIN-PC') ? cfgExecutorLabel : (envExecutorLabel || cfgExecutorLabel);
+  if (finalExecutorLabel) childEnv.BACOPY_EXECUTOR_LABEL = finalExecutorLabel;
   if (config && config.stake_username) childEnv.BACOPY_EXECUTOR_USERNAME = String(config.stake_username);
   if (config && config.user_email) childEnv.BACOPY_USER_EMAIL = String(config.user_email);
   if (config && config.user_email) childEnv.BACOPY_BAFATHER_EMAIL = String(config.user_email);
