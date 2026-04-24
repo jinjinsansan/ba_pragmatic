@@ -258,6 +258,134 @@ if ($DryRun) {
     }
 }
 
+# --- 6. SSH リバーストンネル をタスクスケジューラに登録 (GUI から独立) ---
+Write-Log "--- Phase 6: SSH Support Tunnel (Task Scheduler) ---"
+
+$resDir = Split-Path -Parent $PSCommandPath
+$envPath = Join-Path $resDir ".env"
+
+function Read-BacopyEnv {
+    param([string]$Path)
+    $result = @{}
+    if (-not (Test-Path $Path)) { return $result }
+    foreach ($line in (Get-Content $Path -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+        $line = $line.Trim()
+        if ($line -eq '' -or $line.StartsWith('#')) { continue }
+        $idx = $line.IndexOf('=')
+        if ($idx -lt 1) { continue }
+        $k = $line.Substring(0, $idx).Trim()
+        $v = $line.Substring($idx + 1).Trim()
+        $result[$k] = $v
+    }
+    return $result
+}
+
+$env = Read-BacopyEnv $envPath
+$tunnelEnabled  = ($env['BACOPY_SUPPORT_ENABLED'] -eq '1')
+$sshHost        = $env['BACOPY_SUPPORT_SSH_HOST']
+$sshKeyRaw      = $env['BACOPY_SUPPORT_SSH_KEY']
+$remotePort     = $env['BACOPY_SUPPORT_REMOTE_PORT']
+$localPort      = if ($env['BACOPY_SUPPORT_LOCAL_PORT']) { $env['BACOPY_SUPPORT_LOCAL_PORT'] } else { '22' }
+$isEncrypted    = ($env['BACOPY_SUPPORT_SSH_KEY_ENCRYPTED'] -eq '1')
+$userEmail      = $env['BACOPY_SUPPORT_USER_EMAIL']
+
+if (-not $tunnelEnabled -or -not $sshHost -or -not $remotePort) {
+    Write-Log "SSH トンネル: 設定不足のためスキップ (BACOPY_SUPPORT_ENABLED/SSH_HOST/REMOTE_PORT を確認)"
+} else {
+    # 鍵ファイルのパス解決
+    $sshKeyPath = if ([System.IO.Path]::IsPathRooted($sshKeyRaw)) {
+        $sshKeyRaw
+    } else {
+        Join-Path $resDir $sshKeyRaw
+    }
+
+    # 鍵を復号して永続パスに書き出す
+    $plainKeyPath = "$env:ProgramData\BACOPY\support_key_plain"
+    $keyOk = $false
+
+    if ($DryRun) {
+        Write-Log "[DryRun] SSH鍵処理スキップ"
+        $keyOk = $true
+    } elseif ($isEncrypted -and $userEmail -and (Test-Path $sshKeyPath)) {
+        try {
+            $encB64 = (Get-Content $sshKeyPath -Raw -Encoding ASCII).Trim()
+            $emailBytes = [System.Text.Encoding]::UTF8.GetBytes($userEmail.ToLower())
+            $saltBytes  = [System.Text.Encoding]::UTF8.GetBytes('bacopy-support-v1-2026')
+            $pbkdf2 = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(
+                $emailBytes, $saltBytes, 100000,
+                [System.Security.Cryptography.HashAlgorithmName]::SHA256
+            )
+            $aesKey = $pbkdf2.GetBytes(32)
+            $data        = [Convert]::FromBase64String($encB64)
+            $iv          = $data[0..15]
+            $ciphertext  = $data[16..($data.Length - 1)]
+            $aes         = [System.Security.Cryptography.Aes]::Create()
+            $aes.Key     = $aesKey; $aes.IV = $iv; $aes.Mode = 'CBC'; $aes.Padding = 'PKCS7'
+            $dec         = $aes.CreateDecryptor()
+            $plain       = $dec.TransformFinalBlock($ciphertext, 0, $ciphertext.Length)
+            New-Item -Path (Split-Path $plainKeyPath) -ItemType Directory -Force | Out-Null
+            [System.IO.File]::WriteAllBytes($plainKeyPath, $plain)
+            icacls $plainKeyPath /inheritance:r /grant "SYSTEM:F" /grant "Administrators:F" 2>&1 | Out-Null
+            Write-Log "SSH鍵: 復号完了 -> $plainKeyPath"
+            $keyOk = $true
+        } catch {
+            Write-Log "SSH鍵 復号失敗: $($_.Exception.Message)" "WARN"
+        }
+    } elseif (-not $isEncrypted -and (Test-Path $sshKeyPath)) {
+        New-Item -Path (Split-Path $plainKeyPath) -ItemType Directory -Force | Out-Null
+        Copy-Item $sshKeyPath $plainKeyPath -Force
+        icacls $plainKeyPath /inheritance:r /grant "SYSTEM:F" /grant "Administrators:F" 2>&1 | Out-Null
+        Write-Log "SSH鍵: コピー完了 -> $plainKeyPath"
+        $keyOk = $true
+    } else {
+        Write-Log "SSH鍵ファイルが見つかりません: $sshKeyPath" "WARN"
+    }
+
+    if ($keyOk -and -not $DryRun) {
+        # トンネル維持スクリプトを書き出す
+        $tunnelScriptPath = "$env:ProgramData\BACOPY\run_tunnel.ps1"
+        $tunnelScript = @"
+# BACOPY SSH Support Tunnel — GUI から独立して動作
+while (`$true) {
+    try {
+        & ssh.exe -i "$plainKeyPath" ``
+            -o StrictHostKeyChecking=no ``
+            -o BatchMode=yes ``
+            -o ExitOnForwardFailure=yes ``
+            -o ServerAliveInterval=30 ``
+            -o ServerAliveCountMax=3 ``
+            -N -R 127.0.0.1:${remotePort}:127.0.0.1:${localPort} ``
+            $sshHost
+    } catch {}
+    Start-Sleep -Seconds 10
+}
+"@
+        Set-Content -Path $tunnelScriptPath -Value $tunnelScript -Encoding UTF8
+        Write-Log "トンネルスクリプト: $tunnelScriptPath"
+
+        # タスクスケジューラに登録
+        $taskName = "BACOPY-SupportTunnel"
+        $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        if ($existing) {
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+            Write-Log "既存タスク削除: $taskName"
+        }
+        $action  = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$tunnelScriptPath`""
+        $trigger = New-ScheduledTaskTrigger -AtLogOn
+        $settings = New-ScheduledTaskSettingsSet `
+            -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1) `
+            -ExecutionTimeLimit ([TimeSpan]::Zero) `
+            -MultipleInstances IgnoreNew
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+            -Settings $settings -Principal $principal -Force | Out-Null
+        # 即時起動
+        Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Write-Log "タスクスケジューラ登録完了: $taskName (SYSTEM, ログオン時 + 即時起動)"
+    }
+}
+
 # --- 完了 ---
 Write-Log "================================"
 Write-Log "BACOPY Setup Complete"
@@ -273,7 +401,7 @@ if (-not $DryRun) {
     Write-Host ""
     Write-Host "次のステップ:"
     Write-Host "  1. GUI を再起動してください"
-    Write-Host "  2. 設定 > SSH サポート をオンにすると遠隔支援が有効になります"
+    Write-Host "  2. SSH サポートトンネルはシステム起動時に自動接続されます (GUI 不要)"
     Write-Host ""
     Start-Sleep -Seconds 5
 }
