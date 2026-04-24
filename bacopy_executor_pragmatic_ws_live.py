@@ -5261,6 +5261,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         _last_modal_check_at = 0.0
         _MODAL_CHECK_INTERVAL = float(os.getenv("BACOPY_MODAL_CHECK_INTERVAL_SEC", "2.0") or 2.0)
+        # Periodic master table sync: receiver が pending を取り逃した場合のフォールバック.
+        # admin が先に SWITCH_TABLE を done にしてしまうと receiver の pending ポールでは取得不可.
+        # 60s 毎に done 履歴の最新 SWITCH_TABLE と現テーブルを比較して自動移動する.
+        _last_master_table_sync_at = 0.0
+        _MASTER_TABLE_SYNC_INTERVAL = float(os.getenv("BACOPY_MASTER_SYNC_INTERVAL_SEC", "60") or 60)
 
         while True:
             heartbeat("running")
@@ -5292,6 +5297,30 @@ def main(argv: Optional[list[str]] = None) -> int:
                     _send_keep_alive(page, state)
                 except Exception:
                     pass
+                # Master table sync: done 履歴から最新 SWITCH_TABLE を取得して追従.
+                # pending を admin が先処理した場合の取りこぼし対策.
+                if args.allow_switch_table and _now - _last_master_table_sync_at >= _MASTER_TABLE_SYNC_INTERVAL:
+                    _last_master_table_sync_at = _now
+                    try:
+                        _sync_tn, _sync_qpid = _fetch_master_last_table()
+                        _cur_table = str(state.table_id or "").strip()
+                        _cur_name  = str(state.operator_table_name or "").strip()
+                        if _sync_tn and _sync_qpid:
+                            # qpid が違う = 別テーブル → 移動が必要
+                            _same = (_cur_table and _cur_table == _sync_qpid) or \
+                                    (_cur_name and _cur_name.replace(" ","").lower() == _sync_tn.replace(" ","").lower()) or \
+                                    (state.table_name and state.table_name.replace(" ","").lower() == _sync_tn.replace(" ","").lower())
+                            if not _same:
+                                send_log(f"[sync] master table mismatch: cur={_cur_name or _cur_table or '?'} master={_sync_tn} — triggering switch")
+                                raise _SwitchTableInterrupted({"friend_action": {"action": "SWITCH_TABLE"},
+                                    "table_name": _sync_tn, "qpid_table_id": _sync_qpid,
+                                    "decision_id": "sync_" + _sync_qpid[:8],
+                                    "captured_at": ""})
+                    except _SwitchTableInterrupted:
+                        raise
+                    except Exception as _se:
+                        try: send_log(f"[sync] master table check failed: {_se}")
+                        except Exception: pass
             try:
                 game_frame = _refresh_game_frame(page, game_frame)
                 _pump_ws_events(page, game_frame, state)
