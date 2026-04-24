@@ -50,6 +50,7 @@ export default function UserRow({ user, billing }: { user: any; billing: any }) 
 
   const isSuspended = billing?.suspended
   const isFree = billing?.is_free
+  const isBotPaid = billing?.bot_paid
 
   return (
     <>
@@ -83,8 +84,10 @@ export default function UserRow({ user, billing }: { user: any; billing: any }) 
             <span className="px-2 py-0.5 rounded text-xs bg-banker/20 text-banker">停止中</span>
           ) : billing?.balance > 0 ? (
             <span className="px-2 py-0.5 rounded text-xs bg-green-500/20 text-green-400">有効</span>
+          ) : isBotPaid ? (
+            <span className="px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400">ライセンス済</span>
           ) : (
-            <span className="px-2 py-0.5 rounded text-xs bg-slate-500/20 text-slate-400">ドライラン</span>
+            <span className="px-2 py-0.5 rounded text-xs bg-slate-500/20 text-slate-400">未購入</span>
           )}
         </td>
         <td className="py-3 font-mono text-xs text-slate-500">{user.referral_code}</td>

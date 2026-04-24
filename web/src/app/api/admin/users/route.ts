@@ -27,8 +27,6 @@ export async function POST(req: NextRequest) {
       await admin.from('billing').upsert({
         user_id: userId,
         bot_paid: true,
-        is_free: true,
-        balance: 99999,
         suspended: false,
         updated_at: new Date().toISOString(),
       }, { onConflict: 'user_id' })
