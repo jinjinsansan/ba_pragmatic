@@ -3296,6 +3296,85 @@ async (args) => {
   // Playwright の evaluate は JS の await を許可するので Promise ベースで待機).
   function sleepMs(ms){ return new Promise(r => setTimeout(r, ms)); }
 
+  // Pre-pass 0: アクティブなカテゴリフィルターを解除する.
+  // Pragmatic ロビーはセッション間でカテゴリ選択を記憶するため,
+  // 日本語バカラ等のフィルターが掛かったまま開くことがある.
+  async function clearActiveFilter() {
+    const isAllLabel = (t) => /(^all$|すべて|全て|全部|全テーブル|全ゲーム|view.?all|all.?table|all.?game)/i.test(t.replace(/\s+/g,''));
+    // Step 1: aria-selected/class*active で選択中のタブを探す
+    const activeSel = [
+      '[role="tab"][aria-selected="true"]',
+      '[role="tab"][aria-current="true"]',
+      '[role="tab"][class*="active"]',
+      '[role="tab"][class*="selected"]',
+      '[class*="categoryTab"][class*="active"]',
+      '[class*="filter"][class*="active"]',
+      '[class*="FilterItem"][class*="active"]',
+      '[class*="filter-item"][class*="active"]',
+      '[class*="pill"][class*="active"]',
+      '[class*="chip"][class*="active"]',
+      '[class*="tab"][class*="active"]',
+    ].join(',');
+    let foundActive = false;
+    try {
+      const actEls = document.querySelectorAll(activeSel);
+      for (const el of actEls) {
+        const txt = (el.innerText || el.textContent || '').replace(/\s+/g,' ').trim();
+        if (!txt) continue;
+        if (!isAllLabel(txt)) {
+          // 非 All タブがアクティブ → フィルター掛かっている
+          foundActive = true;
+          phaseLog.push('active-filter-detected:' + txt.slice(0, 40));
+          break;
+        }
+      }
+    } catch(_) {}
+    if (!foundActive) return; // フィルターなし → スキップ
+
+    // Step 2: × / クリア / リセットボタンを探してクリック
+    const clearSel = [
+      '[data-testid*="clear"]', '[data-testid*="reset"]',
+      '[aria-label*="clear"]', '[aria-label*="Clear"]', '[aria-label*="reset"]',
+      '[class*="clear"]', '[class*="Clear"]', '[class*="reset"]',
+      'button:has-text("×")', 'button:has-text("✕")', 'button:has-text("✗")',
+    ];
+    for (const sel of clearSel) {
+      try {
+        const el = document.querySelector(sel);
+        if (el) { clickEl(el); phaseLog.push('cleared-via:' + sel.slice(0,40)); await sleepMs(600); return; }
+      } catch(_) {}
+    }
+    // × テキストを持つ小さい要素を探す
+    try {
+      const all = document.querySelectorAll('*');
+      for (const el of all) {
+        const txt = (el.innerText || el.textContent || '').trim();
+        if ((txt === '×' || txt === '✕' || txt === '✗' || txt === 'x' || txt === 'X') &&
+            el.getBoundingClientRect && el.getBoundingClientRect().width < 50) {
+          clickEl(el); phaseLog.push('cleared-via-x-btn'); await sleepMs(600); return;
+        }
+      }
+    } catch(_) {}
+
+    // Step 3: "All" / "すべて" タブを探してクリック
+    const allPatterns = ['すべて','全て','全部','全テーブル','All','All Tables','All Games','View All'];
+    for (const pat of allPatterns) {
+      const hit = clickCategory(pat);
+      if (hit) { phaseLog.push('filter-cleared-via-all:' + hit.matched); await sleepMs(600); return; }
+    }
+
+    // Step 4: アクティブなタブを再クリックして toggle off
+    try {
+      const actEls = document.querySelectorAll(activeSel);
+      for (const el of actEls) {
+        const txt = (el.innerText || el.textContent || '').replace(/\s+/g,' ').trim();
+        if (txt && !isAllLabel(txt)) {
+          clickEl(el); phaseLog.push('filter-toggled-off:' + txt.slice(0,30)); await sleepMs(600); return;
+        }
+      }
+    } catch(_) {}
+  }
+
   async function sweep(phaseLabel, downDir){
     // scroll しながら探索. 最も大きな scroller を軸に回す + 他の scroller にも補助で scroll 投げる.
     let lastDomCount = 0;
@@ -3328,6 +3407,10 @@ async (args) => {
     }
     return { clicked: false, attempts: maxScroll, phase: phaseLabel };
   }
+
+  // Pass 0: アクティブなフィルターを解除してから探索
+  await clearActiveFilter();
+  await sleepMs(400);
 
   // Pass 1: 現状カテゴリで下方向 sweep
   let r = await sweep('default-down', true);
