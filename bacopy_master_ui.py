@@ -596,8 +596,8 @@ let _learnSession = {
 
 function _learnSessionCurrentSnap(){
   const provider = document.getElementById('providerSel').value;
-  const snaps = (_state.snapshots && _state.snapshots.snapshots) || {};
-  const tableSnap = snaps[selected.table_id];
+  const list = (_state.snapshots && _state.snapshots.snapshots && _state.snapshots.snapshots[provider]) || {};
+  const tableSnap = list[selected.table_id];
   if(!tableSnap) return null;
   try { return typeof tableSnap === 'string' ? JSON.parse(tableSnap) : tableSnap; } catch(_){ return null; }
 }
