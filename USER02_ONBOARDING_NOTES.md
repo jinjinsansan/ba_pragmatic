@@ -151,6 +151,14 @@ Get-Service sshd
 3. **`'_PragmaticState' object has no attribute 'operator_table_name'`**: engine 内部 sync で属性参照ミス。非致命だが要修正
 4. **Stake username 設定なしで進行できた件**: USER01 のときは必須と認識していたが、空でも着席できた。条件を切り分けて文書を更新する
 5. **user03〜user05 在庫 EXE**: 今回の再ビルドで新規版 (4/29) に差し替え済 → 配布時はそのまま使える
+6. **Stake WS 無音化 / balance null 問題 (2026-04-29 ARMED 後に発覚)**: ARMED 完了の約21分後から `last_stake_recv_at` が更新されなくなり、`balance / session_open_balance / daily_open_balance / session_pnl / daily_pnl` が全部 null のまま。Pragmatic game_ws は健全で BET と SWITCH_TABLE は正常動作 (W8/L5/T1=14発成立を確認)。`profit_stop_chips=50` / `loss_cut_chips=200` は chip ベース判定なので機能影響なし、表示問題のみ。
+   - 既知問題: commit `39f53a7 diag(executor): Stake WS 診断ログを追加 (残高取得の真の WS URL 特定用)` で診断強化済みだが根本修正なし
+   - 関連コード: `bacopy_executor_pragmatic_ws_live.py:1376-1404` (`availableBalances` / `vaultBalances` パーサ)、`:1328` (診断ログ `_stake_ws_diagnostic_log`)、`:1606-1615` (Stake WS 捕捉)
+   - 友人 BET 中は STOP できないため、**セッション終了後に検査**:
+     1. STOP → START で Stake WS 再接続するか
+     2. Camoufox 内で stake.com を開いて実残高を目視確認
+     3. `BACOPY_STAKE_WS_DEBUG=1` (デフォルト on) の診断ログから `[stake-ws][balance-hit N/10]` が出るか確認 — 出ていれば WS は届いているがパースが拾えていない、出ていなければ WS subscription 自体が始まっていない
+     4. admin (`goldbenchan`) / kajigui の Camoufox プロファイルと user02 の差分調査 (Cookie / GraphQL ヘッダ / IP 国別ルーティング)
 
 ---
 
