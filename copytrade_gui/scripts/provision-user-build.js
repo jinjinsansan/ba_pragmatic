@@ -165,9 +165,11 @@ function main() {
   const apiKey = process.env.BACOPY_API_KEY || localEnv.BACOPY_API_KEY || '';
   const supabaseUrl = localEnv.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
   const supabaseAnonKey = localEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  const laplaceApiKey = process.env.LAPLACE_API_KEY || localEnv.LAPLACE_API_KEY || '';
 
   if (!apiKey) console.warn('[warn] BACOPY_API_KEY not found - exe will fail to connect to master');
   if (!supabaseUrl) console.warn('[warn] NEXT_PUBLIC_SUPABASE_URL not found - login will fail');
+  if (!laplaceApiKey) console.warn('[warn] LAPLACE_API_KEY not found - session-state POST (cron/settle) will not work');
 
   const merge = {
     BACOPY_SUPPORT_ENABLED: '1',
@@ -181,6 +183,7 @@ function main() {
     ...(apiKey ? { BACOPY_API_KEY: apiKey } : {}),
     ...(supabaseUrl ? { NEXT_PUBLIC_SUPABASE_URL: supabaseUrl } : {}),
     ...(supabaseAnonKey ? { NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey } : {}),
+    ...(laplaceApiKey ? { LAPLACE_API_KEY: laplaceApiKey } : {}),
     BACOPY_EXECUTOR_ID: executorId,
     BACOPY_EXECUTOR_LABEL: executorId,
   };

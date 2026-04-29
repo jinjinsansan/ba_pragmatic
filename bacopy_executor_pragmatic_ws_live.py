@@ -135,6 +135,71 @@ def _jst_date_str(ts: float | None = None) -> str:
     return dt.date().isoformat()
 
 
+# ======== bafather session-state sync (cron/settle 課金経路 #7 修正) ========
+_sess_sync_last: float = 0.0
+_sess_sync_inflight: bool = False
+
+
+def _schedule_session_state_sync_bafather(seq7: "Seq7Session") -> None:
+    """billing.session_state を bafather に非同期 POST する。
+    cron/settle が incomplete_state で skip しないようにするための修正 (#7)。
+    LAPLACE_API_KEY と BACOPY_USER_EMAIL (bafather ログインメール) が必要。
+    60 秒間隔で実行。balance 未取得時はスキップ。
+    """
+    global _sess_sync_last, _sess_sync_inflight
+    if seq7.current_balance is None or seq7.daily_open_balance is None or not seq7.daily_open_date:
+        return
+    laplace_key = (os.getenv("LAPLACE_API_KEY", "") or os.getenv("LAPLACE_SITE_API_KEY", "")).strip()
+    u_email = (os.getenv("BACOPY_USER_EMAIL", "") or os.getenv("BACOPY_BAFATHER_EMAIL", "") or "").strip()
+    if not laplace_key or not u_email:
+        return
+    now = time.time()
+    _SYNC_INTERVAL = 60.0
+    if now - _sess_sync_last < _SYNC_INTERVAL:
+        return
+    if _sess_sync_inflight:
+        return
+
+    ss = {
+        "daily_open": {
+            "date": seq7.daily_open_date,
+            "balance": seq7.daily_open_balance,
+        },
+        "session_open": {"balance": seq7.session_open_balance},
+        "current_balance": seq7.current_balance,
+        "last_balance_at": datetime.utcnow().isoformat() + "Z",
+        "total_bets": seq7.total_bets,
+        "total_wins": seq7.total_wins,
+        "total_losses": seq7.total_losses,
+    }
+    _sess_sync_last = now
+    _sess_sync_inflight = True
+
+    def _worker():
+        global _sess_sync_inflight
+        try:
+            import urllib.request as _ur_ss
+            payload_bytes = json.dumps({
+                "email": u_email,
+                "api_key": laplace_key,
+                "session_state": ss,
+            }).encode("utf-8")
+            req = _ur_ss.Request(
+                "https://www.bafather.uk/api/session-state",
+                data=payload_bytes,
+                headers={"Content-Type": "application/json", "User-Agent": "bacopy-engine/1.0"},
+                method="POST",
+            )
+            with _ur_ss.urlopen(req, timeout=10):
+                pass
+        except Exception as e:
+            print(f"[bafather-session] POST failed: {e}", flush=True)
+        finally:
+            _sess_sync_inflight = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 class Seq7Session:
     def __init__(
         self,
@@ -4277,6 +4342,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         with hb_lock:
             hb_latest_payload.clear()
             hb_latest_payload.update(payload)
+        try:
+            _schedule_session_state_sync_bafather(seq7)
+        except Exception:
+            pass
 
     def on_ws(ws):
         url = str(ws.url or "")
