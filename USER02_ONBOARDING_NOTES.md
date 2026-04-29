@@ -182,6 +182,12 @@ Get-Service sshd
    - engine 側 `:176-177, :284, :286, :4027-4028` の `max(1, ...)` も `0 = 無効化` 対応に変更
    - 一時回避策: ロスカット 2,000,000,000 などの巨大数で実質無効化 (動作確認済)
 
+10. **`[ws-discover] game_ws_url DIFFERENT from stored` ノイズログ大量出力 (実害なし)** — 同一テーブルでも frame ごとに数百件のログが出る。動作影響なし (BET / SWITCH_TABLE / `[done]` イベント正常)。
+    - 原因: `bacopy_executor_pragmatic_ws_live.py:1461-1477` `_maybe_update_from_game_ws_url` で **state.game_ws_url を初回のみ set し、その後の差分検出時に上書きしない**。同テーブルでも `?pageRefresh=true` 付き/なしの2バリエーションで毎 frame DIFFERENT 判定 → 永久にログ吐き続ける
+    - 修正案: line 1477 の `print` 直後に `state.game_ws_url = url` を追加 (1行)、または同一秒内の重複ログを抑制
+    - 副作用: ログファイル `executor_debug.log` が肥大化 (1セッションで数 MB)
+    - 観察例: 2026-04-29T23:18:59 で同一秒に約 200 件出力
+
 ## 8. 関連ドキュメント
 
 - `USER01_ONBOARDING_ISSUES.md` — 4/24 user01 配布で発見された5件 (本件は #1, #2, #3 の派生)
