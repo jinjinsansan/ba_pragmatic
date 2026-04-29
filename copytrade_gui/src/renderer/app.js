@@ -1010,9 +1010,9 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
   const settings = {
     // bet_mode が金額を決めるため chip_base は固定 (UIも非表示)
     chip_base: 1,
-    profit_target: parseFloat($('#inputProfitTarget').value) || 50,
+    profit_target: (v => Number.isFinite(v) ? v : 50)(parseFloat($('#inputProfitTarget').value)),
     profit_session_limit: normalizeProfitSessionLimit($('#inputProfitSessionLimit')?.value),
-    loss_cut: parseFloat($('#inputLossCut').value) || 200,
+    loss_cut: (v => Number.isFinite(v) ? v : 200)(parseFloat($('#inputLossCut').value)),
     dry_run: $('#inputDryRun').checked,
     bet_mode: normalizeBetMode($('#inputBetMode')?.value),
     executor_id: $('#inputExecutorId').value.trim(),

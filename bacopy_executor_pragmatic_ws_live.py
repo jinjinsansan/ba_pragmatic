@@ -238,8 +238,8 @@ class Seq7Session:
 
         # GUI settings must win over saved state
         self.tracker.chip_base = self.chip_base
-        self.profit_stop = max(1, self.profit_stop)
-        self.loss_cut = max(1, self.loss_cut)
+        self.profit_stop = max(0, self.profit_stop)  # 0 = 無効化 (#9)
+        self.loss_cut = max(0, self.loss_cut)         # 0 = 無効化 (#9)
 
     def _load_state(self) -> None:
         if not self.state_path.exists():
@@ -345,12 +345,30 @@ class Seq7Session:
         return cp
 
     def should_reset(self) -> bool:
+        # balance が取得できている場合は実残高ベースで判定 (#12 修正案B)
+        # chip 理論との乖離 (Banker手数料・partial BET 等) を回避する
+        if self.current_balance is not None and self.session_open_balance is not None:
+            actual_chips = (self.current_balance - self.session_open_balance) / max(float(self.chip_base), 0.01)
+            if self.profit_stop > 0 and actual_chips >= self.profit_stop:
+                return True
+            if self.loss_cut > 0 and actual_chips <= -self.loss_cut:
+                return True
+            return False
+        # balance 未取得時は chip 理論値フォールバック (Stake WS 無音中など)
         cp = self.effective_profit_chips()
-        if cp >= self.profit_stop:
+        if self.profit_stop > 0 and cp >= self.profit_stop:
             return True
-        if cp <= -self.loss_cut:
+        if self.loss_cut > 0 and cp <= -self.loss_cut:
             return True
         return False
+
+    def reset_reason(self) -> str:
+        """should_reset() が True のとき呼ぶ。profit か loss かを判定して返す。"""
+        if self.current_balance is not None and self.session_open_balance is not None:
+            actual_chips = (self.current_balance - self.session_open_balance) / max(float(self.chip_base), 0.01)
+            return "profit" if (self.profit_stop > 0 and actual_chips >= self.profit_stop) else "loss"
+        cp = self.effective_profit_chips()
+        return "profit" if (self.profit_stop > 0 and cp >= self.profit_stop) else "loss"
 
     def reset_session(self, reason: str) -> dict:
         old_open = self.session_open_balance
@@ -440,6 +458,8 @@ class Seq7Session:
             "profit_stop_chips": self.profit_stop,
             "loss_cut_chips": self.loss_cut,
             "should_reset": self.should_reset(),
+            "cum_profit_chips": self.effective_profit_chips(),
+            "cum_profit_usd": round(self.effective_profit_chips() * float(self.chip_base), 2),
         }
 
 # Worker-compatible WS bridge (uses self instead of window; no async helpers needed)
@@ -4089,8 +4109,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         chip_base = 1.0
     else:
         chip_base = float(args.chip_base) if float(args.chip_base or 0) > 0 else float(args.flat_amount or 1.0)
-    profit_stop_chips = max(1, int(round(float(args.profit_target) / max(chip_base, 0.01))))
-    loss_cut_chips = max(1, int(round(float(args.loss_cut) / max(chip_base, 0.01))))
+    # 0 = 無効化 (loss_cut=0 → 損切しない, profit_target=0 → 利確しない) (#9)
+    profit_stop_chips = max(0, int(round(float(args.profit_target) / max(chip_base, 0.01)))) if float(args.profit_target or 0) > 0 else 0
+    loss_cut_chips = max(0, int(round(float(args.loss_cut) / max(chip_base, 0.01)))) if float(args.loss_cut or 0) > 0 else 0
     seq7 = Seq7Session(
         chip_base=chip_base,
         seq=seq_for_mode,
@@ -6156,8 +6177,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         pass
 
                 if seq7.should_reset():
-                    cp = seq7.effective_profit_chips()
-                    reason = "profit" if cp >= seq7.profit_stop else "loss"
+                    reason = seq7.reset_reason()
                     reset_msg = seq7.reset_session(reason)
                     send_msg(reset_msg)
                     send_msg({"type": "shoe_history", "sets": [], "chip_base": chip_base})

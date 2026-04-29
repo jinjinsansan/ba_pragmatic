@@ -42,6 +42,7 @@ from bacopy_db import (
     mark_result,
     upsert_executor,
     cancel_pending_bets_for_executor,
+    cancel_all_pending_decisions,
     get_decision_target_executor,
 )
 
@@ -613,6 +614,13 @@ class _Handler(BaseHTTPRequestHandler):
                 return _send_json(self, 400, {"ok": False, "error": "executor_id required"})
             upsert_executor(executor_id, body if isinstance(body, dict) else {})
             return _send_json(self, 200, {"ok": True})
+
+        if u.path == "/api/decisions/cancel-pending":
+            # 全 pending decision を強制 error 遷移 (#11 学習セッション pending 詰まり対応)
+            body = _read_json(self)
+            reason = str((body.get("reason") if isinstance(body, dict) else None) or "manual_cancel")
+            cancelled = cancel_all_pending_decisions(reason=reason)
+            return _send_json(self, 200, {"ok": True, "cancelled": cancelled})
 
         parts = [p for p in u.path.split("/") if p]
         if len(parts) == 4 and parts[:2] == ["api", "decisions"] and parts[3] in ("ack", "result"):

@@ -370,6 +370,30 @@ def cancel_pending_bets_for_executor(executor_id: str, superseded_by: str) -> in
         conn.close()
 
 
+def cancel_all_pending_decisions(reason: str = "manual_cancel") -> int:
+    """全ての pending decision を error に強制遷移する。
+    学習セッション OFF 時などに pending 詰まりを解消するために使う (#11)。
+    戻り値はキャンセルした件数。
+    """
+    conn = sqlite3.connect(_db_path())
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT decision_id FROM decisions WHERE status = 'pending'")
+        rows = cur.fetchall()
+        cancelled = 0
+        for (did,) in rows:
+            result_payload = json.dumps({"error": f"cancelled: {reason}"}, ensure_ascii=False)
+            cur.execute(
+                "UPDATE decisions SET status='error', result_json=? WHERE decision_id=?",
+                (result_payload, did),
+            )
+            cancelled += 1
+        conn.commit()
+        return cancelled
+    finally:
+        conn.close()
+
+
 def get_stats() -> dict[str, Any]:
     conn = sqlite3.connect(_db_path())
     try:

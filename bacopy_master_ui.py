@@ -674,7 +674,14 @@ function _endSession(){
   document.getElementById('btnSessionStart').style.display='';
   document.getElementById('btnSessionEnd').style.display='none';
   _updateSessionStatus();
-  showToast(`学習セッション終了。自動LOOK記録: ${_learnSession.autoLookCount}件`,'ok');
+  // pending 詰まり解消: 学習 OFF 時に残留 pending decision を全キャンセル (#11)
+  apiPost('/api/decisions/cancel-pending', { reason: 'learning_session_ended' })
+    .then(r => {
+      const n = (r && r.cancelled) || 0;
+      if (n > 0) showToast(`学習セッション終了。pending ${n}件キャンセル済`, 'ok');
+      else showToast(`学習セッション終了。自動LOOK記録: ${_learnSession.autoLookCount}件`, 'ok');
+    })
+    .catch(() => showToast(`学習セッション終了。自動LOOK記録: ${_learnSession.autoLookCount}件`, 'ok'));
 }
 
 // 直近 fetch 結果のハッシュ (簡易 fingerprint) で差分検知し, 変化時のみ再描画.
