@@ -188,6 +188,24 @@ Get-Service sshd
     - 副作用: ログファイル `executor_debug.log` が肥大化 (1セッションで数 MB)
     - 観察例: 2026-04-29T23:18:59 で同一秒に約 200 件出力
 
+11. **AI 学習セッション ON で出した decision が pending 詰まりを起こす (2026-04-30 0時越えに発覚)**:
+    - 症状: master UI で **BET ボタンが光らない (disabled)** / 新しい BET 指示が executor に届かない / `total_bets` カウンタ増えない
+    - 経緯: 2026-04-29 23:59:59 UTC に AI 学習セッション ON 状態で出された decision (`dec_77a399ed7416b05b`, `amount=0, in_learning_session=true, target_executor_id=""`) が `pending` のまま放置
+    - その後 master UI で「学習 OFF」操作しても **既存の pending decision は自動的に done / cancelled に遷移しない** ため、新規 BET も詰まる連鎖
+    - 関連コード:
+      - `bacopy_master_ui.py:1305` `btnP.disabled = !allowAny` 等 — `allowAny = betReady = nOnTarget>0 && all(bet_window_open) && !stopped`。pending 詰まりとは別経路だが、両方の問題が複合した可能性
+      - 学習 ON 時の payload: `friend_action.in_learning_session=true, amount=0` (`bacopy_master_ui.py:1383`)
+      - cancel API: 手動キャンセルエンドポイントなし。`bacopy_db.py:cancel_pending_bets_for_executor` は SWITCH_TABLE 時の自動 cancel のみ
+    - 応急対応 (今回成功した手順):
+      1. `POST /api/decisions/<decision_id>/ack` に `{executor_id, action, received:false, placed:false, reason:"manual_cancel"}` を投げて pending → done 強制遷移
+      2. master UI で AI 学習トグル OFF 確認 + テーブル選択 (BACCARAT_9) → BET ボタン点灯
+      3. 仁さんが手動 BET 押下 → 正常実行 (`total_bets` 増加で確認)
+    - 修正案 (engine / Master 側):
+      - master UI 側で「学習 OFF」操作時に既存 pending を全部 cancel する処理を追加
+      - もしくは **engine 側で `in_learning_session=true && amount=0` の decision を即 ack done** で消化させる
+      - もしくは **GUI 学習トグル OFF 時に master ui から `cancel_pending` API を呼ぶ** (新エンドポイント追加)
+    - 観察データ: pending decision の payload 詳細は USER02_ONBOARDING_NOTES.md §7-11 ではなく `git log` でこの commit メッセージ時点の master API スナップショットから取れる
+
 ## 8. 関連ドキュメント
 
 - `USER01_ONBOARDING_ISSUES.md` — 4/24 user01 配布で発見された5件 (本件は #1, #2, #3 の派生)
