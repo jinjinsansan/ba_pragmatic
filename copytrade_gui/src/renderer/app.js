@@ -328,6 +328,7 @@ let _dailyOpenBalance = null;
 let _dailyOpenDate = null;
 
 let sessionTotal = 0;
+let _balanceConfirmed = false; // エンジンから実残高を受信したら true
 const results = [];
 
 function _jstDateStrNow() {
@@ -524,14 +525,23 @@ $('#btnStart')?.addEventListener('click', () => startBotFlow({ auto: false }));
 function updateSessionDisplay() {
   const { session, daily } = _computePnl();
   const el = $('#sessionPnl');
-  el.textContent = `$${session >= 0 ? '+' : ''}${session.toFixed(2)}`;
-  el.className = 'stat-value ' + (session >= 0 ? 'positive' : 'negative');
-
+  if (!_balanceConfirmed) {
+    el.textContent = '--';
+    el.className = 'stat-value';
+  } else {
+    el.textContent = `$${session >= 0 ? '+' : ''}${session.toFixed(2)}`;
+    el.className = 'stat-value ' + (session >= 0 ? 'positive' : 'negative');
+  }
 
   const todayEl = $('#todayPnl');
   if (todayEl) {
-    todayEl.textContent = `${daily >= 0 ? '+$' : '-$'}${Math.abs(daily).toFixed(0)}`;
-    todayEl.className = 'today-pnl ' + (daily >= 0 ? 'positive' : 'negative');
+    if (!_balanceConfirmed) {
+      todayEl.textContent = '--';
+      todayEl.className = 'today-pnl';
+    } else {
+      todayEl.textContent = `${daily >= 0 ? '+$' : '-$'}${Math.abs(daily).toFixed(0)}`;
+      todayEl.className = 'today-pnl ' + (daily >= 0 ? 'positive' : 'negative');
+    }
   }
   persistSessionState();
 }
@@ -1471,8 +1481,11 @@ function renderDailyPnl() {
   }
 
 
-  data[today] = daily;
-  saveDailyPnl(data);
+  // 実残高確認済みの場合のみ今日の値を保存（未確認時に 0 で上書きしない）
+  if (_balanceConfirmed) {
+    data[today] = daily;
+    saveDailyPnl(data);
+  }
 
   const keys = Object.keys(data).sort().slice(-14);
   if (keys.length === 0) {
@@ -1482,11 +1495,21 @@ function renderDailyPnl() {
   let html = '';
   for (const k of keys) {
     const v = data[k];
+    const isToday = (k === today);
+    // 今日かつ未確認の場合は -- 表示
+    if (isToday && !_balanceConfirmed) {
+      html += `
+        <div class="daily-item">
+          <div class="daily-date">${k.slice(5)}</div>
+          <div class="daily-pnl">--</div>
+        </div>
+      `;
+      continue;
+    }
     const isPos = v >= 0;
-    const mmdd = k.slice(5);
     html += `
       <div class="daily-item ${isPos ? 'positive' : 'negative'}">
-        <div class="daily-date">${mmdd}</div>
+        <div class="daily-date">${k.slice(5)}</div>
         <div class="daily-pnl ${isPos ? 'positive' : 'negative'}">${isPos ? '+' : ''}$${v.toFixed(0)}</div>
       </div>
     `;
@@ -1537,6 +1560,7 @@ window.valhalla.onAgentMessage((msg) => {
 
       if (typeof msg.balance === 'number' && msg.balance > 0) {
         _currentBalance = msg.balance;
+        _balanceConfirmed = true;
         $('#balance').textContent = `$${msg.balance.toFixed(2)}`;
       }
       if (typeof msg.session_open_balance === 'number' && msg.session_open_balance > 0) {
@@ -1605,6 +1629,7 @@ window.valhalla.onAgentMessage((msg) => {
       }
       if (typeof msg.balance === 'number' && msg.balance > 0) {
         _currentBalance = msg.balance;
+        _balanceConfirmed = true;
         $('#balance').textContent = `$${msg.balance.toFixed(2)}`;
       }
 
@@ -1730,6 +1755,8 @@ setRunning(false);
 
 restoreSessionState();
 _restoreBalanceSnapshot();
+_balanceConfirmed = false; // エンジンから実残高が届くまで -- 表示
+$('#balance').textContent = '--';
 updateSessionDisplay();
 setAction('Ready. Sign in to begin.');
 addLog('BACOPYRECEIVER ready.', 'info');
