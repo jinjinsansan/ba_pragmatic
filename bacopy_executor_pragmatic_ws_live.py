@@ -1560,6 +1560,7 @@ def _maybe_update_from_game_ws_url(state: _PragmaticState, url: str) -> None:
         print(f"[ws-discover] game_ws_url set (first): {_redacted}", flush=True)
     elif norm != stored_norm:
         print(f"[ws-discover] game_ws_url DIFFERENT from stored: {_redacted}", flush=True)
+        state.game_ws_url = url  # 更新しないと毎フレーム DIFFERENT が出続けるバグ (#10)
     try:
         u = urlparse(url)
         qs = parse_qs(u.query or "")
@@ -5170,6 +5171,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             max_recover_attempts = int(os.getenv("BACOPY_MAX_RECOVER_ATTEMPTS", "5") or "5")
         except Exception:
             max_recover_attempts = 5
+        _stake_balance_nudge_last_at = 0.0  # Stake WS balance silence 対策 (#6)
 
         def _clear_pragmatic_session_state() -> None:
             # identifiers
@@ -5430,6 +5432,35 @@ def main(argv: Optional[list[str]] = None) -> int:
                     elif not recover_exhausted and time.time() - float(last_recover_at or 0) >= float(args.ws_recover_cooldown_sec or 60):
                         recover_session(f"ws silent {int(ws_silence)}s")
                         continue
+            except Exception:
+                pass
+
+            # STAKE BALANCE WS 無音対策 (#6):
+            # game WS は生きているが Stake GraphQL subscription が止まる場合がある。
+            # balance が一定時間届かなくなったら BET 窓が閉じているタイミングで recover_session を発動。
+            try:
+                _stake_nudge_sec = float(os.getenv("BACOPY_STAKE_BALANCE_NUDGE_SEC", "600") or 600)
+                _now_ns = time.time()
+                _stake_silence = _now_ns - float(state.last_stake_ws_recv_at or 0) if state.last_stake_ws_recv_at else 0.0
+                _bet_win_active = bool(
+                    state.bets_open_game_id
+                    and state.bets_closed_game_id != state.bets_open_game_id
+                    and state.last_bets_open_at
+                    and (_now_ns - float(state.last_bets_open_at or 0)) < 20.0
+                )
+                if (
+                    _stake_nudge_sec > 0
+                    and state.last_stake_ws_recv_at  # 少なくとも1回は balance を受信済み
+                    and _stake_silence > _stake_nudge_sec
+                    and not _bet_win_active
+                    and not recover_exhausted
+                    and (_now_ns - _stake_balance_nudge_last_at) >= _stake_nudge_sec
+                    and (_now_ns - float(last_recover_at or 0)) >= float(args.ws_recover_cooldown_sec or 60)
+                ):
+                    _stake_balance_nudge_last_at = _now_ns
+                    send_log(f"[stake-ws] balance silent {int(_stake_silence)}s — triggering recover to re-establish subscription")
+                    recover_session(f"stake_balance_silent {int(_stake_silence)}s")
+                    continue
             except Exception:
                 pass
 
