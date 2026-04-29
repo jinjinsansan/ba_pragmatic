@@ -206,6 +206,82 @@ Get-Service sshd
       - もしくは **GUI 学習トグル OFF 時に master ui から `cancel_pending` API を呼ぶ** (新エンドポイント追加)
     - 観察データ: pending decision の payload 詳細は USER02_ONBOARDING_NOTES.md §7-11 ではなく `git log` でこの commit メッセージ時点の master API スナップショットから取れる
 
+12. **利確発火時の表示金額が実残高利益と大きく乖離 (2026-04-30 友人 BET 終了後に発覚)**:
+    - 症状: profit_stop_chips=300 設定にもかかわらず GUI 上「$621 で利確」と表示。実残高では daily_pnl=+$352 に相当し、約 **$269 が理論値と実残高の差**として消える
+    - 当日のサマリ: total_bets=339 (W151/L165/T23), profit_sessions=2 (= 2回利確発火), daily_pnl=+$352
+    - 原因 (chip ベース vs 実残高ずれ):
+      1. **set 完了で一気にジャンプ**: `marubatsu_strategy.py:139` `set_profit = diff * _seq[current_unit_idx]` でセット 7 ハンド完了時に大幅加算 (例: SEQ idx 5 で diff=+5 → +350 chip 一気増)。profit_stop=300 で「ピッタリ」発火せず、621 まで到達してから発火する設計
+      2. **部分 BET (partial bet)**: SEQ 高 idx ($70, $90 等) で実残高に対しフル金額置けない場合 chip 計算は理論満額だが実残高は減らない (= 利益にもならない)
+      3. **Banker 手数料 5%**: Banker BET 勝利時、chip 計算は `+amount` 全額だが実残高は `+amount × 0.95` (5% コミッション)。Banker 多発で誤差累積
+      4. **BET 失敗の記録**: window 締切等で実 BET 失敗しても tracker.add_result が走ってしまう経路があると chip 累積だけ進む可能性 (要追加調査)
+      5. **Tie の扱い**: tie は tracker でスキップ (`marubatsu_strategy.py:198`) だが、BET 自体は置かれて push (戻る) なので残高変動なし。chip 計算には含まれない (整合)
+    - これは engine の **bug というより chip ベース理論計算が前提の設計**で、実残高との乖離は不可避。ただし運用上ユーザー混乱を招くので**早急に対応すべき**
+    - 修正案 (優先順):
+      - **A. chip ベース計算を balance 差分で都度校正**: 各 set 完了時に `set_profit` を理論値ではなく `current_balance - prev_balance` で再計算。Stake balance が null の時は理論値フォールバック
+      - **B. profit_stop / loss_cut を balance ベース判定に切替**: chip 累積でなく `daily_pnl >= profit_stop` で発火。balance null 時は **既存** chip ベースに退避
+      - **C. GUI 表示の「累積利益」を chip ベースと balance ベース両方表示**して混乱を回避 (UI のみの変更で済む応急策)
+      - C → A → B の順で段階対応推奨
+    - 関連コード:
+      - `bacopy_executor_pragmatic_ws_live.py:284-286` 利確/損切判定 (`if cp >= self.profit_stop`)
+      - `bacopy_executor_pragmatic_ws_live.py:291-300` `record_round` の `money_actual` 計算 — balance 差分でずれを記録する基盤は既にある
+      - `marubatsu_strategy.py:125-153` `finalize_set` で `set_profit` を理論計算
+    - 関連バグ #6 (Stake WS 無音→balance null) と複合: Stake WS が止まると balance 校正もできない → chip ベース理論値だけが暴走するリスク
+
+13. **総合所感: 全体的に挙動が不安定 (2026-04-30 ユーザーフィードバック)**:
+    - 仁さん原文: 「色々と挙動が不安定です」「bafather サイトのチャージ資金部分も正常にさせたい」
+    - 本日 (2026-04-29 〜 2026-04-30) の累積問題:
+      - Stake WS 無音化 → balance 表示停止 (#6)
+      - bafather `cron/settle` 構造バグ → 課金永久 skip (#7)
+      - user02 を一時 `is_free: true` に避難 (#8)
+      - Settings `||` falsy バグ (#9)
+      - ws-discover ノイズログ (#10)
+      - 学習セッション ON で pending 詰まり (#11)
+      - 利確 chip ベース vs 実残高乖離 ($621 vs $352) (#12)
+      - 弟子AI「まなぶくん」cron が BET=0 と誤認 (#14)
+    - **次セッション以降の優先順** (ユーザー要望「bafather チャージ資金正常化」+「AI 学習データ収集」を最優先):
+      1. **#7 bafather settle 構造バグ** — `agent_api.py` から bacopy executor に session-state POST 移植 (最優先、課金パイプライン復旧)
+      2. **#14 まなぶくん cron BET=0 誤認** — XServer cron と bacopy-api の連携を修復 (5000BET 学習データ収集の根幹)
+      3. **#12 利確 chip vs balance 乖離** — Settings 表示と判定の整合 (運用混乱直結)
+      4. **#11 学習セッション pending 詰まり** — master UI 側の自動 cancel 実装
+      5. **#9 GUI Settings || バグ** — loss_cut/profit_target 0 保存対応
+      6. **#6 Stake WS 自動再接続** — balance 表示の安定化
+      7. **#8 user02 復元** — 上記#7 修正後に `is_free: false / balance: $2000 / 80%` に戻す
+      8. **#10 ws-discover ノイズログ** — 1行修正
+    - **修正の進め方**: ローカルで修正 → commit → bafather で再ビルド (`build_per_user.ps1`) → user02 PC 配布 → 動作確認 → user02 復元
+    - 友人の運用継続中はビルド配布タイミングが限られるため、休止帯を活用すること
+
+14. **AI 学習エージェント「まなぶくん」(= 弟子 apprentice agent) の 23時 cron が BET=0 と誤認 (2026-04-29 発覚)**:
+    - 症状: 弟子AI (Telegram bot, APPRENTICE_AI_SETUP.md Phase 5 の 23:00 `apprentice_daily_review.py` cron) が以下のメッセージを投稿:
+      > 📅 2026-04-29 本日の振り返り
+      > 今日もBETデータが0件でした。
+      > お休みだったんですね、おつかれさまです 🐾
+    - 実際の本日 (2026-04-29) BET 実績: user02 (hashimoto) が **339発 BET 実行** (W151/L165/T23, profit_sessions=2, daily_pnl=+$352)
+    - = **AI 学習データ収集パイプラインが完全に分断されている** 重大事象。5000BET 学習目標 (project_next_ai_learning.md) から見ても致命的
+    - 原因候補:
+      1. **#7 と同根の構造バグ**: XServer の cron が `bacopy-api` (https://master.bafather.uk 経由 SSH トンネル port 18010 → 127.0.0.1:8010) から「今日の hand list」を取得しているが、**bacopy-api 側の決定保存先と cron の取得先が食い違っている可能性**
+      2. **API エンドポイントの不一致**: APPRENTICE_AI_SETUP.md §6 「23:00 夜のレビュー: bacopy-api から今日の hand list 取得」とあるが、具体的なエンドポイント名が docs に明記されていない。`/api/decisions?status=done` 等を呼ぶ実装になっているはずだが、実体は要確認
+      3. **SSH トンネル切断**: XServer 上の `bacopy-tunnel.service` (autossh) が cron 実行時刻に切れていた可能性 (健全性チェック必要)
+      4. **タイムゾーンずれ**: cron は JST 23:00 想定だが、bacopy-api 側の「今日」が UTC ベースで判定されている場合、JST 23:00 = UTC 14:00 で「明日のデータ」を見に行ってしまう可能性
+      5. **decisions.jsonl への append が学習セッション以外の BET を捕捉していない**: 友人の通常 BET (in_learning_session=false) が `data/decisions.jsonl` に書かれていない可能性 → ログ確認必要
+    - 確認手順 (次セッション):
+      ```bash
+      # 1. XServer cron 実行ログ確認
+      ssh hermes@100.116.79.99 "tail -50 ~/apprentice_daily_review.log"
+      # 2. bacopy-api 側の decisions.jsonl カウント
+      ssh -i ~/.ssh/laplace_vps laplace@210.131.215.116 \
+        "wc -l /opt/bacopy/data/decisions.jsonl; tail -3 /opt/bacopy/data/decisions.jsonl"
+      # 3. SSH トンネル状態
+      ssh hermes@100.116.79.99 "systemctl --user status bacopy-tunnel.service; ss -ltn | grep 18010"
+      # 4. ~/bin/apprentice_daily_review.py のソースを読んで取得 API を特定
+      ssh hermes@100.116.79.99 "cat ~/bin/apprentice_daily_review.py | head -80"
+      ```
+    - 関連:
+      - `APPRENTICE_AI_SETUP.md` §4 〜 §6 (Phase 5/6 = 23:00/07:00 cron)
+      - `project_next_ai_learning.md` (5000BET 目標 — 0件記録だと一生達成しない)
+      - 修正は engine 側の session-state POST 構造バグ (#7) と並行で進めるのが効率的 (両方 bacopy-api と外部システム連携の問題)
+    - **AI 学習システム全体としての位置づけ**: 弟子AI は「友人の判断ロジックを reasoning ペアとして蓄積し、5000 で ML モデルの精度を上げる」設計 (APPRENTICE_AI_SETUP.md §1.3)。BET=0 と誤認すると **学習データセットに「お休みだった」という嘘が記録され続ける** → 5000 達成時の bacopy DB JOIN で空 hand_id が大量発生 → モデル精度に致命的影響
+    - 優先度は **#7 と同等の最重要**
+
 ## 8. 関連ドキュメント
 
 - `USER01_ONBOARDING_ISSUES.md` — 4/24 user01 配布で発見された5件 (本件は #1, #2, #3 の派生)
