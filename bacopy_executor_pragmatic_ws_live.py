@@ -167,7 +167,7 @@ def _schedule_session_state_sync_bafather(seq7: "Seq7Session") -> None:
         },
         "session_open": {"balance": seq7.session_open_balance},
         "current_balance": seq7.current_balance,
-        "last_balance_at": datetime.utcnow().isoformat() + "Z",
+        "last_balance_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "total_bets": seq7.total_bets,
         "total_wins": seq7.total_wins,
         "total_losses": seq7.total_losses,
@@ -185,7 +185,7 @@ def _schedule_session_state_sync_bafather(seq7: "Seq7Session") -> None:
                 "session_state": ss,
             }).encode("utf-8")
             req = _ur_ss.Request(
-                "https://www.bafather.uk/api/session-state",
+                "https://bafather.uk/api/session-state",
                 data=payload_bytes,
                 headers={"Content-Type": "application/json", "User-Agent": "bacopy-engine/1.0"},
                 method="POST",
@@ -198,6 +198,7 @@ def _schedule_session_state_sync_bafather(seq7: "Seq7Session") -> None:
             _sess_sync_inflight = False
 
     threading.Thread(target=_worker, daemon=True).start()
+
 
 
 class Seq7Session:
