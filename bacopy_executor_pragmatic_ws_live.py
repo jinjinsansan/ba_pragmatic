@@ -185,7 +185,7 @@ def _schedule_session_state_sync_bafather(seq7: "Seq7Session") -> None:
                 "session_state": ss,
             }).encode("utf-8")
             req = _ur_ss.Request(
-                "https://bafather.uk/api/session-state",
+                "https://bafather.uk/api/session-state/",
                 data=payload_bytes,
                 headers={"Content-Type": "application/json", "User-Agent": "bacopy-engine/1.0"},
                 method="POST",
@@ -4014,6 +4014,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     init_db()
     processed_keys: set[tuple[str, str]] = set()  # (operator_table_id, game_id)
     consecutive_hard_errors = 0
+    consecutive_ws_send_failures = 0  # WS 送信失敗カウンタ (JSESSION 切れ検知用)
     executor_id = os.getenv("BACOPY_EXECUTOR_ID", "").strip() or f"exec_{uuid.uuid4().hex[:8]}"
     executor_label = os.getenv("BACOPY_EXECUTOR_LABEL", "").strip()
     executor_username = os.getenv("BACOPY_EXECUTOR_USERNAME", "").strip()
@@ -5400,7 +5401,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         if _sync_tn and _sync_qpid:
                             # qpid 同士の比較のみ行う (operator_table_id は qpid と別物なので比較しない)
                             _cur_qpid = str(state.operator_table_id or "").strip()
-                            _cur_name = str(state.operator_table_name or "").strip()
+                            _cur_name = str(state.table_name or "").strip()
                             def _norm_tn(s):
                                 return s.replace(" ", "").replace("_", "").lower()
                             _same = (
@@ -6049,8 +6050,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                         status="error",
                     )
                     consecutive_hard_errors += 1
+                    consecutive_ws_send_failures += 1
                     last_error = "ws_send failed"
                     heartbeat("error")
+                    send_log(f"[bet][ws] send failed ({consecutive_ws_send_failures}/3) — JSESSION 切れの可能性")
+                    if consecutive_ws_send_failures >= 3:
+                        send_log("[bet][ws] 3回連続 WS 送信失敗 → recover_session() 発動 (JSESSION リフレッシュ)")
+                        consecutive_ws_send_failures = 0
+                        recover_session("bet_ws_send_failed_3x")
                     continue
 
                 # ★ 高速化: ws_send OK の瞬間に Master UI 向け ack を更新 (非同期 POST).
@@ -6121,6 +6128,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if isinstance(confirm, dict) and "before" in confirm and confirm.get("before") is not None:
                     before_balance = float(confirm.get("before"))
                 consecutive_hard_errors = 0
+                consecutive_ws_send_failures = 0  # BET 成功 → WS 送信失敗カウンタリセット
                 last_error = ""
 
                 # Resolve by dga feed winner
