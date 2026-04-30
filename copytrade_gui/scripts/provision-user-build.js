@@ -166,10 +166,21 @@ function main() {
   const supabaseUrl = localEnv.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
   const supabaseAnonKey = localEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
   const laplaceApiKey = process.env.LAPLACE_API_KEY || localEnv.LAPLACE_API_KEY || '';
+  // bafather email: ユーザーの本物のメールアドレス (session-state POST 認証に使用)
+  // build_per_user.ps1 では email が user02@beta.bacopy.local のため、
+  // BACOPY_BAFATHER_EMAIL は web/.env.local の USER_EMAIL_MAP から引くか、
+  // 環境変数 BACOPY_BAFATHER_EMAIL_{SLOT} で上書き可能。
+  // 未設定の場合は main.js のログイン時に window.__authEmail から動的に設定される。
+  const bafatherEmail = process.env[`BACOPY_BAFATHER_EMAIL_${executorId.toUpperCase()}`]
+    || process.env.BACOPY_BAFATHER_EMAIL
+    || localEnv[`BACOPY_BAFATHER_EMAIL_${executorId.toUpperCase()}`]
+    || localEnv.BACOPY_BAFATHER_EMAIL
+    || '';
 
   if (!apiKey) console.warn('[warn] BACOPY_API_KEY not found - exe will fail to connect to master');
   if (!supabaseUrl) console.warn('[warn] NEXT_PUBLIC_SUPABASE_URL not found - login will fail');
   if (!laplaceApiKey) console.warn('[warn] LAPLACE_API_KEY not found - session-state POST (cron/settle) will not work');
+  if (!bafatherEmail) console.warn('[warn] BACOPY_BAFATHER_EMAIL not found - session-state POST will rely on GUI login');
 
   const merge = {
     BACOPY_SUPPORT_ENABLED: '1',
@@ -184,6 +195,7 @@ function main() {
     ...(supabaseUrl ? { NEXT_PUBLIC_SUPABASE_URL: supabaseUrl } : {}),
     ...(supabaseAnonKey ? { NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey } : {}),
     ...(laplaceApiKey ? { LAPLACE_API_KEY: laplaceApiKey } : {}),
+    ...(bafatherEmail ? { BACOPY_BAFATHER_EMAIL: bafatherEmail } : {}),
     BACOPY_EXECUTOR_ID: executorId,
     BACOPY_EXECUTOR_LABEL: executorId,
   };
