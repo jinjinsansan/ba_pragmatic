@@ -5396,19 +5396,35 @@ def main(argv: Optional[list[str]] = None) -> int:
                     _last_master_table_sync_at = _now
                     try:
                         _sync_tn, _sync_qpid = _fetch_master_last_table()
-                        _cur_table = str(state.table_id or "").strip()
-                        _cur_name  = str(state.operator_table_name or "").strip()
+                        # qpid が取得できない場合は比較不能なので skip (誤発動防止)
                         if _sync_tn and _sync_qpid:
-                            # qpid が違う = 別テーブル → 移動が必要
-                            _same = (_cur_table and _cur_table == _sync_qpid) or \
-                                    (_cur_name and _cur_name.replace(" ","").lower() == _sync_tn.replace(" ","").lower()) or \
-                                    (state.table_name and state.table_name.replace(" ","").lower() == _sync_tn.replace(" ","").lower())
+                            # qpid 同士の比較のみ行う (operator_table_id は qpid と別物なので比較しない)
+                            _cur_qpid = str(state.operator_table_id or "").strip()
+                            _cur_name = str(state.operator_table_name or "").strip()
+                            def _norm_tn(s):
+                                return s.replace(" ", "").replace("_", "").lower()
+                            _same = (
+                                # qpid が一致 (最も信頼性高い)
+                                (_cur_qpid and _cur_qpid == _sync_qpid)
+                                # または テーブル名が一致 (スペース・アンダースコア・大小文字を無視)
+                                or (_cur_name and _norm_tn(_cur_name) == _norm_tn(_sync_tn))
+                                or (state.table_name and _norm_tn(str(state.table_name)) == _norm_tn(_sync_tn))
+                            )
                             if not _same:
-                                send_log(f"[sync] master table mismatch: cur={_cur_name or _cur_table or '?'} master={_sync_tn} — triggering switch")
+                                send_log(
+                                    f"[sync] master table mismatch: "
+                                    f"cur_qpid={_cur_qpid or '?'} cur_name={_cur_name or '?'} "
+                                    f"master_qpid={_sync_qpid} master_name={_sync_tn} — triggering switch"
+                                )
                                 raise _SwitchTableInterrupted({"friend_action": {"action": "SWITCH_TABLE"},
                                     "table_name": _sync_tn, "qpid_table_id": _sync_qpid,
                                     "decision_id": "sync_" + _sync_qpid[:8],
                                     "captured_at": ""})
+                            else:
+                                send_log(f"[sync] table OK: cur={_cur_name or _cur_qpid or '?'} master={_sync_tn}")
+                        else:
+                            # qpid なし = 比較不能 → スキップ (誤 SWITCH_TABLE 発動防止)
+                            send_log(f"[sync] skipped: qpid not available (sync_tn={_sync_tn!r})")
                     except _SwitchTableInterrupted:
                         raise
                     except Exception as _se:

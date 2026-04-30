@@ -1518,6 +1518,7 @@ function renderDailyPnl() {
 }
 
 window.valhalla.onAgentMessage((msg) => {
+  try {
   switch (msg.type) {
     case 'action':
       setAction(msg.message || '');
@@ -1742,6 +1743,9 @@ window.valhalla.onAgentMessage((msg) => {
     default:
       if (msg.message) addLog(msg.message);
       break;
+  }
+  } catch (e) {
+    console.error('[onAgentMessage] error in msg.type=' + (msg && msg.type), e);
   }
 });
 
