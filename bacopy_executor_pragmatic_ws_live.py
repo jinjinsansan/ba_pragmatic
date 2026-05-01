@@ -5094,7 +5094,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if isinstance(state.last_bet_confirm, dict) and state.last_bet_confirm.get("type") == "xml_error":
                     return True
 
-                if state.last_stake_balance_at < start - 0.5:
+                if state.last_stake_balance_at < start - 0.1:
                     return False
 
                 cur = str(currency or "").strip().upper()
@@ -6073,6 +6073,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 xml = _build_lpbet_xml(table_id=state.table_id, game_id=game_id, user_id=state.user_id, bc=bc, amount=amt)
                 state.expected_bet_ck = _extract_ck_from_lpbet_xml(xml)
                 state.last_bet_confirm = None
+                state.stake_balance_delta_by_currency = {}  # 前ラウンドの古い delta をリセット (誤確認防止)
                 match = f"tableId={state.table_id}"
                 _bet_send_start = time.time()
                 send_res = send_bet_xml(xml, match=match)
