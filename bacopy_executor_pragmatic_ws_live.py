@@ -4700,7 +4700,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                             pass
                     if qpid:
                         print(f"[startup] resolved qpid for '{tn}': {qpid}", flush=True)
-                    return tn, qpid
+                    captured_at = str(d.get("captured_at") or "").strip()
+                    return tn, qpid, captured_at
             except Exception:
                 pass
             # done 履歴なし (AI学習リセット直後など) → pending SWITCH_TABLE を fallback で使う
@@ -4726,12 +4727,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                         qpid = str(d["snapshot"].get("qpid_table_id") or "").strip()
                     if tn:
                         print(f"[startup] no done history — using pending SWITCH_TABLE: '{tn}' qpid={qpid or '-'}", flush=True)
-                        return tn, qpid
+                        captured_at = str(d.get("captured_at") or "").strip()
+                        return tn, qpid, captured_at
             except Exception:
                 pass
-            return "", ""
+            return "", "", ""
 
-        _master_target, _master_qpid = _fetch_master_last_table()
+        _master_target, _master_qpid, _master_captured_at = _fetch_master_last_table()
         _initial_substr = _master_target or str(args.table_name_substr or "")
         if _master_target:
             try: send_log(f"[startup] using Master UI last target: {_master_target} qpid={_master_qpid or '-'}")
@@ -5396,9 +5398,22 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if args.allow_switch_table and _now - _last_master_table_sync_at >= _MASTER_TABLE_SYNC_INTERVAL:
                     _last_master_table_sync_at = _now
                     try:
-                        _sync_tn, _sync_qpid = _fetch_master_last_table()
+                        _sync_tn, _sync_qpid, _sync_captured_at = _fetch_master_last_table()
+                        # 直近30分以内の決定のみ有効 (古い決定で勝手にテーブル移動しないように)
+                        _sync_age_ok = True
+                        if _sync_captured_at:
+                            try:
+                                from datetime import timezone as _tz
+                                import datetime as _dt
+                                _sync_dt = _dt.datetime.fromisoformat(_sync_captured_at.replace("Z", "+00:00"))
+                                _sync_age_sec = (_dt.datetime.now(_tz.utc) - _sync_dt).total_seconds()
+                                if _sync_age_sec > 1800:  # 30分
+                                    send_log(f"[sync] skipped: last SWITCH_TABLE too old ({int(_sync_age_sec/60)}min ago)")
+                                    _sync_age_ok = False
+                            except Exception:
+                                pass
                         # qpid が取得できない場合は比較不能なので skip (誤発動防止)
-                        if _sync_tn and _sync_qpid:
+                        if _sync_tn and _sync_qpid and _sync_age_ok:
                             # qpid 同士の比較のみ行う (operator_table_id は qpid と別物なので比較しない)
                             _cur_qpid = str(state.operator_table_id or "").strip()
                             _cur_name = str(state.table_name or "").strip()
