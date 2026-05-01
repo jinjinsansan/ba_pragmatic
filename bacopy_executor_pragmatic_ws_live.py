@@ -5362,6 +5362,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         # 60s 毎に done 履歴の最新 SWITCH_TABLE と現テーブルを比較して自動移動する.
         _last_master_table_sync_at = 0.0
         _MASTER_TABLE_SYNC_INTERVAL = float(os.getenv("BACOPY_MASTER_SYNC_INTERVAL_SEC", "60") or 60)
+        _last_switch_table_at = 0.0  # 最後に SWITCH_TABLE を処理した時刻 (sync 抑制用)
 
         while True:
             heartbeat("running")
@@ -5401,12 +5402,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                         # マスターが非アクティブ (最後の信号から120秒以上) の場合は sync をスキップ
                         # → マスターがログアウトしても勝手にテーブル移動しない
                         _master_active_sec = _now - master_last_active_ts if master_last_active_ts else 9999
+                        # 直近120秒以内に SWITCH_TABLE を処理済みの場合もスキップ
+                        # → 処理中/直後に API の done 反映が間に合わず古い決定で上書きされるのを防ぐ
+                        _switch_recent_sec = _now - _last_switch_table_at if _last_switch_table_at else 9999
                         if _master_active_sec > 120:
                             send_log(f"[sync] skipped: master inactive ({int(_master_active_sec)}s ago)")
+                        elif _switch_recent_sec < 120:
+                            send_log(f"[sync] skipped: recent SWITCH_TABLE {int(_switch_recent_sec)}s ago")
                         else:
                             _sync_tn, _sync_qpid, _sync_captured_at = _fetch_master_last_table()
                         # qpid が取得できない場合は比較不能なので skip (誤発動防止)
-                        if _master_active_sec <= 120 and _sync_tn and _sync_qpid:
+                        if _master_active_sec <= 120 and _switch_recent_sec >= 120 and _sync_tn and _sync_qpid:
                             # qpid 同士の比較のみ行う (operator_table_id は qpid と別物なので比較しない)
                             _cur_qpid = str(state.operator_table_id or "").strip()
                             _cur_name = str(state.table_name or "").strip()
@@ -5440,7 +5446,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                                     items = [_sync_dec] + list(items)
                             else:
                                 send_log(f"[sync] table OK: cur={_cur_name or _cur_qpid or '?'} master={_sync_tn}")
-                        elif _master_active_sec <= 120:
+                        elif _master_active_sec <= 120 and _switch_recent_sec >= 120:
                             # qpid なし = 比較不能 → スキップ (誤 SWITCH_TABLE 発動防止)
                             send_log(f"[sync] skipped: qpid not available (sync_tn={_sync_tn!r})")
                     except Exception as _se:
@@ -5806,6 +5812,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                             },
                         }
                         _post_result(did, res, status="done")
+                        _last_switch_table_at = time.time()  # sync 抑制タイマーリセット
                         send_action(f"Table ready: {state.table_name or target}")
                         send_phase("idle", "ARMED")
                     except _SwitchTableInterrupted as ex:
