@@ -4652,7 +4652,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         #   2. env BACOPY_TABLE_SUBSTR (GUI Settings)
         #   3. CLI default "Speed Baccarat"
         # これにより「GUI スタートで毎回 Speed Baccarat 6 に戻る」問題を解消.
-        def _fetch_master_last_table() -> tuple[str, str]:
+        def _fetch_master_last_table() -> tuple[str, str, str]:
             """最新 done SWITCH_TABLE から (table_name, qpid_table_id) を返す.
 
             - decisions API は ASC (古い順) で返すので captured_at 降順にソート.
@@ -4786,7 +4786,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 send_action("Waiting for Stake table entry... (login/click a table in the browser window)")
                 # Master UI に pending SWITCH_TABLE があれば自動でクリック試行
                 try:
-                    _s5_tn, _s5_qpid = _fetch_master_last_table()
+                    _s5_tn, _s5_qpid, _s5_cat = _fetch_master_last_table()
                     if _s5_tn or _s5_qpid:
                         send_log(f"[stage5] pending SWITCH_TABLE found: '{_s5_tn}' qpid={_s5_qpid or '-'} — attempting click")
                         _join_table(
@@ -5813,6 +5813,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                         }
                         _post_result(did, res, status="done")
                         _last_switch_table_at = time.time()  # sync 抑制タイマーリセット
+                        # テーブル移動後に game WS を __bacopy_sockets に再登録
+                        # (add_init_script は起動時のみで SWITCH_TABLE 後は再登録されないため)
+                        if state.game_ws_url:
+                            try:
+                                for _f in [page] + list(page.frames):
+                                    try:
+                                        _f.evaluate("(u) => (window.__bacopy_ws_open ? window.__bacopy_ws_open(u) : null)", state.game_ws_url)
+                                    except Exception:
+                                        pass
+                                send_log(f"[switch] re-registered game WS to __bacopy_sockets")
+                            except Exception:
+                                pass
                         send_action(f"Table ready: {state.table_name or target}")
                         send_phase("idle", "ARMED")
                     except _SwitchTableInterrupted as ex:
