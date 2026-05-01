@@ -5398,22 +5398,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if args.allow_switch_table and _now - _last_master_table_sync_at >= _MASTER_TABLE_SYNC_INTERVAL:
                     _last_master_table_sync_at = _now
                     try:
-                        _sync_tn, _sync_qpid, _sync_captured_at = _fetch_master_last_table()
-                        # 直近30分以内の決定のみ有効 (古い決定で勝手にテーブル移動しないように)
-                        _sync_age_ok = True
-                        if _sync_captured_at:
-                            try:
-                                from datetime import timezone as _tz
-                                import datetime as _dt
-                                _sync_dt = _dt.datetime.fromisoformat(_sync_captured_at.replace("Z", "+00:00"))
-                                _sync_age_sec = (_dt.datetime.now(_tz.utc) - _sync_dt).total_seconds()
-                                if _sync_age_sec > 1800:  # 30分
-                                    send_log(f"[sync] skipped: last SWITCH_TABLE too old ({int(_sync_age_sec/60)}min ago)")
-                                    _sync_age_ok = False
-                            except Exception:
-                                pass
+                        # マスターが非アクティブ (最後の信号から120秒以上) の場合は sync をスキップ
+                        # → マスターがログアウトしても勝手にテーブル移動しない
+                        _master_active_sec = _now - master_last_active_ts if master_last_active_ts else 9999
+                        if _master_active_sec > 120:
+                            send_log(f"[sync] skipped: master inactive ({int(_master_active_sec)}s ago)")
+                        else:
+                            _sync_tn, _sync_qpid, _sync_captured_at = _fetch_master_last_table()
                         # qpid が取得できない場合は比較不能なので skip (誤発動防止)
-                        if _sync_tn and _sync_qpid and _sync_age_ok:
+                        if _master_active_sec <= 120 and _sync_tn and _sync_qpid:
                             # qpid 同士の比較のみ行う (operator_table_id は qpid と別物なので比較しない)
                             _cur_qpid = str(state.operator_table_id or "").strip()
                             _cur_name = str(state.table_name or "").strip()
@@ -5447,7 +5440,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                                     items = [_sync_dec] + list(items)
                             else:
                                 send_log(f"[sync] table OK: cur={_cur_name or _cur_qpid or '?'} master={_sync_tn}")
-                        else:
+                        elif _master_active_sec <= 120:
                             # qpid なし = 比較不能 → スキップ (誤 SWITCH_TABLE 発動防止)
                             send_log(f"[sync] skipped: qpid not available (sync_tn={_sync_tn!r})")
                     except Exception as _se:
