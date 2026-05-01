@@ -5415,19 +5415,26 @@ def main(argv: Optional[list[str]] = None) -> int:
                                 send_log(
                                     f"[sync] master table mismatch: "
                                     f"cur_qpid={_cur_qpid or '?'} cur_name={_cur_name or '?'} "
-                                    f"master_qpid={_sync_qpid} master_name={_sync_tn} — triggering switch"
+                                    f"master_qpid={_sync_qpid} master_name={_sync_tn} — injecting switch"
                                 )
-                                raise _SwitchTableInterrupted({"friend_action": {"action": "SWITCH_TABLE"},
-                                    "table_name": _sync_tn, "qpid_table_id": _sync_qpid,
+                                # raise ではなく items に注入して通常の SWITCH_TABLE フローで処理
+                                # (_SwitchTableInterrupted を while ループ外に伝播させると engine crash する)
+                                _sync_dec = {
+                                    "friend_action": {"action": "SWITCH_TABLE"},
+                                    "table_name": _sync_tn,
+                                    "qpid_table_id": _sync_qpid,
                                     "decision_id": "sync_" + _sync_qpid[:8],
-                                    "captured_at": ""})
+                                    "captured_at": "",
+                                }
+                                if not items:
+                                    items = [_sync_dec]
+                                else:
+                                    items = [_sync_dec] + list(items)
                             else:
                                 send_log(f"[sync] table OK: cur={_cur_name or _cur_qpid or '?'} master={_sync_tn}")
                         else:
                             # qpid なし = 比較不能 → スキップ (誤 SWITCH_TABLE 発動防止)
                             send_log(f"[sync] skipped: qpid not available (sync_tn={_sync_tn!r})")
-                    except _SwitchTableInterrupted:
-                        raise
                     except Exception as _se:
                         try: send_log(f"[sync] master table check failed: {_se}")
                         except Exception: pass
