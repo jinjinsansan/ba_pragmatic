@@ -227,7 +227,7 @@ def get_by_status(status: str, limit: int = 50) -> list[dict[str, Any]]:
             SELECT decision_id, received_at, status, payload_json, ack_json, result_json
             FROM decisions
             WHERE status = ?
-            ORDER BY received_at ASC
+            ORDER BY received_at DESC
             LIMIT ?
             """,
             (str(status or ""), int(limit)),
