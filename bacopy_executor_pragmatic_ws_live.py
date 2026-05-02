@@ -45,6 +45,7 @@ from marubatsu_strategy import MaruBatsuTracker, SEQ_COUNTER, SetData
 # ======== BET MODE / SEQ (7-turn) ========
 BET_MODE_FLAT_1USD = "flat_1usd"
 BET_MODE_SEQ_USER10 = "seq_user10"
+BET_MODE_NEW_SEQ = "newseq"
 BET_MODE_COUNTER_SEQ7 = "counter_seq7"  # legacy
 
 SEQ_USER10 = [
@@ -54,11 +55,20 @@ SEQ_USER10 = [
     550, 600, 650, 700, 750, 800, 850, 900, 950, 1000,
 ]
 
+SEQ_NEW = [
+    10, 30, 50, 70,
+    110, 150, 200, 250, 300,
+    370, 450, 530, 610, 700, 810, 940,
+    1090, 1260, 1440, 1640, 1870, 2150, 2450, 2800,
+]
+
 
 def _seq_for_bet_mode(mode: str) -> list[int]:
     m = str(mode or "").strip().lower()
     if m == BET_MODE_SEQ_USER10:
         return list(SEQ_USER10)
+    if m == BET_MODE_NEW_SEQ:
+        return list(SEQ_NEW)
     if m == BET_MODE_FLAT_1USD:
         return [1]
     return list(SEQ_COUNTER)  # legacy fallback
@@ -3941,7 +3951,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument(
         "--bet-mode",
         default=os.getenv("BACOPY_BET_MODE", BET_MODE_FLAT_1USD),
-        help="BET mode: flat_1usd | seq_user10 (legacy: counter_seq7)",
+        help="BET mode: flat_1usd | seq_user10 | newseq (legacy: counter_seq7)",
     )
     ap.add_argument("--flat-amount", type=float, default=1.0)
     ap.add_argument("--chip-base", type=float, default=0.0, help="Base bet ($) for SEQ7 (falls back to --flat-amount)")
@@ -4107,8 +4117,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     bet_mode = str(args.bet_mode or BET_MODE_FLAT_1USD).strip().lower()
     seq_for_mode = _seq_for_bet_mode(bet_mode)
-    # flat_1usd / seq_user10 は「SEQの値=USD」として扱うため chip_base=1 固定
-    if bet_mode in (BET_MODE_FLAT_1USD, BET_MODE_SEQ_USER10):
+    # flat_1usd / seq_user10 / newseq は「SEQの値=USD」として扱うため chip_base=1 固定
+    if bet_mode in (BET_MODE_FLAT_1USD, BET_MODE_SEQ_USER10, BET_MODE_NEW_SEQ):
         chip_base = 1.0
     else:
         chip_base = float(args.chip_base) if float(args.chip_base or 0) > 0 else float(args.flat_amount or 1.0)
