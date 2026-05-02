@@ -3969,7 +3969,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument(
         "--decision-stale-sec",
         type=float,
-        default=float(os.getenv("BACOPY_DECISION_STALE_SEC", "6.0") or 6.0),
+        default=float(os.getenv("BACOPY_DECISION_STALE_SEC", "12.0") or 12.0),
         help="Reject bets if decision is older than this (captured_at 기준).",
     )
     ap.add_argument("--result-timeout-sec", type=int, default=90)
@@ -6083,6 +6083,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 xml = _build_lpbet_xml(table_id=state.table_id, game_id=game_id, user_id=state.user_id, bc=bc, amount=amt)
                 state.expected_bet_ck = _extract_ck_from_lpbet_xml(xml)
                 state.last_bet_confirm = None
+                # JS バッファに滞留している前ラウンドの古い Stake WS delta を先に排出してから
+                # リセットする。これを省くと前ラウンドの遅延 delta が誤 BET 確認を引き起こす。
+                try:
+                    _pump_ws_events(page, game_frame, state)
+                except Exception:
+                    pass
                 state.stake_balance_delta_by_currency = {}  # 前ラウンドの古い delta をリセット (誤確認防止)
                 match = f"tableId={state.table_id}"
                 _bet_send_start = time.time()
@@ -6137,7 +6143,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     except Exception: pass
 
                 confirm = wait_bet_confirm(
-                    timeout_sec=10.0,
+                    timeout_sec=15.0,
                     currency=stake_cur,
                     before_balance=before_balance,
                     bet_amount=amt,
