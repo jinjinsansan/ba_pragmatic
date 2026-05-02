@@ -6159,8 +6159,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                     consecutive_hard_errors += 1
                     last_error = "bet_confirm_timeout"
                     heartbeat("error")
-                    if consecutive_hard_errors >= 3:
-                        raise SystemExit("panic_stop: repeated critical errors (missing bet confirmation)")
+                    if consecutive_hard_errors >= 5:
+                        # seq7状態を保持したまま WS セッションを再確立する.
+                        # SystemExit は使わない (panic_stop は seq7 を失うリスクがある).
+                        send_log(f"[bet] {consecutive_hard_errors}連続 bet_confirm_timeout → recover_session() で回復試行")
+                        consecutive_hard_errors = 0
+                        recover_session("consecutive_bet_confirm_timeout")
                     continue
                 if isinstance(confirm, dict) and confirm.get("type") == "xml_error":
                     _post_result(
