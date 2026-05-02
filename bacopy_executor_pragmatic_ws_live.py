@@ -46,6 +46,7 @@ from marubatsu_strategy import MaruBatsuTracker, SEQ_COUNTER, SetData
 BET_MODE_FLAT_1USD = "flat_1usd"
 BET_MODE_SEQ_USER10 = "seq_user10"
 BET_MODE_NEW_SEQ = "newseq"
+BET_MODE_NEW_SEQ_30 = "newseq30"
 BET_MODE_COUNTER_SEQ7 = "counter_seq7"  # legacy
 
 SEQ_USER10 = [
@@ -69,6 +70,8 @@ def _seq_for_bet_mode(mode: str) -> list[int]:
         return list(SEQ_USER10)
     if m == BET_MODE_NEW_SEQ:
         return list(SEQ_NEW)
+    if m == BET_MODE_NEW_SEQ_30:
+        return list(SEQ_NEW[1:])  # $30スタート (最初の$10をスキップ)
     if m == BET_MODE_FLAT_1USD:
         return [1]
     return list(SEQ_COUNTER)  # legacy fallback
@@ -4118,7 +4121,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     bet_mode = str(args.bet_mode or BET_MODE_FLAT_1USD).strip().lower()
     seq_for_mode = _seq_for_bet_mode(bet_mode)
     # flat_1usd / seq_user10 / newseq は「SEQの値=USD」として扱うため chip_base=1 固定
-    if bet_mode in (BET_MODE_FLAT_1USD, BET_MODE_SEQ_USER10, BET_MODE_NEW_SEQ):
+    if bet_mode in (BET_MODE_FLAT_1USD, BET_MODE_SEQ_USER10, BET_MODE_NEW_SEQ, BET_MODE_NEW_SEQ_30):
         chip_base = 1.0
     else:
         chip_base = float(args.chip_base) if float(args.chip_base or 0) > 0 else float(args.flat_amount or 1.0)
