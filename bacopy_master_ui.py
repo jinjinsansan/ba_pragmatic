@@ -227,6 +227,16 @@ details > .content{padding:10px 0}
 .exec-card .signal-item .sv{font-family:var(--font-mono);font-size:12px;margin-top:1px;word-break:break-all}
 .exec-card .turns-bar{padding:5px 8px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:12px;letter-spacing:2px}
 .exec-card .phase-row{padding:5px 8px;font-family:var(--font-mono);font-size:11px;color:var(--accent);border-bottom:1px solid var(--border)}
+/* BIG ヘッダー帯: 友人が遠目から「次BET額/ターン進捗/BET窓」を一目で見るためのデカ表示パネル */
+.exec-card .big-status{display:grid;grid-template-columns:1fr 2fr 1fr;gap:10px;align-items:center;margin:10px 0 4px;padding:12px 10px;background:rgba(0,255,255,0.04);border:1px solid var(--border);border-radius:10px}
+.exec-card .big-status .col{text-align:center;min-width:0}
+.exec-card .big-status .col .lbl{font-family:var(--font-hud);font-size:9px;letter-spacing:2px;color:var(--text-muted);margin-bottom:4px}
+.exec-card .big-status .col .val{font-family:var(--font-mono);font-size:22px;font-weight:bold;line-height:1.1;word-break:break-all}
+.exec-card .big-status .col.center .val{font-size:20px;letter-spacing:4px}
+.exec-card .big-status .col.center .turn-current{color:var(--accent);text-shadow:0 0 8px rgba(0,255,255,0.6)}
+.exec-card .big-status .val.bet-open{color:var(--win)}
+.exec-card .big-status .val.bet-closed{color:var(--text-muted)}
+.exec-card .big-status .val.bet-armed{color:var(--accent);text-shadow:0 0 8px rgba(0,255,255,0.5)}
 
 /* 履歴 */
 .history-wrap{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -379,7 +389,7 @@ body.bet-open .big-btn.player::after,body.bet-open .big-btn.banker::after,body.b
     </details>
 
     <!-- ======= 折りたたみ: 受け子 GUI 詳細 ======= -->
-    <details>
+    <details open>
       <summary>受け子 GUI 詳細 — 残高 / SEQ / PnL / OS</summary>
       <div class="content"><div id="execList"></div></div>
     </details>
@@ -914,7 +924,29 @@ function renderExecutors(){
     const spnlCls = spnlRaw==null ? '' : (spnlRaw>0?'win':(spnlRaw<0?'lose':''));
     const turns = String(gui.turns_display||'');
     const turnsHtml = turns ? turns.split('').map(t=>t==='O'?'<span style="color:var(--win)">O</span>':'<span style="color:var(--lose)">X</span>').join(' ') : '<span style="color:var(--text-muted)">-</span>';
+    // BIG ヘッダー用: 最後の1手を巨大化、それ以前は薄く表示 (友人が遠目から最新結果を即把握できるように).
+    const _turnsArr = turns.split('');
+    const turnsHtmlBig = _turnsArr.length === 0
+      ? '<span style="color:var(--text-muted)">-</span>'
+      : _turnsArr.map((t,i)=>{
+          const isLast = i === _turnsArr.length - 1;
+          const color = t==='O' ? 'var(--win)' : 'var(--lose)';
+          const sz = isLast ? 'font-size:30px;text-shadow:0 0 10px '+color : 'font-size:18px;opacity:0.55';
+          return `<span class="turn-current" style="color:${color};${sz}">${t}</span>`;
+        }).join('&nbsp;');
     const curTurn = (gui.current_turn!=null) ? String(gui.current_turn) : '-';
+    // BIG ヘッダー用: 次BET額 (SEQ の現在段の値. flat_1usd なら $1, seq_user10/newseq なら段の値).
+    const nextBetBig = (seq && seq.bet_amount!=null) ? '$'+escHtml(seq.bet_amount) : '-';
+    // BIG ヘッダー用: BET窓状態 (OPEN/CLOSED + 残り秒数). bettable & open なら ARMED 強調.
+    const _winTimer = (ws.timer!=null && String(ws.timer).trim()!=='') ? Number(ws.timer).toFixed(0) : null;
+    let betWinText, betWinCls;
+    if(e.bet_window_open){
+      betWinText = _winTimer ? `OPEN ${_winTimer}s` : 'OPEN';
+      betWinCls = e.bettable ? 'bet-armed' : 'bet-open';
+    } else {
+      betWinText = _winTimer ? `待ち ${_winTimer}s` : '待ち';
+      betWinCls = 'bet-closed';
+    }
     const os = (gui.overshoot!=null) ? Number(gui.overshoot).toFixed(2) : '-';
     const winsStr = (gui.wins!=null) ? gui.wins+'W '+String(gui.losses||0)+'L '+String(gui.ties||0)+'T' : '-';
     const totalBets = (gui.total_bets!=null) ? String(gui.total_bets) : '-';
@@ -941,6 +973,20 @@ function renderExecutors(){
         <div style="display:flex;flex-direction:column;gap:4px;text-align:right">
           <div>${pills}</div>
           <div class="value small" style="color:var(--text-muted)">${fmtAge(ageSec)}前</div>
+        </div>
+      </div>
+      <div class="big-status">
+        <div class="col">
+          <div class="lbl">次BET</div>
+          <div class="val accent">${nextBetBig}</div>
+        </div>
+        <div class="col center">
+          <div class="lbl">ターン (${escHtml(curTurn)}/7)</div>
+          <div class="val">${turnsHtmlBig}</div>
+        </div>
+        <div class="col">
+          <div class="lbl">BET窓</div>
+          <div class="val ${betWinCls}">${escHtml(betWinText)}</div>
         </div>
       </div>
       <div class="value small" style="margin-top:6px;color:var(--text-muted)">卓: <span class="accent">${escHtml(e.table_name||e.table_id||'-')}</span></div>
@@ -1046,12 +1092,15 @@ function renderTables(){
   wrap.innerHTML='';
   // Pragmatic lobby の別カテゴリで到達不可のテーブルは除外 (友人の誤選択防止).
   // 根拠: scroll では default カテゴリしか走査できず, Fortune/MEGA/Super 8/Squeeze は別タブにあり到達不能.
+  // Speed 系: 別カテゴリではないが Master→受け子GUI 到達がタイマーに間に合わないため除外.
   const _UNREACHABLE_PATTERNS = [
     /fortune\s*6/i,
     /^mega\s*baccarat$/i,
     /super\s*8/i,
     /^squeeze\s*baccarat$/i,
     /mega\s*sic/i,
+    /speed\s*baccarat/i,
+    /スピードバカラ/,
   ];
   function _isUnreachable(name){
     const n = String(name||'').trim();
