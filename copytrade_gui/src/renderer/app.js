@@ -1196,9 +1196,7 @@ function _appendStreamMark(el, mark, color) {
   span.textContent = mark;
   if (color) span.style.color = color;
   el.appendChild(span);
-  const panel = el.parentElement;
-  if (panel) panel.scrollTop = panel.scrollHeight;
-  else el.scrollTop = el.scrollHeight;
+  requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
 }
 
 function _pushStreamMark(mark) {
