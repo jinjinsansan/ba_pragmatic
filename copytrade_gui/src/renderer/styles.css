@@ -492,12 +492,12 @@ html[data-variant="user"] .os-tag { display: none !important; }
 }
 .signal-stream {
   font-family: var(--font-mono);
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
   letter-spacing: 3px;
-  line-height: 1.8;
+  line-height: 1.7;
   word-break: break-all;
-  max-height: 60px;
+  max-height: 140px;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(255,204,0,0.15) transparent;
@@ -507,6 +507,11 @@ html[data-variant="user"] .os-tag { display: none !important; }
 .signal-stream .s-o { color: var(--win); text-shadow: 0 0 4px rgba(0,255,136,0.4); }
 .signal-stream .s-x { color: var(--lose); text-shadow: 0 0 4px rgba(255,51,102,0.4); }
 .signal-stream .s-pending { color: rgba(255, 255, 255, 0.45); text-shadow: none; }
+.signal-stream span:last-child {
+  font-size: 1.4em;
+  font-weight: 800;
+  filter: drop-shadow(0 0 8px currentColor);
+}
 
 /* ============================================================
    DAILY P&L
