@@ -17,8 +17,19 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if ns.cmd == "executor-pragmatic":
         from bacopy_executor_pragmatic_ws_live import main as _m
-
-        return int(_m(rest) or 0)
+        try:
+            return int(_m(rest) or 0)
+        except Exception as e:
+            msg = str(e or "")
+            if "BrowserContext.close" in msg and "Connection closed while reading from the driver" in msg:
+                print(
+                    "[executor-live] swallowed shutdown exception from Camoufox driver disconnect: "
+                    + msg,
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 0
+            raise
 
     if ns.cmd == "watch-pragmatic":
         from bacopy_watch_pragmatic import main as _m

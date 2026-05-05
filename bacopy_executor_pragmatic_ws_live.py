@@ -20,6 +20,7 @@ import re
 import sqlite3
 import ssl
 import sys
+import tempfile
 import threading
 import time
 import random
@@ -247,6 +248,15 @@ class Seq7Session:
         self.daily_open_date: str | None = None  # JST date
         self.current_balance: float | None = None
         self.state_path = state_path
+        self.state_save_attempt_count = 0
+        self.state_save_ok_count = 0
+        self.state_save_fail_count = 0
+        self.state_last_save_error = ""
+        self.state_last_saved_at: float | None = None
+        self.state_load_ok_count = 0
+        self.state_load_fail_count = 0
+        self.state_last_load_error = ""
+        self.state_last_loaded_at: float | None = None
 
         self._load_state()
 
@@ -260,7 +270,13 @@ class Seq7Session:
             return
         try:
             data = json.loads(self.state_path.read_text("utf-8"))
-        except Exception:
+        except Exception as e:
+            self.state_load_fail_count += 1
+            self.state_last_load_error = f"{type(e).__name__}: {e}"
+            try:
+                send_log(f"[state] load failed path={self.state_path} err={self.state_last_load_error}")
+            except Exception:
+                pass
             return
         # bet_mode/seq が変わったら状態を引き継がない (誤った単位idxを防止)
         try:
@@ -268,7 +284,13 @@ class Seq7Session:
                 return
             if isinstance(data.get("seq"), list) and data.get("seq") and list(data.get("seq")) != self.seq:
                 return
-        except Exception:
+        except Exception as e:
+            self.state_load_fail_count += 1
+            self.state_last_load_error = f"{type(e).__name__}: {e}"
+            try:
+                send_log(f"[state] load validation failed path={self.state_path} err={self.state_last_load_error}")
+            except Exception:
+                pass
             return
 
         try:
@@ -294,10 +316,21 @@ class Seq7Session:
             self.tracker.current_turns = list(turns)
             self.tracker.total_o = int(data.get("total_o", 0) or 0)
             self.tracker.total_x = int(data.get("total_x", 0) or 0)
-        except Exception:
+            self.state_load_ok_count += 1
+            self.state_last_load_error = ""
+            self.state_last_loaded_at = time.time()
+        except Exception as e:
+            self.state_load_fail_count += 1
+            self.state_last_load_error = f"{type(e).__name__}: {e}"
+            try:
+                send_log(f"[state] load apply failed path={self.state_path} err={self.state_last_load_error}")
+            except Exception:
+                pass
             pass
 
     def _save_state(self) -> None:
+        self.state_save_attempt_count += 1
+        tmp_path = None
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
@@ -324,9 +357,36 @@ class Seq7Session:
                 "total_x": self.tracker.total_x,
                 "saved_at": time.time(),
             }
-            self.state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
-        except Exception:
-            pass
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{self.state_path.name}.",
+                suffix=".tmp",
+                dir=str(self.state_path.parent),
+            )
+            tmp_path = Path(tmp_name)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.state_path)
+            self.state_save_ok_count += 1
+            self.state_last_save_error = ""
+            self.state_last_saved_at = float(payload["saved_at"])
+        except Exception as e:
+            self.state_save_fail_count += 1
+            self.state_last_save_error = f"{type(e).__name__}: {e}"
+            try:
+                send_log(f"[state] save failed path={self.state_path} err={self.state_last_save_error}")
+            except Exception:
+                pass
+        finally:
+            if tmp_path is not None and tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+
+    def ensure_state_file(self) -> None:
+        self._save_state()
 
     def update_balance(self, balance: float | None) -> None:
         if balance is None:
@@ -474,6 +534,17 @@ class Seq7Session:
             "should_reset": self.should_reset(),
             "cum_profit_chips": self.effective_profit_chips(),
             "cum_profit_usd": round(self.effective_profit_chips() * float(self.chip_base), 2),
+            "state_file": str(self.state_path),
+            "state_file_exists": bool(self.state_path.exists()),
+            "state_save_attempts": int(self.state_save_attempt_count),
+            "state_save_ok": int(self.state_save_ok_count),
+            "state_save_fail": int(self.state_save_fail_count),
+            "state_last_save_error": str(self.state_last_save_error or ""),
+            "state_last_saved_at": self.state_last_saved_at,
+            "state_load_ok": int(self.state_load_ok_count),
+            "state_load_fail": int(self.state_load_fail_count),
+            "state_last_load_error": str(self.state_last_load_error or ""),
+            "state_last_loaded_at": self.state_last_loaded_at,
         }
 
 # Worker-compatible WS bridge (uses self instead of window; no async helpers needed)
@@ -4137,6 +4208,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         profit_session_limit=int(args.profit_session_limit or 0),
         state_path=Path(args.profile_dir) / "seq7_state.json",
     )
+    try:
+        seq7.ensure_state_file()
+    except Exception:
+        pass
     bet_currency = (os.getenv("BACOPY_BET_CURRENCY", "USD") or "USD").strip().upper()
 
     # Master connection / activity monitor (for GUI)

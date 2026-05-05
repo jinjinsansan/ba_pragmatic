@@ -953,6 +953,9 @@ function renderExecutors(){
     const sessStr = (gui.session_count!=null) ? gui.session_count+'回 (利'+String(gui.profit_sessions||0)+')' : '-';
     const losscut = (gui.loss_cut_chips!=null) ? String(gui.loss_cut_chips) : '-';
     const profstop = (gui.profit_stop_chips!=null) ? String(gui.profit_stop_chips) : '-';
+    const stateSaveOk = Number(gui.state_save_ok||0);
+    const stateSaveFail = Number(gui.state_save_fail||0);
+    const stateIoStr = `OK:${stateSaveOk} / FAIL:${stateSaveFail}`;
     const shouldReset = gui.should_reset ? ' <span style="color:var(--lose);font-weight:bold">⚠ RESET推奨</span>' : '';
     let pills='';
     pills += online ? '<span class="pill ok">オンライン</span>' : '<span class="pill offline">オフライン</span>';
@@ -963,6 +966,7 @@ function renderExecutors(){
     if(e.inactivity_modal_unresolved) pills += ' <span class="pill err">無操作モーダル検知</span>';
     if((e.inactivity_dismissed_count||0) > 0) pills += ` <span class="pill">モーダル自動解除×${e.inactivity_dismissed_count}</span>`;
     if(e.session_elsewhere_unresolved) pills += ' <span class="pill err">セッション奪取</span>';
+    if(stateSaveFail > 0) pills += ` <span class="pill err">STATE保存失敗×${stateSaveFail}</span>`;
     const errHtml = e.error ? `<div class="err">${escHtml(e.error)}</div>` : '';
     c.innerHTML = `
       <div class="top-row">
@@ -1010,6 +1014,7 @@ function renderExecutors(){
           <div class="signal-item"><div class="sl">総BET数</div><div class="sv">${escHtml(totalBets)}</div></div>
           <div class="signal-item"><div class="sl">セッション</div><div class="sv">${escHtml(sessStr)}</div></div>
           <div class="signal-item"><div class="sl">損切/利確</div><div class="sv">${escHtml(losscut)}/±${escHtml(profstop)}</div></div>
+          <div class="signal-item"><div class="sl">STATE I/O</div><div class="sv">${escHtml(stateIoStr)}</div></div>
         </div>
       </div>
       ${errHtml}`;
