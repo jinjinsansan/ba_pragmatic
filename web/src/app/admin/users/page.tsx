@@ -17,7 +17,7 @@ export default async function AdminUsersPage() {
   const admin = createAdminClient()
   const { data: users } = await admin
     .from('profiles')
-    .select('*, billing(*)')
+    .select('*, billing(*, session_state)')
     .order('created_at', { ascending: false })
 
   return (
@@ -43,6 +43,7 @@ export default async function AdminUsersPage() {
             <thead><tr className="text-text-muted text-left border-b border-accent/10">
               <th className="pb-3">メール</th>
               <th className="pb-3">残高</th>
+              <th className="pb-3">当日PnL</th>
               <th className="pb-3">利益分配率</th>
               <th className="pb-3">ステータス</th>
               <th className="pb-3">紹介コード</th>

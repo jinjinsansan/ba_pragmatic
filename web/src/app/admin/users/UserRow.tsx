@@ -60,6 +60,17 @@ export default function UserRow({ user, billing }: { user: any; billing: any }) 
           {user.is_admin && <span className="text-xs text-accent bg-accent/10 px-1.5 py-0.5 rounded">管理者</span>}
         </td>
         <td className="py-3 font-bold">${billing?.balance?.toFixed(2) || '0.00'}</td>
+        <td className="py-3 font-bold">
+          {(() => {
+            const ss = billing?.session_state as any
+            const openBal = ss?.daily_open?.balance
+            const curBal = ss?.current_balance
+            if (typeof openBal !== 'number' || typeof curBal !== 'number') return <span className="text-slate-500">—</span>
+            const pnl = curBal - openBal
+            const sign = pnl >= 0 ? '+' : ''
+            return <span className={pnl >= 0 ? 'text-green-400' : 'text-red-400'}>{sign}${pnl.toFixed(2)}</span>
+          })()}
+        </td>
         <td className="py-3">
           <div className="flex items-center gap-2">
             <input
@@ -154,7 +165,7 @@ export default function UserRow({ user, billing }: { user: any; billing: any }) 
 
       {showConfig && (
         <tr className="border-b border-white/5 bg-white/[0.02]">
-          <td colSpan={7} className="py-3 px-4">
+          <td colSpan={8} className="py-3 px-4">
             <div className="text-[10px] text-slate-500 mb-2 tracking-widest">TABLE FILTER</div>
             <div className="flex flex-wrap gap-2 text-xs">
               <span className="px-2 py-0.5 rounded bg-white/5 text-slate-300">PRIMARY ≥ <b>{cfg.players_primary}</b>人</span>
@@ -170,7 +181,7 @@ export default function UserRow({ user, billing }: { user: any; billing: any }) 
       )}
       {showUrlInput && (
         <tr className="border-b border-white/5 bg-purple-500/5">
-          <td colSpan={7} className="py-3 px-4">
+          <td colSpan={8} className="py-3 px-4">
             <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
               <input
                 type="url"
