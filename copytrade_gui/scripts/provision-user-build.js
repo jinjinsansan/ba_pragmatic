@@ -195,12 +195,16 @@ function main() {
     ...(supabaseUrl ? { NEXT_PUBLIC_SUPABASE_URL: supabaseUrl } : {}),
     ...(supabaseAnonKey ? { NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey } : {}),
     ...(laplaceApiKey ? { LAPLACE_API_KEY: laplaceApiKey } : {}),
-    ...(bafatherEmail ? { BACOPY_BAFATHER_EMAIL: bafatherEmail } : {}),
+    BACOPY_BAFATHER_EMAIL: bafatherEmail,
     BACOPY_EXECUTOR_ID: executorId,
     BACOPY_EXECUTOR_LABEL: executorId,
   };
   let out = existing;
   for (const [k, v] of Object.entries(merge)) {
+    if (k === 'BACOPY_BAFATHER_EMAIL' && !v) {
+      out = out.replace(/^BACOPY_BAFATHER_EMAIL=.*\r?\n?/m, '');
+      continue;
+    }
     const re = new RegExp(`^${k}=.*$`, 'm');
     if (re.test(out)) out = out.replace(re, `${k}=${v}`);
     else {
