@@ -84,14 +84,67 @@ LOBBY_URL = "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccara
 
 # ======== GUI IPC (stdout JSON) ========
 
-# デバッグ目的: executor のすべての IPC メッセージをファイルに残す.
+# デバッグ目的: executor のすべての IPC メッセージ + BET トレースをファイルに残す.
 # 実装に問題があっても後から grep で追えるため, 自動復旧や診断が楽になる.
-_DEBUG_LOG_PATH = Path(__file__).parent / "executor_debug.log"
+# PyInstaller --onefile では __file__ が temp dir を指して engine 終了で消える.
+# 永続化するため AppData/Roaming 配下に書き出す.
+def _resolve_debug_log_dir() -> Path:
+    try:
+        base = os.environ.get('APPDATA') or os.path.expanduser('~/AppData/Roaming')
+        d = Path(base) / 'bacopy-copytrade-gui' / 'logs'
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except Exception:
+        return Path(__file__).parent
+
+_DEBUG_LOG_DIR = _resolve_debug_log_dir()
+_DEBUG_LOG_PATH = _DEBUG_LOG_DIR / "executor_debug.log"
+_DEBUG_LOG_MAX_BYTES = 50 * 1024 * 1024  # 50MB
+_DEBUG_LOG_KEEP = 3  # 旧ファイル最大 3 つ保持
+_debug_log_rotate_check = 0.0
+
+def _rotate_debug_log_if_needed() -> None:
+    global _debug_log_rotate_check
+    now = time.time()
+    if now - _debug_log_rotate_check < 30.0:
+        return  # 30 秒に 1 回しかチェックしない (= I/O 削減)
+    _debug_log_rotate_check = now
+    try:
+        if not _DEBUG_LOG_PATH.exists():
+            return
+        if _DEBUG_LOG_PATH.stat().st_size <= _DEBUG_LOG_MAX_BYTES:
+            return
+        for i in range(_DEBUG_LOG_KEEP, 0, -1):
+            old = _DEBUG_LOG_DIR / f"executor_debug.log.{i}"
+            if i == _DEBUG_LOG_KEEP and old.exists():
+                old.unlink()
+            elif old.exists():
+                new = _DEBUG_LOG_DIR / f"executor_debug.log.{i+1}"
+                old.rename(new)
+        _DEBUG_LOG_PATH.rename(_DEBUG_LOG_DIR / "executor_debug.log.1")
+    except Exception:
+        pass
 
 def _append_debug_log(line: str) -> None:
     try:
         with open(_DEBUG_LOG_PATH, "a", encoding="utf-8", errors="replace") as f:
             f.write(time.strftime("%Y-%m-%dT%H:%M:%S ") + line.rstrip() + "\n")
+        _rotate_debug_log_if_needed()
+    except Exception:
+        pass
+
+def _log_bet_trace(event: str, **kwargs) -> None:
+    """BET フローの各ステップを構造化ログで記録. 後から grep で追える."""
+    try:
+        kv_parts = []
+        for k, v in kwargs.items():
+            if isinstance(v, float):
+                v = f"{v:.6f}"
+            kv_parts.append(f"{k}={v}")
+        kv = " ".join(kv_parts)
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8", errors="replace") as f:
+            f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} [bet_trace] {event} {kv}\n")
+        _rotate_debug_log_if_needed()
     except Exception:
         pass
 
@@ -1451,7 +1504,12 @@ def _update_from_game_msg(state: _PragmaticState, msg: dict[str, Any]) -> None:
         return
     if "bet" in msg and isinstance(msg["bet"], dict):
         # This appears after betsclosed in sniff logs and likely confirms our bet.
-        state.last_bet_confirm = msg["bet"]
+        bet_data = msg["bet"]
+        try:
+            _log_bet_trace("msg_bet_received", bc=bet_data.get("bc"), amount=bet_data.get("amount"), betcode=bet_data.get("betcode"), table=bet_data.get("table"), seq=bet_data.get("seq"), expected_ck=state.expected_bet_ck)
+        except Exception:
+            pass
+        state.last_bet_confirm = bet_data
         return
 
 
@@ -1565,6 +1623,10 @@ def _update_from_stake_ws_msg(state: _PragmaticState, msg: dict[str, Any]) -> No
                 delta = it.get("amount")
                 if delta is not None:
                     state.stake_balance_delta_by_currency[cur] = float(delta)
+                    try:
+                        _log_bet_trace("stake_delta_received", currency=cur, delta=float(delta), balance_after=state.stake_balance_by_currency.get(cur), expected_ck=state.expected_bet_ck)
+                    except Exception:
+                        pass
                 updated = True
             except Exception:
                 continue
@@ -6170,9 +6232,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 state.stake_balance_delta_by_currency = {}  # 前ラウンドの古い delta をリセット (誤確認防止)
                 match = f"tableId={state.table_id}"
                 _bet_send_start = time.time()
+                _log_bet_trace("bet_send_start", did=did, ck=state.expected_bet_ck, side=side, amount=amt, game_id=game_id, t=_bet_send_start, last_balance_at=state.last_stake_balance_at)
                 send_res = send_bet_xml(xml, match=match)
+                _log_bet_trace("bet_send_done", did=did, ok=send_res.get("ok"), dt=time.time()-_bet_send_start)
 
                 if not send_res.get("ok"):
+                    _log_bet_trace("bet_aborted", did=did, reason="ws_send_failed")
                     _post_result(
                         did,
                         {"error": "ws_send failed", "detail": send_res, "match": match},
@@ -6226,9 +6291,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                     before_balance=before_balance,
                     bet_amount=amt,
                 )
+                _log_bet_trace("confirm_returned", did=did, is_none=(confirm is None), ctype=(confirm.get("type") if isinstance(confirm, dict) else None), bc=(confirm.get("bc") if isinstance(confirm, dict) else None), delta=(confirm.get("delta") if isinstance(confirm, dict) else None), dt=time.time()-_bet_send_start)
                 if confirm is None:
                     # At this point we might have placed a bet but lost confirmation.
                     # Stop to avoid accidental duplicate bets.
+                    _log_bet_trace("bet_aborted", did=did, reason="bet_confirm_timeout")
                     _post_result(
                         did,
                         {"error": "bet_confirm_timeout", "game_id": game_id, "operator_table_id": op_tid, "bet_ck": state.expected_bet_ck},
@@ -6245,6 +6312,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         recover_session("consecutive_bet_confirm_timeout")
                     continue
                 if isinstance(confirm, dict) and confirm.get("type") == "xml_error":
+                    _log_bet_trace("bet_aborted", did=did, reason="bet_rejected", ck=state.expected_bet_ck)
                     _post_result(
                         did,
                         {"error": "bet_rejected", "game_id": game_id, "operator_table_id": op_tid, "bet_ck": state.expected_bet_ck, "bet_confirm": confirm},
@@ -6270,7 +6338,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 except Exception:
                     pass
                 outcome = wait_result(game_id, operator_table_id=op_tid, timeout_sec=float(args.result_timeout_sec))
+                _log_bet_trace("wait_result_done", did=did, outcome=outcome, dt=time.time()-_bet_send_start)
                 if outcome is None:
+                    _log_bet_trace("bet_aborted", did=did, reason="result_timeout")
                     _post_result(
                         did,
                         {"error": "result timeout", "game_id": game_id, "operator_table_id": op_tid, "timeout_sec": args.result_timeout_sec},
@@ -6297,7 +6367,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     won = bool(outcome == "tie")
                 else:
                     won = None if outcome == "tie" else bool(outcome == bet_side_low)
+                _log_bet_trace("apply_round", did=did, outcome=outcome, side=bet_side_low, won=won, current_turns_before="".join(seq7.tracker.current_turns), total_bets_before=seq7.total_bets)
                 rr_meta = seq7.apply_round(outcome, won, bet_side=bet_side_low)
+                _log_bet_trace("apply_round_done", did=did, current_turns_after="".join(seq7.tracker.current_turns), total_bets_after=seq7.total_bets)
 
                 try:
                     # 3-way 分岐を厳密に (TIE / WIN / LOSS). won is None でも LOSE にしない.
