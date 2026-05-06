@@ -5167,10 +5167,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             currency: str,
             before_balance: Optional[float],
             bet_amount: float,
-            bet_send_start: float = 0.0,
         ) -> Optional[dict[str, Any]]:
             state.last_bet_confirm = None
-            _guard_ts = bet_send_start if bet_send_start > 0 else (time.time() - 0.1)
+            start = time.time()
 
             def _pred() -> bool:
                 # BET confirm 待ち中も modal 即 dismiss.
@@ -5183,7 +5182,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if isinstance(state.last_bet_confirm, dict) and state.last_bet_confirm.get("type") == "xml_error":
                     return True
 
-                if state.last_stake_balance_at < _guard_ts:
+                if state.last_stake_balance_at < start - 0.1:
                     return False
 
                 cur = str(currency or "").strip().upper()
@@ -6163,14 +6162,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 state.expected_bet_ck = _extract_ck_from_lpbet_xml(xml)
                 state.last_bet_confirm = None
                 # JS バッファに滞留している前ラウンドの古い Stake WS delta を先に排出してから
-                # リセットする。二段階 drain: 1回目の pump 後に 50ms 待って JS event loop を
-                # 回してから再度 pump することで、バッファ末尾に滞留するフレームも確実に排出する。
+                # リセットする。これを省くと前ラウンドの遅延 delta が誤 BET 確認を引き起こす。
                 try:
-                    _pump_ws_events(page, game_frame, state)
-                except Exception:
-                    pass
-                try:
-                    time.sleep(0.05)
                     _pump_ws_events(page, game_frame, state)
                 except Exception:
                     pass
@@ -6232,7 +6225,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                     currency=stake_cur,
                     before_balance=before_balance,
                     bet_amount=amt,
-                    bet_send_start=_bet_send_start,
                 )
                 if confirm is None:
                     # At this point we might have placed a bet but lost confirmation.
