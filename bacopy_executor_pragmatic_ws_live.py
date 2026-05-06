@@ -1450,19 +1450,8 @@ def _update_from_game_msg(state: _PragmaticState, msg: dict[str, Any]) -> None:
                 pass
         return
     if "bet" in msg and isinstance(msg["bet"], dict):
-        bet_data = msg["bet"]
-        # bc="false" = Pragmatic がこのラウンドの BET を拒否した = 成立していない.
-        # 現状コードは bc の値を無視して confirm としていたため、拒否された BET でも
-        # 〇✕が記録される誤動作があった。xml_error として扱い bet_rejected に倒す。
-        bc_flag = str(bet_data.get("bc", "")).lower()
-        if bc_flag == "false":
-            state.last_bet_confirm = {
-                "type": "xml_error",
-                "ck": state.expected_bet_ck,
-                "snippet": json.dumps(bet_data)[:800],
-            }
-        else:
-            state.last_bet_confirm = bet_data
+        # This appears after betsclosed in sniff logs and likely confirms our bet.
+        state.last_bet_confirm = msg["bet"]
         return
 
 
