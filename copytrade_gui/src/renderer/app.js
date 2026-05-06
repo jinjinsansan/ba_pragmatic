@@ -1196,6 +1196,10 @@ function _appendStreamMark(el, mark, color) {
   span.textContent = mark;
   if (color) span.style.color = color;
   el.appendChild(span);
+  const MAX_STREAM_MARKS = 100;
+  while (el.children.length > MAX_STREAM_MARKS) {
+    el.removeChild(el.firstChild);
+  }
   requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
 }
 
