@@ -4281,7 +4281,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     send_phase("idle", "ARMED")
     send_action("Armed. Waiting for master signal...")
     try:
-        send_msg({"type": "shoe_history", "sets": [s.__dict__ for s in seq7.tracker.sets], "current_turns": list(seq7.tracker.current_turns), "chip_base": chip_base})
+        send_msg({"type": "shoe_history", "sets": [s.__dict__ for s in seq7.tracker.sets], "chip_base": chip_base})
     except Exception:
         pass
 
@@ -6380,7 +6380,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                                 "overshoot": s.overshoot,
                             }
                         )
-                        send_msg({"type": "shoe_history", "sets": [x.__dict__ for x in seq7.tracker.sets], "current_turns": list(seq7.tracker.current_turns), "chip_base": chip_base})
+                        send_msg({"type": "shoe_history", "sets": [x.__dict__ for x in seq7.tracker.sets], "chip_base": chip_base})
                     except Exception:
                         pass
 
@@ -6388,7 +6388,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     reason = seq7.reset_reason()
                     reset_msg = seq7.reset_session(reason)
                     send_msg(reset_msg)
-                    send_msg({"type": "shoe_history", "sets": [], "current_turns": [], "chip_base": chip_base})
+                    send_msg({"type": "shoe_history", "sets": [], "chip_base": chip_base})
                     send_msg(seq7.status_payload())
                     send_phase("idle", "ARMED")
                     if seq7.profit_session_limit > 0 and reset_msg.get("is_profit") and seq7.profit_sessions >= seq7.profit_session_limit:

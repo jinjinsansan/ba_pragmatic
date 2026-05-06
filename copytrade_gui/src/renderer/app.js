@@ -1600,16 +1600,6 @@ window.valhalla.onAgentMessage((msg) => {
 
       if (isDevMode() && Array.isArray(msg.sets)) {
         renderDevSets(msg.sets);
-        if (Array.isArray(msg.current_turns) && msg.current_turns.length > 0) {
-          const el = $('#sigStream');
-          if (el) {
-            const color = _currentSetColor();
-            for (const c of msg.current_turns) {
-              if (c === 'O' || c === 'X') _appendStreamMark(el, c, color);
-            }
-            _streamTurnsInSet = msg.current_turns.length;
-          }
-        }
       }
       break;
 
