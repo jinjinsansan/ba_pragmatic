@@ -320,9 +320,8 @@ body.bet-open .big-btn.player::after,body.bet-open .big-btn.banker::after,body.b
   <div class="status">
     <button id="modeToggle" class="mode-toggle" title="待機/実戦 切替">実戦モード</button>
     <span id="updatedPill" class="pill" title="スナップショット更新">更新:-</span>
-    <a href="https://bafather.uk/admin/ledger" target="_blank" rel="noopener noreferrer"
-       class="ledger-btn"
-       title="FX 運用家計簿 (新しいタブで開く)">📊 家計簿</a>
+    <a href="/master/ledger" class="ledger-btn"
+       title="FX 運用家計簿">📊 家計簿</a>
     <form method="POST" action="/master/logout" style="margin:0">
       <button type="submit" class="logout">ログアウト</button>
     </form>
