@@ -1250,7 +1250,7 @@ function updateDevPanel(msg) {
   }
 }
 
-function renderDevSets(sets) {
+function renderDevSets(sets, current_turns) {
 
 
 
@@ -1259,10 +1259,9 @@ function renderDevSets(sets) {
   const el = $('#sigStream');
   if (!el) return;
   const list = Array.isArray(sets) ? sets : [];
+  const ct = Array.isArray(current_turns) ? current_turns.filter(c => c === 'O' || c === 'X') : [];
 
-
-  if (el.children.length > 0 && _streamSetIdx === list.length && _streamTurnsInSet === 0) return;
-
+  if (el.children.length > 0 && _streamSetIdx === list.length && _streamTurnsInSet === ct.length) return;
 
   el.innerHTML = '';
   for (let i = 0; i < list.length; i += 1) {
@@ -1272,8 +1271,13 @@ function renderDevSets(sets) {
       if (c === 'O' || c === 'X') _appendStreamMark(el, c, color);
     }
   }
+  // 進行中セットの途中結果も描画 (recover_session 後に○×が消える問題の修正)
+  if (ct.length > 0) {
+    const color = _STREAM_SET_COLORS[list.length % _STREAM_SET_COLORS.length];
+    for (const c of ct) _appendStreamMark(el, c, color);
+  }
   _streamSetIdx = list.length;
-  _streamTurnsInSet = 0;
+  _streamTurnsInSet = ct.length;
 }
 
 $('#logToggle').addEventListener('click', () => {
@@ -1595,7 +1599,7 @@ window.valhalla.onAgentMessage((msg) => {
 
 
       if (isDevMode() && Array.isArray(msg.sets)) {
-        renderDevSets(msg.sets);
+        renderDevSets(msg.sets, msg.current_turns);
       }
       break;
 

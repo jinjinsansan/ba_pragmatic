@@ -4340,7 +4340,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     send_phase("idle", "ARMED")
     send_action("Armed. Waiting for master signal...")
     try:
-        send_msg({"type": "shoe_history", "sets": [s.__dict__ for s in seq7.tracker.sets], "chip_base": chip_base})
+        send_msg({"type": "shoe_history", "sets": [s.__dict__ for s in seq7.tracker.sets], "current_turns": list(seq7.tracker.current_turns), "chip_base": chip_base})
     except Exception:
         pass
 
@@ -5638,11 +5638,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             try:
                 _stake_nudge_sec = float(os.getenv("BACOPY_STAKE_BALANCE_NUDGE_SEC", "300") or 300)
                 _now_ns = time.time()
-                # WS 接続が生きているか (pong が 60s 以内に届いていること)
+                # ケース1: WS は生きているが subscription (balance) が止まっている
                 _ws_still_alive = bool(state.last_stake_ws_recv_at and (_now_ns - float(state.last_stake_ws_recv_at)) < 60.0)
                 _stake_silence = _now_ns - float(state.last_stake_balance_at or 0) if state.last_stake_balance_at else 0.0
-                # マスターが最近 BET を送ってきていること (アイドル時の誤 recover 防止)
                 _master_active_enough = bool(master_last_active_ts and (_now_ns - master_last_active_ts) < _stake_nudge_sec * 2)
+                _stake_subscription_dead = bool(
+                    _ws_still_alive and _master_active_enough
+                    and state.last_stake_balance_at
+                    and _stake_silence > _stake_nudge_sec
+                )
+                # ケース2: Stake WS 完全切断 (pong も 600s 来ない) — 旧コードのカバレッジを維持
+                _stake_ws_total_silence = _now_ns - float(state.last_stake_ws_recv_at or 0) if state.last_stake_ws_recv_at else 0.0
+                _stake_ws_totally_dead = bool(state.last_stake_ws_recv_at and _stake_ws_total_silence > _stake_nudge_sec * 2)
                 _bet_win_active = bool(
                     state.bets_open_game_id
                     and state.bets_closed_game_id != state.bets_open_game_id
@@ -5651,18 +5658,19 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
                 if (
                     _stake_nudge_sec > 0
-                    and _ws_still_alive            # WS は pong で生きている
-                    and _master_active_enough      # 最近 BET があった (アイドル時は発動しない)
-                    and state.last_stake_balance_at  # 少なくとも1回は balance を受信済み
-                    and _stake_silence > _stake_nudge_sec
+                    and (_stake_subscription_dead or _stake_ws_totally_dead)
                     and not _bet_win_active
                     and not recover_exhausted
                     and (_now_ns - _stake_balance_nudge_last_at) >= _stake_nudge_sec
                     and (_now_ns - float(last_recover_at or 0)) >= float(args.ws_recover_cooldown_sec or 60)
                 ):
                     _stake_balance_nudge_last_at = _now_ns
-                    send_log(f"[stake-ws] balance silent {int(_stake_silence)}s — triggering recover to re-establish subscription")
-                    recover_session(f"stake_balance_silent {int(_stake_silence)}s")
+                    if _stake_subscription_dead:
+                        send_log(f"[stake-ws] balance silent {int(_stake_silence)}s (WS alive) — triggering recover to re-establish subscription")
+                        recover_session(f"stake_balance_silent {int(_stake_silence)}s")
+                    else:
+                        send_log(f"[stake-ws] WS totally dead {int(_stake_ws_total_silence)}s — triggering recover")
+                        recover_session(f"stake_ws_dead {int(_stake_ws_total_silence)}s")
                     continue
             except Exception:
                 pass
@@ -6447,7 +6455,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                                 "overshoot": s.overshoot,
                             }
                         )
-                        send_msg({"type": "shoe_history", "sets": [x.__dict__ for x in seq7.tracker.sets], "chip_base": chip_base})
+                        send_msg({"type": "shoe_history", "sets": [x.__dict__ for x in seq7.tracker.sets], "current_turns": list(seq7.tracker.current_turns), "chip_base": chip_base})
                     except Exception:
                         pass
 
@@ -6455,7 +6463,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     reason = seq7.reset_reason()
                     reset_msg = seq7.reset_session(reason)
                     send_msg(reset_msg)
-                    send_msg({"type": "shoe_history", "sets": [], "chip_base": chip_base})
+                    send_msg({"type": "shoe_history", "sets": [], "current_turns": [], "chip_base": chip_base})
                     send_msg(seq7.status_payload())
                     send_phase("idle", "ARMED")
                     if seq7.profit_session_limit > 0 and reset_msg.get("is_profit") and seq7.profit_sessions >= seq7.profit_session_limit:
