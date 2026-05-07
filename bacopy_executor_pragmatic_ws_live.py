@@ -3612,6 +3612,7 @@ async (args) => {
     // scroll しながら探索. 最も大きな scroller を軸に回す + 他の scroller にも補助で scroll 投げる.
     let lastDomCount = 0;
     let stagnantRounds = 0;
+    let reverseRemaining = 0;  // DOM変化でリセットされない独立したUP方向カウンタ
     const primary = pickBestScroller(scrollers);
     for (let i = 0; i <= maxScroll; i++) {
       const res = findAndClick();
@@ -3621,8 +3622,10 @@ async (args) => {
       try { domCount = document.querySelectorAll('*').length; } catch(_) {}
       if (domCount === lastDomCount) stagnantRounds++; else stagnantRounds = 0;
       lastDomCount = domCount;
-      // 方向: 最初は下へ続ける (ユーザ報告: 下スクロールで Baccarat 1 が出る). 10回停滞で上→再度下.
-      const dirDown = stagnantRounds < 10 ? downDir : (stagnantRounds < 15 ? !downDir : downDir);
+      // 方向: 10回停滞で UP に切替. reverseRemaining を使い DOM 変化でリセットされないよう保護.
+      if (stagnantRounds >= 10 && reverseRemaining === 0) { reverseRemaining = 12; stagnantRounds = 0; }
+      const dirDown = reverseRemaining > 0 ? !downDir : downDir;
+      if (reverseRemaining > 0) reverseRemaining--;
       // primary scroller を先に全力で動かし, 他も補助.
       let anyScrolled = false;
       if (primary) {
@@ -3648,6 +3651,11 @@ async (args) => {
   // Pass 1: 現状カテゴリで下方向 sweep
   let r = await sweep('default-down', true);
   if (r.clicked) return { ...r, scrollers: scrollers.length };
+
+  // Pass 2 前: スクロール位置をトップに戻す (Pass 1 でフッターまで流れた場合の対策)
+  try { if (primary) primary.scrollTo({top:0,behavior:'instant'}); } catch(_){}
+  try { (document.scrollingElement||document.documentElement).scrollTo({top:0,behavior:'instant'}); } catch(_){}
+  await sleepMs(200);
 
   // Pass 2: カテゴリタブを順次 click してから sweep
   for (const cat of categoryPatterns) {
