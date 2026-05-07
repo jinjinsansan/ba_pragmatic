@@ -5628,9 +5628,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             # game WS は生きているが Stake GraphQL subscription が止まる場合がある。
             # balance が一定時間届かなくなったら BET 窓が閉じているタイミングで recover_session を発動。
             try:
-                _stake_nudge_sec = float(os.getenv("BACOPY_STAKE_BALANCE_NUDGE_SEC", "600") or 600)
+                _stake_nudge_sec = float(os.getenv("BACOPY_STAKE_BALANCE_NUDGE_SEC", "300") or 300)
                 _now_ns = time.time()
-                _stake_silence = _now_ns - float(state.last_stake_ws_recv_at or 0) if state.last_stake_ws_recv_at else 0.0
+                _stake_silence = _now_ns - float(state.last_stake_balance_at or 0) if state.last_stake_balance_at else 0.0
                 _bet_win_active = bool(
                     state.bets_open_game_id
                     and state.bets_closed_game_id != state.bets_open_game_id
@@ -5639,7 +5639,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
                 if (
                     _stake_nudge_sec > 0
-                    and state.last_stake_ws_recv_at  # 少なくとも1回は balance を受信済み
+                    and state.last_stake_balance_at  # 少なくとも1回は balance を受信済み
                     and _stake_silence > _stake_nudge_sec
                     and not _bet_win_active
                     and not recover_exhausted
