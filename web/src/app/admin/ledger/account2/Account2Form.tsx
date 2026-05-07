@@ -1,0 +1,168 @@
+'use client'
+
+import { useState, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
+import type { Account2Computed } from '@/lib/ledger/types'
+import { formatCurrency } from '@/lib/ledger/calc'
+
+export default function Account2Form({
+  investorId,
+  computed,
+  initialBalance,
+}: {
+  investorId: string
+  computed: Account2Computed[]
+  initialBalance: number
+}) {
+  const router = useRouter()
+  const [isPending, startTransition] = useTransition()
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
+  const [profit, setProfit] = useState('')
+  const [withdrawal, setWithdrawal] = useState('')
+  const [notes, setNotes] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    if (!profit && !withdrawal) return setError('利益または出金額を入力してください')
+
+    const res = await fetch('/api/admin/ledger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table: 'account2',
+        action: 'upsert',
+        payload: {
+          investor_id: investorId,
+          trade_date: date,
+          daily_profit: parseFloat(profit || '0'),
+          withdrawal: parseFloat(withdrawal || '0'),
+          notes: notes || null,
+        },
+      }),
+    })
+
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      setError(j.error || `エラー: ${res.status}`)
+      return
+    }
+    setProfit('')
+    setWithdrawal('')
+    setNotes('')
+    startTransition(() => router.refresh())
+  }
+
+  async function remove(id: string) {
+    if (!confirm('この日次レコードを削除しますか?')) return
+    const res = await fetch('/api/admin/ledger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ table: 'account2', action: 'delete', id }),
+    })
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}))
+      alert(j.error || `削除失敗: ${res.status}`)
+      return
+    }
+    startTransition(() => router.refresh())
+  }
+
+  const totalProfit = computed.reduce((a, e) => a + e.dailyProfit, 0)
+  const totalWithdrawal = computed.reduce((a, e) => a + e.withdrawal, 0)
+  const currentBalance = computed[computed.length - 1]?.balanceAfter ?? initialBalance
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-3 gap-3 text-center">
+        <div className="rounded-lg p-3 border border-amber-500/30 bg-amber-500/5">
+          <div className="text-xs text-amber-400 mb-1">利益累計</div>
+          <div className="font-mono text-lg text-amber-300">{formatCurrency(totalProfit)}</div>
+        </div>
+        <div className="rounded-lg p-3 border border-purple-500/30 bg-purple-500/5">
+          <div className="text-xs text-purple-400 mb-1">出金累計</div>
+          <div className="font-mono text-lg text-purple-300">{formatCurrency(totalWithdrawal)}</div>
+        </div>
+        <div className="rounded-lg p-3 border border-emerald-500/30 bg-emerald-500/5">
+          <div className="text-xs text-emerald-400 mb-1">現在残高</div>
+          <div className="font-mono text-lg text-emerald-300">{formatCurrency(currentBalance)}</div>
+        </div>
+      </div>
+
+      <form onSubmit={submit} className="glass-card p-4 rounded-xl">
+        <div className="text-sm text-text-muted mb-3">新規/更新 (同じ日付は上書き)</div>
+        <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+          <label className="sm:col-span-2 flex flex-col gap-1">
+            <span className="text-xs text-text-muted">取引日</span>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+              className="px-3 py-2 rounded bg-black/40 border border-text-muted/30 text-text" required />
+          </label>
+          <label className="sm:col-span-3 flex flex-col gap-1">
+            <span className="text-xs text-text-muted">日次利益 (USD)</span>
+            <input type="number" step="0.01" value={profit} onChange={(e) => setProfit(e.target.value)}
+              className="px-3 py-2 rounded bg-black/40 border border-text-muted/30 text-text font-mono" placeholder="0.00" />
+          </label>
+          <label className="sm:col-span-3 flex flex-col gap-1">
+            <span className="text-xs text-text-muted">出金額 (USD)</span>
+            <input type="number" step="0.01" value={withdrawal} onChange={(e) => setWithdrawal(e.target.value)}
+              className="px-3 py-2 rounded bg-black/40 border border-text-muted/30 text-text font-mono" placeholder="0.00" />
+          </label>
+          <label className="sm:col-span-2 flex flex-col gap-1">
+            <span className="text-xs text-text-muted">メモ</span>
+            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)}
+              className="px-3 py-2 rounded bg-black/40 border border-text-muted/30 text-text" />
+          </label>
+          <div className="sm:col-span-2 flex items-end">
+            <button type="submit" disabled={isPending}
+              className="w-full px-4 py-2 rounded bg-amber-500/20 border border-amber-400 text-amber-300 hover:bg-amber-500/30 disabled:opacity-50">
+              {isPending ? '保存中…' : '保存'}
+            </button>
+          </div>
+        </div>
+        {error && <div className="text-red-400 text-sm mt-2">{error}</div>}
+      </form>
+
+      <div className="glass-card p-4 rounded-xl overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="text-text-muted text-left border-b border-accent/10">
+            <tr>
+              <th className="pb-2 px-2">日付</th>
+              <th className="pb-2 px-2 text-right text-amber-400">日次利益</th>
+              <th className="pb-2 px-2 text-right text-purple-400">出金</th>
+              <th className="pb-2 px-2 text-right">純増減</th>
+              <th className="pb-2 px-2 text-right">残高 (累計)</th>
+              <th className="pb-2 px-2">メモ</th>
+              <th className="pb-2 px-2">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {computed.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="py-8 text-center text-text-muted">まだ入力がありません</td>
+              </tr>
+            ) : (
+              computed.map((e) => (
+                <tr key={e.id ?? e.tradeDate} className="border-b border-text-muted/10 hover:bg-accent/5">
+                  <td className="py-2 px-2 font-mono">{e.tradeDate}</td>
+                  <td className="py-2 px-2 text-right font-mono text-amber-300">{formatCurrency(e.dailyProfit)}</td>
+                  <td className="py-2 px-2 text-right font-mono text-purple-300">{formatCurrency(e.withdrawal)}</td>
+                  <td className={`py-2 px-2 text-right font-mono ${e.netChange >= 0 ? 'text-emerald-300' : 'text-red-400'}`}>
+                    {formatCurrency(e.netChange)}
+                  </td>
+                  <td className="py-2 px-2 text-right font-mono font-bold">{formatCurrency(e.balanceAfter)}</td>
+                  <td className="py-2 px-2 text-xs text-text-muted">{e.notes ?? ''}</td>
+                  <td className="py-2 px-2">
+                    <button onClick={() => e.id && remove(e.id)}
+                      className="text-red-400 hover:text-red-300 text-xs"
+                      disabled={!e.id || isPending}>削除</button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}

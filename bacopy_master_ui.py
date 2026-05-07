@@ -73,6 +73,10 @@ button.logout:hover{border-color:var(--lose);color:var(--lose)}
 .mode-toggle{display:none;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:6px 14px;border-radius:8px;font-family:var(--font-hud);font-size:11px;letter-spacing:2px;cursor:pointer}
 @media(max-width:900px){.mode-toggle{display:inline-block}}
 
+/* 家計簿ボタン (右上、bafather.uk へ) */
+.ledger-btn{display:inline-flex;align-items:center;gap:4px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.4);color:#34d399;padding:6px 12px;border-radius:8px;font-family:var(--font-hud);font-size:11px;letter-spacing:1px;text-decoration:none;cursor:pointer;transition:all 0.15s}
+.ledger-btn:hover{background:rgba(34,197,94,0.18);border-color:#34d399;color:#6ee7b7;box-shadow:0 0 12px rgba(34,197,94,0.25)}
+
 /* ======= 集計ステータスバー (案4) ======= */
 .stats-bar{background:rgba(10,16,30,0.9);border-bottom:1px solid var(--border);padding:10px 24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px}
 .stats-bar .stat-tile{padding:4px 10px;border-left:2px solid var(--border);min-width:0}
@@ -316,6 +320,9 @@ body.bet-open .big-btn.player::after,body.bet-open .big-btn.banker::after,body.b
   <div class="status">
     <button id="modeToggle" class="mode-toggle" title="待機/実戦 切替">実戦モード</button>
     <span id="updatedPill" class="pill" title="スナップショット更新">更新:-</span>
+    <a href="https://bafather.uk/admin/ledger" target="_blank" rel="noopener noreferrer"
+       class="ledger-btn"
+       title="FX 運用家計簿 (新しいタブで開く)">📊 家計簿</a>
     <form method="POST" action="/master/logout" style="margin:0">
       <button type="submit" class="logout">ログアウト</button>
     </form>
