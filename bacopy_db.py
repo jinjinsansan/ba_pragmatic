@@ -48,6 +48,7 @@ def init_db() -> None:
             "ALTER TABLE decisions ADD COLUMN action TEXT",
             "ALTER TABLE decisions ADD COLUMN side TEXT",
             "ALTER TABLE decisions ADD COLUMN amount REAL",
+            "ALTER TABLE decisions ADD COLUMN learning_round INTEGER",
         ]:
             try:
                 cur.execute(ddl)
@@ -190,9 +191,9 @@ def insert_decision(decision_id: str, payload: dict[str, Any]) -> None:
         cur.execute(
             """
             INSERT OR REPLACE INTO decisions
-              (decision_id, received_at, status, provider, table_id, table_name, target_executor_id, action, side, amount, game_id, payload_json)
+              (decision_id, received_at, status, provider, table_id, table_name, target_executor_id, action, side, amount, game_id, payload_json, learning_round)
             VALUES
-              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 decision_id,
@@ -207,6 +208,7 @@ def insert_decision(decision_id: str, payload: dict[str, Any]) -> None:
                 amount,
                 str(payload.get("game_id") or ""),
                 json.dumps(payload, ensure_ascii=False),
+                2,  # AI学習第2回目 (2026-05-09〜): overshoot/unit_idx 記録あり
             ),
         )
         conn.commit()
@@ -408,26 +410,68 @@ def get_stats() -> dict[str, Any]:
         except Exception:
             bet_total = 0
         try:
-            # in_learning_session フラグがある場合は true のみカウント
-            # フラグなし (旧データ) は後方互換でカウント対象のまま
+            # 第1回 (〜5/8): 4/30以降 + ils=1 + done (overshoot なし・参考値)
             cur.execute("""SELECT COUNT(*) FROM decisions
                 WHERE action = 'BET' AND status = 'done'
-                AND (
-                    json_extract(payload_json, '$.friend_action.in_learning_session') IS NULL
-                    OR json_extract(payload_json, '$.friend_action.in_learning_session') = 1
-                )""")
-            bet_done = int(cur.fetchone()[0] or 0)
+                AND (learning_round = 1 OR learning_round IS NULL)
+                AND DATE(received_at) >= '2026-04-30'
+                AND json_extract(payload_json, '$.friend_action.in_learning_session') = 1
+            """)
+            bet_done_r1 = int(cur.fetchone()[0] or 0)
         except Exception:
-            bet_done = 0
+            bet_done_r1 = 0
+        try:
+            # 第2回 (5/9〜): learning_round=2 + ils=1 + done (overshoot 記録あり・公式)
+            cur.execute("""SELECT COUNT(*) FROM decisions
+                WHERE action = 'BET' AND status = 'done'
+                AND learning_round = 2
+                AND json_extract(payload_json, '$.friend_action.in_learning_session') = 1
+            """)
+            bet_done_r2 = int(cur.fetchone()[0] or 0)
+        except Exception:
+            bet_done_r2 = 0
+        bet_done = bet_done_r1 + bet_done_r2
         try:
             cur.execute("SELECT COUNT(*) FROM decisions WHERE action = 'BET' AND status = 'error'")
             bet_error = int(cur.fetchone()[0] or 0)
         except Exception:
             bet_error = 0
+        try:
+            # LOOK 第1回: 4/30〜5/8 (日付ベース)
+            cur.execute("""SELECT COUNT(*) FROM decisions
+                WHERE action = 'LOOK'
+                AND (learning_round = 1 OR learning_round IS NULL)
+                AND DATE(received_at) >= '2026-04-30'
+            """)
+            look_done_r1 = int(cur.fetchone()[0] or 0)
+        except Exception:
+            look_done_r1 = 0
+        try:
+            # LOOK 第2回: learning_round=2 (ils + overshoot 記録あり)
+            cur.execute("""SELECT COUNT(*) FROM decisions
+                WHERE action = 'LOOK'
+                AND learning_round = 2
+            """)
+            look_done_r2 = int(cur.fetchone()[0] or 0)
+        except Exception:
+            look_done_r2 = 0
+        look_done = look_done_r1 + look_done_r2
+        samples_done = bet_done + look_done
         return {
             "counts": counts,
             "last_received_at": last_at,
-            "training": {"bet_goal": 5000, "bets_total": bet_total, "bets_done": bet_done, "bets_error": bet_error},
+            "training": {
+                "bet_goal": 5000,
+                "bets_total": bet_total,
+                "bets_done": bet_done,
+                "bets_done_r1": bet_done_r1,
+                "bets_done_r2": bet_done_r2,
+                "bets_error": bet_error,
+                "looks_done": look_done,
+                "looks_done_r1": look_done_r1,
+                "looks_done_r2": look_done_r2,
+                "samples_done": samples_done,
+            },
         }
     finally:
         conn.close()

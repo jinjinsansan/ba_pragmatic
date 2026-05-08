@@ -643,6 +643,8 @@ function _learnSessionCheck(){
   if(didBet) return; // BETしたラウンドはLOOK不要
   // BETしなかった → 自動LOOKを記録
   const did = 'look_auto_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+  const _autoSeqExec = _state.executors.find(e=>e.seq && e.bettable) || _state.executors.find(e=>e.seq);
+  const _autoSeqState = (_autoSeqExec && _autoSeqExec.seq) || {};
   const payload = {
     decision_id: did,
     provider: document.getElementById('providerSel').value,
@@ -650,7 +652,12 @@ function _learnSessionCheck(){
     table_name: selected.table_name,
     qpid_table_id: String(selected.qpid_table_id||''),
     target_executor_id: '',
-    friend_action: { action:'LOOK', side:'', amount:0, note:'auto' },
+    friend_action: {
+      action:'LOOK', side:'', amount:0, note:'auto',
+      in_learning_session:true,
+      overshoot: _autoSeqState.overshoot != null ? Number(_autoSeqState.overshoot) : null,
+      unit_idx: _autoSeqState.unit_idx != null ? Number(_autoSeqState.unit_idx) : null,
+    },
     snapshot: prevSnap || {},
     game_id: prevGameId || '',
   };
@@ -794,9 +801,10 @@ function renderStatsBar(){
     pnlEl.textContent = '-';
     pnlTile.className = 'stat-tile';
   }
-  // 学習進捗
-  const bets = _state.decisions.done.concat(_state.decisions.error).filter(x=>{const fa=x.friend_action||{};if(String(fa.action||'').toUpperCase()!=='BET') return false;if(fa.in_learning_session===false||fa.in_learning_session===0) return false;return true;});
-  document.getElementById('sbLearn').textContent = `${bets.length} / 5000`;
+  // 学習進捗 (DB から直接取得: BET(4/30+/done/ils=1) + LOOK(4/30+))
+  const _training = (_state.stats && _state.stats.db && _state.stats.db.training) || {};
+  const _samples = _training.samples_done != null ? _training.samples_done : '-';
+  document.getElementById('sbLearn').textContent = `${_samples} / 5000`;
   // 勝率
   const wr = computeWinrate(_state.decisions.done);
   document.getElementById('sbWin').textContent = wr.bet>0 ? `${wr.wr}% (${wr.win}/${wr.bet})` : '-';
@@ -1046,7 +1054,7 @@ function renderExecutorSelect(){
 function renderLearning(){
   const done = _state.decisions.done||[];
   const err = _state.decisions.error||[];
-  let betCount=0, missing=0;
+  let missing=0;
   const recent=[];
   const cutoff24 = Date.now() - 24*3600*1000;
   let last24 = 0;
@@ -1055,7 +1063,6 @@ function renderLearning(){
     const fa = d.friend_action||{};
     if(String(fa.action||'').toUpperCase()!=='BET') continue;
     if(fa.in_learning_session===false||fa.in_learning_session===0) continue;
-    betCount++;
     const rcv = Date.parse(d.received_at||'') || 0;
     if(rcv >= cutoff24) last24++;
     const res = d.result||{};
@@ -1063,6 +1070,9 @@ function renderLearning(){
     if(!hasConfirmed && d.status==='done') missing++;
     if(recent.length < 40){ recent.push({d, fa, res}); }
   }
+  // DB 直接値を使用 (BET 4/30+/done/ils=1 + LOOK 4/30+)
+  const _tr = (_state.stats && _state.stats.db && _state.stats.db.training) || {};
+  const betCount = _tr.samples_done != null ? _tr.samples_done : 0;
   const target=5000;
   const pct = Math.min(100, betCount/target*100);
   document.getElementById('progressText').textContent = `${betCount} / ${target} (${pct.toFixed(1)}%)`;
@@ -1439,6 +1449,11 @@ function sendDecision(action, side){
   const note=document.getElementById('noteBox').value||'';
   persistState();
   const did=decisionId();
+  // 送信時点の NEWSEQ 状態を記録 (負け越し個数による予想フェーズ分類に使用)
+  const _seqExec = _state.executors.find(e=>e.executor_id===target_executor_id && e.seq)
+    || _state.executors.find(e=>e.seq && e.bettable)
+    || _state.executors.find(e=>e.seq);
+  const _seqState = (_seqExec && _seqExec.seq) || {};
   const payload = {
     decision_id:did, provider,
     table_id:selected.table_id, table_name:selected.table_name,
@@ -1446,7 +1461,12 @@ function sendDecision(action, side){
     // unique key として使って「バカラ 1 と バカラ 10 の取り違え」等の誤爆を根絶する.
     qpid_table_id:String(selected.qpid_table_id||''),
     target_executor_id,
-    friend_action:{action, side:side||'', amount:0, note, in_learning_session:_learnSession.active},
+    friend_action:{
+      action, side:side||'', amount:0, note,
+      in_learning_session:_learnSession.active,
+      overshoot: _seqState.overshoot != null ? Number(_seqState.overshoot) : null,
+      unit_idx: _seqState.unit_idx != null ? Number(_seqState.unit_idx) : null,
+    },
   };
   const actJa = {LOOK:'様子見','BET':'BET','SWITCH_TABLE':'テーブル移動'}[action]||action;
 
