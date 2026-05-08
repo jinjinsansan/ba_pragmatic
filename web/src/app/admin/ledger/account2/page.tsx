@@ -69,6 +69,7 @@ export default async function Account2Page({
             <Link href={`/admin/ledger/account1?investor=${investorId}`} className="text-text-muted hover:text-text">1つめ口座</Link>
             <span className="text-amber-400 font-semibold">💰 2つめ口座</span>
             <Link href={`/admin/ledger/expenses?investor=${investorId}`} className="text-text-muted hover:text-text">経費出金</Link>
+            <Link href={`/admin/ledger/expense-breakdown?investor=${investorId}`} className="text-text-muted hover:text-text">経費内訳</Link>
           </div>
         </div>
       </nav>

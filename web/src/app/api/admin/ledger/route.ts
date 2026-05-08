@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json()
   const { table, action, payload, id } = body as {
-    table: 'account1' | 'account2' | 'expense' | 'rule'
+    table: 'account1' | 'account2' | 'expense' | 'rule' | 'company_breakdown'
     action: 'upsert' | 'delete'
     payload?: any
     id?: string
@@ -40,6 +40,7 @@ export async function POST(req: NextRequest) {
     account2: 'ledger_account2_daily',
     expense: 'ledger_expense_withdrawals',
     rule: 'ledger_distribution_rules',
+    company_breakdown: 'ledger_company_expense_breakdown',
   } as const
   const tableName = tableMap[table]
   if (!tableName) return NextResponse.json({ error: 'Unknown table' }, { status: 400 })
@@ -104,6 +105,17 @@ export async function POST(req: NextRequest) {
           effective_to: payload.effective_to ?? null,
           notes: payload.notes ?? null,
         }
+        break
+      case 'company_breakdown':
+        row = {
+          investor_id: payload.investor_id,
+          expense_date: payload.expense_date,
+          category: payload.category,
+          recipient: payload.recipient ?? null,
+          amount: Number(payload.amount),
+          notes: payload.notes ?? null,
+        }
+        if (payload.id) row.id = payload.id
         break
     }
 
