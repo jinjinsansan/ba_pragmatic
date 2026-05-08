@@ -334,7 +334,7 @@ body.bet-open .big-btn.player::after,body.bet-open .big-btn.banker::after,body.b
 <div class="stats-bar">
   <div class="stat-tile accent"><div class="sl">稼働中 GUI</div><div class="sv" id="sbGuis">-</div></div>
   <div class="stat-tile"><div class="sl">本日 PnL 合計</div><div class="sv" id="sbPnl">-</div></div>
-  <div class="stat-tile"><div class="sl">AI 学習</div><div class="sv" id="sbLearn">- / 5000</div></div>
+  <div class="stat-tile"><div class="sl">AI 学習 R2</div><div class="sv" id="sbLearn">- / 5000</div></div>
   <div class="stat-tile"><div class="sl">勝率</div><div class="sv" id="sbWin">-</div></div>
   <div class="stat-tile"><div class="sl">最終操作</div><div class="sv" id="sbLast">-</div></div>
   <div class="stat-tile"><div class="sl">選択テーブル</div><div class="sv" id="sbTable">未選択</div></div>
@@ -374,19 +374,24 @@ body.bet-open .big-btn.player::after,body.bet-open .big-btn.banker::after,body.b
 
     <!-- ======= 折りたたみ: AI 学習進捗 ======= -->
     <details>
-      <summary>AI 学習データ進捗 — 目標 5000 BET</summary>
+      <summary>AI 学習データ進捗 — 第2回 / 目標 5000 サンプル</summary>
       <div class="content">
         <div class="glass-card">
           <div class="progress-wrap">
             <div>
               <div style="display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:12px;color:var(--text-muted);margin-bottom:6px">
-                <span>AI 学習サンプル数</span>
+                <span>第2回 サンプル数 (BET + LOOK)</span>
                 <span id="progressText">0 / 5000 (0.0%)</span>
               </div>
               <div class="progressbar"><div class="fill" id="progressFill" style="width:0%"></div></div>
             </div>
+            <div><div class="label">R2 BET</div><div id="r2BetCount" class="value small">-</div></div>
+            <div><div class="label">R2 LOOK</div><div id="r2LookCount" class="value small">-</div></div>
             <div><div class="label">結果未記録</div><div id="missingCount" class="value small">-</div></div>
             <div><div class="label">直近24h</div><div id="last24h" class="value small accent">-</div></div>
+          </div>
+          <div style="margin-top:10px;font-family:var(--font-mono);font-size:11px;color:var(--text-dim)">
+            第1回累計: <span id="r1Samples">-</span> 件 (overshoot 未記録のため参考値)
           </div>
           <div class="recent-bets" id="recentBets"></div>
         </div>
@@ -801,7 +806,7 @@ function renderStatsBar(){
     pnlEl.textContent = '-';
     pnlTile.className = 'stat-tile';
   }
-  // 学習進捗 (DB から直接取得: BET(4/30+/done/ils=1) + LOOK(4/30+))
+  // 学習進捗 — samples_done は第2回 (R2) のみの公式値
   const _training = (_state.stats && _state.stats.db && _state.stats.db.training) || {};
   const _samples = _training.samples_done != null ? _training.samples_done : '-';
   document.getElementById('sbLearn').textContent = `${_samples} / 5000`;
@@ -1070,13 +1075,19 @@ function renderLearning(){
     if(!hasConfirmed && d.status==='done') missing++;
     if(recent.length < 40){ recent.push({d, fa, res}); }
   }
-  // DB 直接値を使用 (BET 4/30+/done/ils=1 + LOOK 4/30+)
+  // DB 直接値を使用 — samples_done = 第2回のみ (公式)
   const _tr = (_state.stats && _state.stats.db && _state.stats.db.training) || {};
-  const betCount = _tr.samples_done != null ? _tr.samples_done : 0;
+  const sampleCount = _tr.samples_done != null ? _tr.samples_done : 0;
   const target=5000;
-  const pct = Math.min(100, betCount/target*100);
-  document.getElementById('progressText').textContent = `${betCount} / ${target} (${pct.toFixed(1)}%)`;
+  const pct = Math.min(100, sampleCount/target*100);
+  document.getElementById('progressText').textContent = `${sampleCount} / ${target} (${pct.toFixed(1)}%)`;
   document.getElementById('progressFill').style.width = pct.toFixed(1)+'%';
+  const r2bEl = document.getElementById('r2BetCount');
+  if(r2bEl) r2bEl.textContent = String(_tr.bets_done_r2 != null ? _tr.bets_done_r2 : '-');
+  const r2lEl = document.getElementById('r2LookCount');
+  if(r2lEl) r2lEl.textContent = String(_tr.looks_done_r2 != null ? _tr.looks_done_r2 : '-');
+  const r1sEl = document.getElementById('r1Samples');
+  if(r1sEl) r1sEl.textContent = String(_tr.samples_done_r1 != null ? _tr.samples_done_r1 : '-');
   const mEl = document.getElementById('missingCount');
   mEl.textContent = String(missing);
   mEl.className = 'value small '+(missing>0?'lose':'win');

@@ -430,7 +430,7 @@ def get_stats() -> dict[str, Any]:
             bet_done_r2 = int(cur.fetchone()[0] or 0)
         except Exception:
             bet_done_r2 = 0
-        bet_done = bet_done_r1 + bet_done_r2
+        bet_done = bet_done_r1 + bet_done_r2  # 合算 (後方互換)
         try:
             cur.execute("SELECT COUNT(*) FROM decisions WHERE action = 'BET' AND status = 'error'")
             bet_error = int(cur.fetchone()[0] or 0)
@@ -455,8 +455,11 @@ def get_stats() -> dict[str, Any]:
             look_done_r2 = int(cur.fetchone()[0] or 0)
         except Exception:
             look_done_r2 = 0
-        look_done = look_done_r1 + look_done_r2
-        samples_done = bet_done + look_done
+        look_done = look_done_r1 + look_done_r2  # 合算 (後方互換)
+        # 公式進捗 = 第2回のみ (overshoot 記録あり)
+        samples_done_r2 = bet_done_r2 + look_done_r2
+        samples_done_r1 = bet_done_r1 + look_done_r1  # 参考値
+        samples_done = samples_done_r2  # design doc §7 準拠: R2 のみ
         return {
             "counts": counts,
             "last_received_at": last_at,
@@ -471,6 +474,8 @@ def get_stats() -> dict[str, Any]:
                 "looks_done_r1": look_done_r1,
                 "looks_done_r2": look_done_r2,
                 "samples_done": samples_done,
+                "samples_done_r1": samples_done_r1,
+                "samples_done_r2": samples_done_r2,
             },
         }
     finally:
