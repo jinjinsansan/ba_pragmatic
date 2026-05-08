@@ -916,8 +916,27 @@ function renderExecutors(){
     wrap.innerHTML='<div class="glass-card value small" style="color:var(--text-muted)">接続中の受け子 GUI はありません。</div>';
     return;
   }
-  const selExecId = document.getElementById('execSel').value||'';
+  // フィルタ 1: 同一 email は最新 updated_at のみ採用 (重複 GUI を除外).
+  const _byEmail = {};
   for(const e of _state.executors){
+    const em = String(e.user_email||'').trim().toLowerCase();
+    const key = em || ('__noemail__:'+e.executor_id);
+    const prev = _byEmail[key];
+    const eAge = ageSecFromIso(e.updated_at);
+    const pAge = prev ? ageSecFromIso(prev.updated_at) : Infinity;
+    if(!prev || eAge < pAge) _byEmail[key] = e;
+  }
+  // フィルタ 2: offline (ageSec>=60 or status='stopped') は非表示.
+  const _visible = Object.values(_byEmail).filter(e=>{
+    const stopped = String(e.status||'').toLowerCase() === 'stopped';
+    return !stopped && ageSecFromIso(e.updated_at) < 60;
+  });
+  if(_visible.length===0){
+    wrap.innerHTML='<div class="glass-card value small" style="color:var(--text-muted)">オンラインの受け子 GUI はありません。</div>';
+    return;
+  }
+  const selExecId = document.getElementById('execSel').value||'';
+  for(const e of _visible){
     const ageSec = ageSecFromIso(e.updated_at);
     // status='stopped' は即オフライン扱い (executor の明示的停止シグナル).
     const explicitlyStopped = String(e.status||'').toLowerCase() === 'stopped';
