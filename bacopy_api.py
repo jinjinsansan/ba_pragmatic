@@ -408,14 +408,7 @@ class _Handler(BaseHTTPRequestHandler):
             return _send_html(self, 200, _master_app_page(str(s.get("csrf") or "")))
 
         if u.path == "/master/ledger":
-            s = _get_session(self.headers)
-            if not s:
-                return _redirect(self, "/master/login")
-            try:
-                from bacopy_master_ledger_ui import render_master_ledger_page
-                return _send_html(self, 200, render_master_ledger_page(str(s.get("csrf") or "")))
-            except Exception as e:
-                return _send_html(self, 500, f"<pre>ledger render error: {e}</pre>")
+            return _redirect(self, "https://www.bafather.uk/admin/ledger")
 
         if u.path == "/api/health":
             return _send_json(self, 200, {"ok": True})
