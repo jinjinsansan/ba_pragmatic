@@ -80,12 +80,12 @@ INSERT INTO ledger_expense_withdrawals (
   '00000000-0000-0000-0000-00000000ex01',
   '00000000-0000-0000-0000-00000000000h', '2026-05-06', '別+2つめ',
   2100.00, 5919.00,
-  1000.00,  -- J 取り分
+  2100.00,  -- J 取り分
   2000.00,  -- K
   919.00,   -- Kの兄
   2000.00,  -- 会社配当
-  2100.00,  -- AI開発費等 (= J が受取するが、概念上 J 取り分とは別枠)
-  '5/6 の経費出金。別チャージから $2,100、2 つめ口座から $5,919、計 $8,019。J が実際受け取った合計は $1,000 (取り分) + $2,100 (AI 開発費) = $3,100'
+  1000.00,  -- AI開発費等 (運用益外例外)
+  '5/6 の経費出金。別チャージから $2,100、2 つめ口座から $5,919、計 $8,019。J 取り分 $2,100 / K $2,000 / Kの兄 $919 / 会社配当 $2,000 / AI開発費 $1,000 (運用益外例外)'
 )
 ON CONFLICT (id) DO UPDATE SET
   withdraw_from_reserve = EXCLUDED.withdraw_from_reserve,
@@ -109,10 +109,13 @@ ON CONFLICT (id) DO UPDATE SET
 --   remaining_charge_refund       = $9,536.00
 --   account2_balance              = $50,000.00
 --   reserve_balance               = $0.00
---   j_total                       = $1,000.00 (取り分のみ。AI 開発費は別計上)
+--   j_total                       = $2,100.00 (取り分のみ。AI 開発費は別計上)
 --   k_total                       = $2,000.00
 --   k_brother_total               = $919.00
 --   company_total                 = $2,000.00
---   ai_dev_total                  = $2,100.00
+--   ai_dev_total                  = $1,000.00 (運用益外例外)
 --   expense_total                 = $8,019.00
+--   j_share_in_account1           = $2,384.00 (1つめ口座 J 累計取り分、未出金)
+--   k_share_in_account1           = $3,576.00 (1つめ口座 K 累計取り分、未出金)
+--   company_share_in_account1     = $3,576.00 (1つめ口座 会社 累計取り分、未出金)
 SELECT * FROM ledger_investor_summary WHERE investor_id = '00000000-0000-0000-0000-00000000000h';

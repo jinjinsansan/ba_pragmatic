@@ -186,7 +186,17 @@ SELECT
   COALESCE(exp.k_total, 0) AS k_total,
   COALESCE(exp.k_brother_total, 0) AS k_brother_total,
   COALESCE(exp.company_total, 0) AS company_total,
-  COALESCE(exp.ai_dev_total, 0) AS ai_dev_total
+  COALESCE(exp.ai_dev_total, 0) AS ai_dev_total,
+  -- 1 つめ口座 累計取り分 (1 つめ口座の利益 × 配分率)
+  COALESCE(a1.j_share_total, 0) AS j_share_in_account1,
+  COALESCE(a1.k_share_total, 0) AS k_share_in_account1,
+  COALESCE(a1.company_share_total, 0) AS company_share_in_account1,
+  -- 1 つめ口座のみで計算した 未出金取り分 (= 累計取り分 - 既出金)
+  -- (経費出金は物理は account2/reserve から出るが、概念上 1 つめ取り分から差し引く)
+  -- (AI 開発費は運用益外例外で 1 つめ取り分とは無関係なので、ここでは差し引かない)
+  COALESCE(a1.j_share_total, 0) - COALESCE(exp.j_total, 0) AS j_unpaid_in_account1,
+  COALESCE(a1.k_share_total, 0) - COALESCE(exp.k_total, 0) - COALESCE(exp.k_brother_total, 0) AS k_unpaid_in_account1,
+  COALESCE(a1.company_share_total, 0) - COALESCE(exp.company_total, 0) AS company_unpaid_in_account1
 FROM ledger_investors i
 LEFT JOIN ledger_reserve_funds rf ON rf.investor_id = i.id
 LEFT JOIN a1 ON a1.investor_id = i.id

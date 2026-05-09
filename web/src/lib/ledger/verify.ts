@@ -55,11 +55,11 @@ const expenseEntries: ExpenseWithdrawal[] = [
     sourceLabel: '別+2つめ',
     withdrawFromReserve: 2100,
     withdrawFromAccount2: 5919,
-    jReceived: 1000,
+    jReceived: 2100,
     kReceived: 2000,
     kBrotherReceived: 919,
     companyReceived: 2000,
-    aiDevExpense: 2100,
+    aiDevExpense: 1000,
   },
 ];
 
@@ -92,12 +92,20 @@ const expected: Array<[string, number]> = [
   ['所在合計 (検算)',               12636.00],
   ['2 つめ口座 現在残高',           50000.00],
   ['別チャージ残高',                0.00],
-  ['J 受取累計',                    1000.00],
+  ['J 受取累計',                    2100.00],
   ['K 受取累計',                    2000.00],
   ['Kの兄 受取累計',                919.00],
   ['会社 受取累計',                 2000.00],
-  ['AI開発費等',                    2100.00],
+  ['AI開発費等',                    1000.00],
   ['出金合計 (全配布)',             8019.00],
+  // 1 つめ口座のみで計算した 未出金取り分 (累計取り分 − 既出金)
+  ['J 1つめ累計取り分',             2384.00],
+  ['J 1つめ未出金',                  284.00],     // 2384 - 2100
+  ['K 1つめ累計取り分',             3576.00],
+  ['K 1つめ未出金',                  657.00],     // 3576 - 2000 - 919
+  ['会社 1つめ累計取り分',          3576.00],
+  ['会社 1つめ未出金',              1576.00],     // 3576 - 2000
+  ['1つめ未出金合計',               2517.00],     // 284 + 657 + 1576
 ];
 
 const actual: Record<string, number> = {
@@ -117,6 +125,15 @@ const actual: Record<string, number> = {
   '会社 受取累計':                  opSummary.companyTotal,
   'AI開発費等':                     opSummary.aiDevTotal,
   '出金合計 (全配布)':              expenseComputed.reduce((a, e) => a + e.totalWithdrawal, 0),
+  // 1 つめ口座のみで計算した 未出金取り分
+  'J 1つめ累計取り分':              account1Computed.reduce((a, e) => a + e.jShare, 0),
+  'J 1つめ未出金':                   account1Computed.reduce((a, e) => a + e.jShare, 0) - opSummary.jTotal,
+  'K 1つめ累計取り分':              account1Computed.reduce((a, e) => a + e.kShare, 0),
+  'K 1つめ未出金':                   account1Computed.reduce((a, e) => a + e.kShare, 0) - opSummary.kTotal - opSummary.kBrotherTotal,
+  '会社 1つめ累計取り分':           account1Computed.reduce((a, e) => a + e.companyShare, 0),
+  '会社 1つめ未出金':               account1Computed.reduce((a, e) => a + e.companyShare, 0) - opSummary.companyTotal,
+  '1つめ未出金合計':                (account1Computed.reduce((a, e) => a + e.jShare + e.kShare + e.companyShare, 0))
+                                      - opSummary.jTotal - opSummary.kTotal - opSummary.kBrotherTotal - opSummary.companyTotal,
 };
 
 // ---- 検証 ----

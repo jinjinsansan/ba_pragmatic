@@ -5408,14 +5408,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             last_error = f"recovering: {reason}"
             heartbeat("error")
 
+            # state をクリアする前に qpid を退避 (クリア後に読むと常に "" になるバグ修正)
+            _recover_qpid = str(state.table_id or "").strip() if state else ""
+
             try:
                 _clear_pragmatic_session_state()
             except Exception:
                 pass
 
             try:
-                # recovery 時も qpid を渡せば文字列マッチ不要で確実.
-                _recover_qpid = str(state.table_id or "").strip() if state else ""
                 _join_table(
                     page,
                     table_substr=target,
