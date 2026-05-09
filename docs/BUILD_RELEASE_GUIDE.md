@@ -185,12 +185,12 @@ npm run build:installer
 - メールアドレスは後から変更できない（暗号鍵の派生材料なのでリビルド必須）
 - 解決策: `user01@beta.bacopy.local` ... `user05@beta.bacopy.local` という **意味のないダミー識別子** で先に 5 本ビルドして、ユーザー確定時に「user01 の EXE を田中さんに渡す」という運用
 
-### 3.3 ビルド済み slot（2026-04-23 時点）
+### 3.3 ビルド済み slot（2026-05-10 更新）
 
 | Slot | Email (ダミー) | 割当 Port | 配置場所 |
 |---|---|---|---|
 | user01 | user01@beta.bacopy.local | 2234 | `C:\bacopy\dist_per_user\user01\BACOPYRECEIVER_user01_Setup_0.1.0.exe` |
-| user02 | user02@beta.bacopy.local | 2277 | `C:\bacopy\dist_per_user\user02\BACOPYRECEIVER_user02_Setup_0.1.0.exe` |
+| user02 | user02@beta.bacopy.local | 2277 | `C:\bacopy\dist_per_user\user02\BACOPYRECEIVER_user02_Setup_0.1.0.exe` ※2026-05-10 リビルド済み |
 | user03 | user03@beta.bacopy.local | 2255 | `C:\bacopy\dist_per_user\user03\BACOPYRECEIVER_user03_Setup_0.1.0.exe` |
 | user04 | user04@beta.bacopy.local | 2291 | `C:\bacopy\dist_per_user\user04\BACOPYRECEIVER_user04_Setup_0.1.0.exe` |
 | user05 | user05@beta.bacopy.local | 2241 | `C:\bacopy\dist_per_user\user05\BACOPYRECEIVER_user05_Setup_0.1.0.exe` |
@@ -237,20 +237,48 @@ C:\bacopy\dist_per_user\
 
 | Slot | Port | 配布先（本名） | 配布先メール（bafather 登録） | 配布日 | 状態 | 備考 |
 |---|---|---|---|---|---|---|
-| user01 | 2234 | 田中 太郎 | tanaka@example.com | 2026-04-25 | 稼働中 | |
-| user02 | 2277 | 山田 花子 | yamada@example.com | 2026-04-26 | 未配布 | |
+| user01 | 2234 | - (warakaji/bafather 専用) | - | - | 稼働中 | bafather (162.43.83.54) で稼働 |
+| user02 | 2277 | 橋本 (hashimoto) | - | 2026-05-10 | 稼働中 | 新PC: win-2026-05-090 (16GB RAM) 2026-05-10 移行 |
 | user03 | 2255 | - | - | - | 在庫 | |
 | user04 | 2291 | - | - | - | 在庫 | |
 | user05 | 2241 | - | - | - | 在庫 | |
 
-### 4.2 遠隔サポート（admin から特定ユーザー PC に SSH 接続）
+### 4.2 遠隔サポート（admin から各 PC に SSH 接続）
 
 ```bash
-# 田中さん (slot=user01, port=2234) の PC にログイン
-ssh -i support_keys/admin_key -J laplace@210.131.215.116 clientuser@localhost -p 2234
+# warakaji/bafather (slot=user01相当, port=2252 or 直接IP)
+ssh -i ~/.ssh/laplace_vps Administrator@162.43.83.54
+
+# hashimoto 新PC (slot=user02, port=2277) via VPS tunnel
+ssh -i support_keys/admin_key \
+  -o ProxyCommand="ssh -i ~/.ssh/laplace_vps -W %h:%p root@210.131.215.116" \
+  -o StrictHostKeyChecking=no -p 2277 Administrator@localhost
 ```
-- admin_key は `support_keys/admin_key`（ローカル側に保管）
-- ユーザー PC 側の sshd セットアップは installer 付属の `setup-sshd.ps1` が担当（ユーザーが初回実行）
+
+**WSL からの接続コマンド（/tmp/admin_key を使う場合）:**
+```bash
+ssh -i /tmp/admin_key \
+  -o ProxyCommand="ssh -i /root/.ssh/laplace_vps -W %h:%p root@210.131.215.116" \
+  -o StrictHostKeyChecking=no -p 2277 Administrator@localhost
+```
+
+- admin_key は `support_keys/admin_key`（ローカル側に保管）、WSL では `/tmp/admin_key`
+- ユーザー PC 側の sshd: installer 実行後に `Start-Service sshd` + `Set-Service sshd -StartupType Automatic` が必要
+- `C:\ProgramData\ssh\administrators_authorized_keys` に admin_key.pub を追加し ACL を設定すること（§4.2.1 参照）
+
+#### 4.2.1 新規 PC の SSH セットアップ手順（PC 側 PowerShell）
+```powershell
+# 1. sshd 起動・自動起動設定
+Start-Service sshd
+Set-Service -Name sshd -StartupType Automatic
+
+# 2. admin 公開鍵を登録
+$key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmxcAURb96MSBIn4iFnUdFWb9DibiX6D2oIVZgbckW1 bacopy-admin"
+New-Item -ItemType Directory -Force -Path "C:\ProgramData\ssh"
+Add-Content -Path "C:\ProgramData\ssh\administrators_authorized_keys" -Value $key
+icacls "C:\ProgramData\ssh\administrators_authorized_keys" /inheritance:r /grant "SYSTEM:(F)" "BUILTIN\Administrators:(F)"
+Restart-Service sshd
+```
 
 ### 4.3 ユーザーを入れ替える場合
 
@@ -266,9 +294,31 @@ ssh -i support_keys/admin_key -J laplace@210.131.215.116 clientuser@localhost -p
 
 ---
 
-## 5. 本番 Desktop Cloud 自身の運用
+## 5. 稼働 PC 一覧（2026-05-10 更新）
 
-### 5.1 現状（2026-04-23）
+### 5.0 稼働中 PC サマリー
+
+| PC 名 | 役割 | IP / 接続方法 | slot | VPS port | ホスト名 | RAM | 備考 |
+|---|---|---|---|---|---|---|---|
+| warakaji (bafather) | Master + Executor | SSH: `ssh -i ~/.ssh/laplace_vps Administrator@162.43.83.54` | - | 2252 | - | - | ビルドマシン兼稼働PC |
+| hashimoto (新PC) | Executor | VPS tunnel port 2277 | user02 | 2277 | win-2026-05-090 | 16GB | 2026-05-10 移行 |
+
+### 5.0.1 hashimoto PC 移行履歴
+
+| 日付 | 変更内容 |
+|---|---|
+| 2026-04-29 | 旧 hashimoto PC (win-2026-04-290, 8GB RAM) 運用開始 |
+| 2026-05-10 | 橋本さんが 16GB Xserver デスクトップクラウドを新規契約 |
+| 2026-05-10 | user02 インストーラーをリビルド（ロビー stuck バグ修正 24e0a6b 含む）して新 PC にインストール |
+| 2026-05-10 | Supabase セッション・Stake cookies・seq7_state.json を旧 PC から移行 |
+| 2026-05-10 | sshd セットアップ・admin_key 登録完了。SSH 接続確認済み (win-2026-05-090) |
+| 2026-05-10 | 旧 PC (win-2026-04-290) は BACOPYRECEIVER を停止・廃止 |
+
+---
+
+## 6. 本番 Desktop Cloud 自身の運用
+
+### 6.1 現状（2026-04-23）
 
 | 項目 | 値 |
 |---|---|
@@ -309,9 +359,9 @@ ssh -i support_keys/admin_key -J laplace@210.131.215.116 clientuser@localhost -p
 
 ---
 
-## 6. ビルドが壊れたとき（トラブルシュート）
+## 7. ビルドが壊れたとき（トラブルシュート）
 
-### 6.1 engine.exe が動かない（camoufox ImportError）
+### 7.1 engine.exe が動かない（camoufox ImportError）
 
 症状: `bacopy_engine.exe executor-pragmatic --help` で `camoufox is required to run this executor. ... ModuleNotFoundError`
 
@@ -319,7 +369,7 @@ ssh -i support_keys/admin_key -J laplace@210.131.215.116 clientuser@localhost -p
 
 対処: `requirements.txt` に `camoufox>=0.4.0`, `browserforge>=1.2.0` 入っているか確認 → `pip install -r requirements.txt` 再実行 → `build_bacopy_engine.ps1` 再実行
 
-### 6.2 配布先 PC で Camoufox Firefox が見つからない
+### 7.2 配布先 PC で Camoufox Firefox が見つからない
 
 症状: BET START 後 Camoufox 起動に失敗
 
@@ -330,7 +380,7 @@ ssh -i support_keys/admin_key -J laplace@210.131.215.116 clientuser@localhost -p
 2. Electron main.js の `ensureCamoufoxAssets()` が呼ばれているか（起動ログに `[camoufox] restoring bundled Firefox -> ...` が出るはず）
 3. 手動実行: `xcopy <install>\resources\camoufox_firefox\* %LOCALAPPDATA%\camoufox\ /s /e /h /y`
 
-### 6.3 Support tunnel が接続できない
+### 7.3 Support tunnel が接続できない
 
 症状: ログに `[support] ... Permission denied (publickey)` or `port NNNN not listening`
 
@@ -350,14 +400,14 @@ ssh -i support_keys/admin_key -J laplace@210.131.215.116 clientuser@localhost -p
    ```
 4. ユーザーが別の EXE（他人の slot）を使ってしまっている → 台帳確認
 
-### 6.4 NSIS ビルドで `python3` コマンドが見つからない
+### 7.4 NSIS ビルドで `python3` コマンドが見つからない
 
 症状: `npm run build:installer` で `'python3' is not recognized`
 
 対処: `copytrade_gui/package.json` の scripts が `python` を呼んでいるか確認（`python3` は Windows にない）。  
 `.gitignore` に入っていないはずなのでコミット済みの最新版が Desktop Cloud に同期されていることを確認。
 
-### 6.5 electron-builder の署名警告（無害）
+### 7.5 electron-builder の署名警告（無害）
 
 症状: ビルド中に `deprecated field fields=["signingHashAlgorithms","publisherName"]` or `no signing info identified, signing is skipped`
 
@@ -366,7 +416,7 @@ ssh -i support_keys/admin_key -J laplace@210.131.215.116 clientuser@localhost -p
 
 ---
 
-## 7. ファイル & スクリプト早見表
+## 8. ファイル & スクリプト早見表
 
 ### 7.1 ローカル（WSL）/ Desktop Cloud 共通
 
@@ -404,7 +454,7 @@ ssh -i support_keys/admin_key -J laplace@210.131.215.116 clientuser@localhost -p
 
 ---
 
-## 8. コミット履歴（本 v0.1.0 セッション関連）
+## 9. コミット履歴（本 v0.1.0 セッション関連）
 
 | SHA | 内容 |
 |---|---|
@@ -417,7 +467,7 @@ ssh -i support_keys/admin_key -J laplace@210.131.215.116 clientuser@localhost -p
 
 ---
 
-## 9. よくある依頼パターンと対応
+## 10. よくある依頼パターンと対応
 
 ### 「GUI に新機能を追加したい」
 
@@ -458,7 +508,7 @@ powershell -ExecutionPolicy Bypass -File C:\bacopy\scripts\build_per_user.ps1 -C
 
 ---
 
-## 10. 連絡先 & 参照ドキュメント
+## 11. 連絡先 & 参照ドキュメント
 
 - 本 repo: `/mnt/e/dev/Cusor/bacopy/`（WSL）/ `C:\bacopy\`（Desktop Cloud）
 - 親 repo (infrastructure notes): `/mnt/e/dev/Cusor/ba/INFRA.md`
