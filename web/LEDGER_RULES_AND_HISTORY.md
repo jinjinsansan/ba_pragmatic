@@ -110,17 +110,29 @@ OPERATOR.残利益 と UNPAID 合計 の差は **永久固定 $2,100**:
 - 2つめ純利益: $Y
 - (補正期間中なら) Hさん再入金: $X (= 1つめと同額)
 - (通常運用なら) Hさん再入金: 0.80 × X
+
+物理 USDT (現在残高):
+- チャージ資金口座: $X
+- 1 つめの口座: $X
+- 2 つめの口座: $X
 ```
 
 ### 6.2 Claude が行う処理
 
-1. **ledger SQL INSERT**:
+1. **ledger SQL INSERT** (1つめ + 2つめ daily):
    ```sql
    INSERT INTO ledger_account1_daily (..., daily_profit, investor_recharge) VALUES (..., X, X 補正期間または 0.80×X 通常);
    INSERT INTO ledger_account2_daily (..., daily_profit) VALUES (..., Y);
    ```
 
-2. **bafather billing.balance 同期**:
+2. **物理 USDT スナップショット UPSERT**:
+   ```sql
+   INSERT INTO ledger_actual_balances (investor_id, snapshot_date, account1_actual, account2_actual, charge_actual)
+   VALUES (...)
+   ON CONFLICT (investor_id, snapshot_date) DO UPDATE SET ...;
+   ```
+
+3. **bafather billing.balance 同期**:
    ```js
    // node + @supabase/supabase-js で
    const newBal = oldBal - (X * 0.80);
@@ -128,7 +140,7 @@ OPERATOR.残利益 と UNPAID 合計 の差は **永久固定 $2,100**:
    ```
    `<hashimoto user_id>` = `ad6fdb57-4459-4a1f-9d03-d266bccede37`
 
-3. **検証 SELECT** で `displayed_charge_balance` と `billing.balance` が一致することを確認
+4. **検証 SELECT** で displayed_charge_balance と billing.balance が一致、physical_diff が許容範囲内 (±$100) であることを確認
 
 ### 6.3 ledger と bafather billing が乖離していたら...
 
@@ -147,6 +159,7 @@ OPERATOR.残利益 と UNPAID 合計 の差は **永久固定 $2,100**:
 - `ledger_company_expense_breakdown` (会社内部留保 内訳, 2026-05-08 追加)
 - `ledger_distribution_rules` (1つめ分配ルール、時系列管理)
 - `ledger_reserve_funds` (別チャージ初期額管理)
+- `ledger_actual_balances` (物理 USDT 日次スナップショット, 2026-05-10 追加)
 
 ### 7.2 view: `ledger_investor_summary`
 
@@ -180,6 +193,7 @@ OPERATOR.残利益 と UNPAID 合計 の差は **永久固定 $2,100**:
 | 2026-05-10 | $2,100 reserve 先払い分を歴史的特例として注記表示 | `db69632` |
 | 2026-05-10 | `investor_recharge` カラム追加 + Hさん補正期間運用開始 | (本コミット) |
 | 2026-05-10 | bafather `billing.balance` 手動同期運用開始 | (運用ルール変更、コード変更なし) |
+| 2026-05-10 | `ledger_actual_balances` 追加 + 物理 USDT 整合性監査パネル | `8bbd5b2` |
 
 ---
 
@@ -207,6 +221,14 @@ operator_net_profit:      $31,624.80
 operator_remaining_profit:$25,705.80    (注: $2,100 歴史的特例で UNPAID 合計と差)
 
 bafather billing.balance: $38,087.20    (= displayed_charge_balance と同値、手動同期)
+
+物理 USDT (5/9 報告):
+  account1_actual:        $50,000.00
+  account2_actual:        $57,828.00
+  charge_actual:          $4,000.00
+  physical_total:         $111,828.00
+  expected_physical_total:$111,693.00
+  physical_diff:          +$135.00     ← ⚠ $100 超 (要原因究明)
 ```
 
 ---
