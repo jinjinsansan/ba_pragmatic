@@ -227,6 +227,16 @@ export default async function AdminLedgerPage() {
                     {Math.abs((parseFloat(s.remaining_in_account2) + parseFloat(s.remaining_charge_refund)) - parseFloat(s.operator_remaining_profit)) > 0.01 && (
                       <div className="mt-2 text-xs text-red-400">⚠ 検算不一致</div>
                     )}
+
+                    {/* 歴史的特例: reserve 先払い分の説明 */}
+                    {parseFloat(s.expense_from_reserve ?? 0) > 0.01 && (
+                      <div className="mt-3 pt-3 border-t border-orange-500/20 text-[11px] text-text-muted leading-relaxed">
+                        <div className="text-amber-300/80 font-semibold mb-1">📌 補足: OPERATOR 残利益 と UNPAID 合計 の差 ({fmt(s.expense_from_reserve)}) について</div>
+                        この差額は 2026-05-06 に AI 開発費 / Kの兄 報酬 等を <span className="text-text">別チャージ (運用者自己資金 $2,100)</span> から立て替えた <strong className="text-text">歴史的特例分</strong>。
+                        今後は <strong className="text-text">1つめ利益 80% を chargeBalance に補充</strong>する仕組みに移行するため、別 reserve から立て替える必要がなくなり、新規発生しません。
+                        この $2,100 は永久固定で、長期的には統合プールが拡大するに従い相対的に無視できる差になります。
+                      </div>
+                    )}
                   </div>
 
                   {/* J/K/会社内部留保 未出金取り分 (1つめ + 2つめ 統合プール) */}
