@@ -50,7 +50,7 @@ export default async function AdminLedgerPage() {
           <div className="flex flex-wrap items-center gap-3 text-xs sm:text-sm">
             <Link href="/admin" className="text-text-muted hover:text-text">管理</Link>
             <Link href="/admin/users" className="text-text-muted hover:text-text">ユーザー</Link>
-            <Link href="/admin/ledger" className="text-text font-semibold">家計簿</Link>
+            <Link href="/admin/ledger" className="text-text font-semibold">資金管理</Link>
             <Link href="/admin/orders" className="text-text-muted hover:text-text">注文</Link>
             <Link href="/admin/tickets" className="text-text-muted hover:text-text">チケット</Link>
           </div>
@@ -59,7 +59,7 @@ export default async function AdminLedgerPage() {
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 sm:py-10">
         <div className="hud-label mb-2">Admin Console</div>
-        <h1 className="text-2xl sm:text-3xl font-black mb-2 font-hud">FX 運用家計簿</h1>
+        <h1 className="text-2xl sm:text-3xl font-black mb-2 font-hud">資金管理</h1>
         <p className="text-text-muted text-sm mb-3">投資家・運用者・会社の資金フローをすべて記録・可視化</p>
 
         {/* 仕様サマリ (折りたたみ) */}
@@ -238,6 +238,50 @@ export default async function AdminLedgerPage() {
                                 想定要因: 未記録の利益、Stake bonus / rakeback、入出金タイミング、入力誤りなど。
                               </div>
                             )}
+                          </>
+                        )
+                      })()}
+                    </div>
+                  )}
+
+                  {/* 整合性チェック (恒等式: 物理 = Hさん元本 + 未出金 + 別チャージ initial − 過剰受取) */}
+                  {(s.actual_snapshot_date || s.physical_total > 0) && (
+                    <div className="rounded-lg p-4 border border-violet-500/30" style={{ background: 'rgba(139,92,246,0.08)' }}>
+                      <div className="text-xs text-violet-400 font-semibold tracking-widest mb-3">INTEGRITY CHECK (整合性恒等式)</div>
+                      {(() => {
+                        const principal = parseFloat(s.total_investment ?? 0)
+                        const unpaid = parseFloat(s.j_unpaid_total ?? 0) + parseFloat(s.k_unpaid_total ?? 0) + parseFloat(s.company_unpaid_total ?? 0)
+                        const reserveInit = parseFloat(s.reserve_initial ?? 0)
+                        const overpaid = parseFloat(s.investor_overpaid ?? 0)
+                        const expected = principal + unpaid + reserveInit - overpaid
+                        const physical = parseFloat(s.physical_total ?? 0)
+                        const diff = physical - expected
+                        const tol = 100
+                        const ok = Math.abs(diff) <= tol
+                        return (
+                          <>
+                            <div className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-sm">
+                              <div className="text-text-muted">Hさん投資元本</div>
+                              <div className="font-mono text-right">{fmt(principal)}</div>
+                              <div className="text-text-muted">+ 未出金合計 (J + K + 会社内部留保)</div>
+                              <div className="font-mono text-right">+{fmt(unpaid)}</div>
+                              <div className="text-text-muted">+ 別チャージ initial (歴史的特例)</div>
+                              <div className="font-mono text-right">+{fmt(reserveInit)}</div>
+                              <div className="text-text-muted">− 過剰受取 (補正残)</div>
+                              <div className="font-mono text-right text-amber-300">−{fmt(overpaid)}</div>
+                              <div className="text-text-muted border-t border-text-muted/20 pt-1 font-semibold">期待値 (= 物理 USDT 合計)</div>
+                              <div className="font-mono text-right border-t border-text-muted/20 pt-1 font-bold">{fmt(expected)}</div>
+                              <div className="text-text-muted">物理 USDT 合計 (報告)</div>
+                              <div className="font-mono text-right">{fmt(physical)}</div>
+                              <div className="text-text-muted border-t border-text-muted/20 pt-1 font-semibold">差</div>
+                              <div className={`font-mono text-right border-t border-text-muted/20 pt-1 font-bold ${ok ? 'text-emerald-300' : 'text-amber-300'}`}>
+                                {ok ? '✓' : '⚠'} {fmt(diff)}
+                              </div>
+                            </div>
+                            <div className="mt-3 text-[10px] text-text-muted leading-relaxed">
+                              恒等式: <span className="text-text-dim font-mono">物理 = 元本 + 未出金 + 別チャージ initial − 過剰受取</span><br/>
+                              補正完了 (過剰受取 $0) 後は <span className="text-text-dim font-mono">物理 = 元本 + 未出金 + $2,100</span> で安定 (許容 ±$100)。
+                            </div>
                           </>
                         )
                       })()}

@@ -32,7 +32,7 @@ export default async function AdminWithdrawalsPage() {
             <Link href="/admin/promos" className="text-text-muted hover:text-text">プロモ</Link>
             <Link href="/admin/tickets" className="text-text-muted hover:text-text">チケット</Link>
             <Link href="/admin/withdrawals" className="text-text font-semibold">出金申請</Link>
-            <Link href="/admin/ledger" className="text-emerald-400 hover:text-emerald-300">📊 家計簿</Link>
+            <Link href="/admin/ledger" className="text-emerald-400 hover:text-emerald-300">📊 資金管理</Link>
           </div>
         </div>
       </nav>

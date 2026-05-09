@@ -33,7 +33,7 @@ export default async function ExpensePage({
     return (
       <div className="max-w-6xl mx-auto p-8">
         <p className="text-text-muted">投資家が登録されていません。</p>
-        <Link href="/admin/ledger" className="text-accent">← 家計簿トップへ</Link>
+        <Link href="/admin/ledger" className="text-accent">← 資金管理トップへ</Link>
       </div>
     )
   }
@@ -70,7 +70,7 @@ export default async function ExpensePage({
           <Link href="/" className="text-sm font-hud tracking-[0.35em] text-accent">LAPLACE</Link>
           <div className="flex flex-wrap items-center gap-3 text-xs sm:text-sm">
             <Link href="/admin" className="text-text-muted hover:text-text">管理</Link>
-            <Link href="/admin/ledger" className="text-text-muted hover:text-text">家計簿</Link>
+            <Link href="/admin/ledger" className="text-text-muted hover:text-text">資金管理</Link>
             <Link href={`/admin/ledger/account1?investor=${investorId}`} className="text-text-muted hover:text-text">1つめ口座</Link>
             <Link href={`/admin/ledger/account2?investor=${investorId}`} className="text-text-muted hover:text-text">2つめ口座</Link>
             <span className="text-purple-400 font-semibold">🧾 経費出金</span>

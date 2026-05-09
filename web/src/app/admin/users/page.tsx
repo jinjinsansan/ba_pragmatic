@@ -31,7 +31,7 @@ export default async function AdminUsersPage() {
             <Link href="/admin/users" className="text-text font-semibold">ユーザー</Link>
             <Link href="/admin/promos" className="text-text-muted hover:text-text">プロモ</Link>
             <Link href="/admin/tickets" className="text-text-muted hover:text-text">チケット</Link>
-            <Link href="/admin/ledger" className="text-emerald-400 hover:text-emerald-300">📊 家計簿</Link>
+            <Link href="/admin/ledger" className="text-emerald-400 hover:text-emerald-300">📊 資金管理</Link>
           </div>
         </div>
       </nav>
