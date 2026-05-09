@@ -179,6 +179,71 @@ export default async function AdminLedgerPage() {
 
                 {/* 右カラム: 現状サマリ */}
                 <div className="space-y-4">
+                  {/* 物理 USDT vs 概念 (整合性監査) */}
+                  {(s.actual_snapshot_date || s.physical_total > 0) && (
+                    <div className="rounded-lg p-4 border border-sky-500/30" style={{ background: 'rgba(14,165,233,0.08)' }}>
+                      <div className="flex justify-between items-baseline mb-3">
+                        <div className="text-xs text-sky-400 font-semibold tracking-widest">PHYSICAL USDT BALANCES (整合性監査)</div>
+                        <div className="text-[10px] text-text-muted">{s.actual_snapshot_date ? `報告: ${s.actual_snapshot_date}` : '未報告'}</div>
+                      </div>
+                      {(() => {
+                        const a1Act = parseFloat(s.account1_actual ?? 0)
+                        const a2Act = parseFloat(s.account2_actual ?? 0)
+                        const chAct = parseFloat(s.charge_actual ?? 0)
+                        const a1Exp = parseFloat(s.account1_amount ?? 0)
+                        const a2Exp = parseFloat(s.account2_balance ?? 0)
+                        const physTot = parseFloat(s.physical_total ?? 0)
+                        const expTot = parseFloat(s.expected_physical_total ?? 0)
+                        const diff = parseFloat(s.physical_diff ?? 0)
+                        const a1Diff = a1Act - a1Exp
+                        const a2Diff = a2Act - a2Exp
+                        const tol = 100
+                        const cls = (d: number) => Math.abs(d) <= tol ? 'text-emerald-300' : 'text-amber-300'
+                        const icon = (d: number) => Math.abs(d) <= tol ? '✓' : '⚠'
+                        return (
+                          <>
+                            <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-3 gap-y-1 text-sm">
+                              <div className="text-text-muted">1 つめ口座</div>
+                              <div className="font-mono text-right">{fmt(a1Act)}</div>
+                              <div className="font-mono text-right text-text-dim">{fmt(a1Exp)}</div>
+                              <div className={`font-mono text-right ${cls(a1Diff)}`}>{icon(a1Diff)} {fmt(a1Diff)}</div>
+
+                              <div className="text-text-muted">2 つめ口座</div>
+                              <div className="font-mono text-right">{fmt(a2Act)}</div>
+                              <div className="font-mono text-right text-text-dim">{fmt(a2Exp)}</div>
+                              <div className={`font-mono text-right ${cls(a2Diff)}`}>{icon(a2Diff)} {fmt(a2Diff)}</div>
+
+                              <div className="text-text-muted">チャージ資金口座</div>
+                              <div className="font-mono text-right">{fmt(chAct)}</div>
+                              <div className="font-mono text-right text-text-dim">—</div>
+                              <div className="font-mono text-right text-text-dim">—</div>
+
+                              <div className="text-text-muted text-[10px] col-span-4 mt-1">
+                                <span className="text-text-muted">列: </span>
+                                <span className="text-text">物理 USDT (報告)</span>
+                                <span className="text-text-dim"> / </span>
+                                <span className="text-text-dim">概念 (期待値)</span>
+                                <span className="text-text-dim"> / </span>
+                                <span className="text-text-dim">差 (許容 ±$100)</span>
+                              </div>
+
+                              <div className="text-text-muted border-t border-text-muted/20 pt-2 font-bold">合計</div>
+                              <div className="font-mono text-right border-t border-text-muted/20 pt-2 font-bold">{fmt(physTot)}</div>
+                              <div className="font-mono text-right border-t border-text-muted/20 pt-2 text-text-dim">{fmt(expTot)}</div>
+                              <div className={`font-mono text-right border-t border-text-muted/20 pt-2 font-bold ${cls(diff)}`}>{icon(diff)} {fmt(diff)}</div>
+                            </div>
+                            {Math.abs(diff) > tol && (
+                              <div className="mt-3 text-xs text-amber-300/90">
+                                ⚠ 物理 USDT 合計と概念合計に <strong>{fmt(Math.abs(diff))}</strong> の差があります ($100 超)。<br/>
+                                想定要因: 未記録の利益、Stake bonus / rakeback、入出金タイミング、入力誤りなど。
+                              </div>
+                            )}
+                          </>
+                        )
+                      })()}
+                    </div>
+                  )}
+
                   {/* 投資家サマリ (緑) */}
                   <div className="rounded-lg p-4 border border-emerald-500/30" style={{ background: 'rgba(34,197,94,0.08)' }}>
                     <div className="text-xs text-emerald-400 font-semibold tracking-widest mb-3">INVESTOR ({s.investor_name}) - 投資家から見える数値</div>
