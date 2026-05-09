@@ -70,7 +70,17 @@ export interface Account2DailyEntry {
 export interface Account2Computed extends Account2DailyEntry {
   netChange: number;            // = dailyProfit - withdrawal
   balanceAfter: number;         // 残高
+  jShare: number;               // J 取り分 (= dailyProfit × 20%)
+  kShare: number;               // K 取り分 (= dailyProfit × 30%)
+  companyShare: number;         // 会社内部留保 (= dailyProfit × 50%)
 }
+
+/** 2 つめ口座 分配率 (固定) */
+export const ACCOUNT2_DISTRIBUTION = {
+  jSharePct: 0.20,
+  kSharePct: 0.30,
+  companySharePct: 0.50,
+} as const;
 
 /** 経費出金イベント */
 export interface ExpenseWithdrawal {

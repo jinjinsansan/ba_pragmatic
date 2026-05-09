@@ -71,6 +71,9 @@ export default function Account2Form({
 
   const totalProfit = computed.reduce((a, e) => a + e.dailyProfit, 0)
   const totalWithdrawal = computed.reduce((a, e) => a + e.withdrawal, 0)
+  const totalJ = computed.reduce((a, e) => a + e.jShare, 0)
+  const totalK = computed.reduce((a, e) => a + e.kShare, 0)
+  const totalCompany = computed.reduce((a, e) => a + e.companyShare, 0)
   const currentBalance = computed[computed.length - 1]?.balanceAfter ?? initialBalance
 
   return (
@@ -87,6 +90,21 @@ export default function Account2Form({
         <div className="rounded-lg p-3 border border-emerald-500/30 bg-emerald-500/5">
           <div className="text-xs text-emerald-400 mb-1">現在残高</div>
           <div className="font-mono text-lg text-emerald-300">{formatCurrency(currentBalance)}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 text-center">
+        <div className="rounded-lg p-3 border border-cyan-500/30 bg-cyan-500/5">
+          <div className="text-xs text-cyan-400 mb-1">J 取り分累計 (20%)</div>
+          <div className="font-mono text-lg text-cyan-300">{formatCurrency(totalJ)}</div>
+        </div>
+        <div className="rounded-lg p-3 border border-cyan-500/30 bg-cyan-500/5">
+          <div className="text-xs text-cyan-400 mb-1">K 取り分累計 (30%)</div>
+          <div className="font-mono text-lg text-cyan-300">{formatCurrency(totalK)}</div>
+        </div>
+        <div className="rounded-lg p-3 border border-cyan-500/30 bg-cyan-500/5">
+          <div className="text-xs text-cyan-400 mb-1">会社内部留保 累計 (50%)</div>
+          <div className="font-mono text-lg text-cyan-300">{formatCurrency(totalCompany)}</div>
         </div>
       </div>
 
@@ -129,8 +147,10 @@ export default function Account2Form({
             <tr>
               <th className="pb-2 px-2">日付</th>
               <th className="pb-2 px-2 text-right text-amber-400">日次利益</th>
+              <th className="pb-2 px-2 text-right text-cyan-400">J (20%)</th>
+              <th className="pb-2 px-2 text-right text-cyan-400">K (30%)</th>
+              <th className="pb-2 px-2 text-right text-cyan-400">会社内部留保 (50%)</th>
               <th className="pb-2 px-2 text-right text-purple-400">出金</th>
-              <th className="pb-2 px-2 text-right">純増減</th>
               <th className="pb-2 px-2 text-right">残高 (累計)</th>
               <th className="pb-2 px-2">メモ</th>
               <th className="pb-2 px-2">操作</th>
@@ -139,17 +159,17 @@ export default function Account2Form({
           <tbody>
             {computed.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-8 text-center text-text-muted">まだ入力がありません</td>
+                <td colSpan={9} className="py-8 text-center text-text-muted">まだ入力がありません</td>
               </tr>
             ) : (
               computed.map((e) => (
                 <tr key={e.id ?? e.tradeDate} className="border-b border-text-muted/10 hover:bg-accent/5">
                   <td className="py-2 px-2 font-mono">{e.tradeDate}</td>
                   <td className="py-2 px-2 text-right font-mono text-amber-300">{formatCurrency(e.dailyProfit)}</td>
+                  <td className="py-2 px-2 text-right font-mono text-cyan-300">{formatCurrency(e.jShare)}</td>
+                  <td className="py-2 px-2 text-right font-mono text-cyan-300">{formatCurrency(e.kShare)}</td>
+                  <td className="py-2 px-2 text-right font-mono text-cyan-300">{formatCurrency(e.companyShare)}</td>
                   <td className="py-2 px-2 text-right font-mono text-purple-300">{formatCurrency(e.withdrawal)}</td>
-                  <td className={`py-2 px-2 text-right font-mono ${e.netChange >= 0 ? 'text-emerald-300' : 'text-red-400'}`}>
-                    {formatCurrency(e.netChange)}
-                  </td>
                   <td className="py-2 px-2 text-right font-mono font-bold">{formatCurrency(e.balanceAfter)}</td>
                   <td className="py-2 px-2 text-xs text-text-muted">{e.notes ?? ''}</td>
                   <td className="py-2 px-2">

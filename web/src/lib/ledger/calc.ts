@@ -16,6 +16,7 @@ import type {
   OperatorSummary,
   InvestorSummary,
 } from './types';
+import { ACCOUNT2_DISTRIBUTION } from './types';
 
 // ---- 金額ユーティリティ (内部はセント単位 = 整数) ----
 const toC = (usd: number): number => Math.round(usd * 100);   // USD → cents
@@ -63,6 +64,7 @@ export function computeAccount1Daily(
 
 /**
  * 2 つめ口座 日次計算 (§4.2)
+ * 利益分配 J 20% / K 30% / 会社内部留保 50% (Hさんは取り分なし)
  */
 export function computeAccount2Daily(
   entries: Account2DailyEntry[],
@@ -77,10 +79,17 @@ export function computeAccount2Daily(
     const netChangeC = profitC - withdrawC;
     balanceC += netChangeC;
 
+    const jShareC = Math.round(profitC * ACCOUNT2_DISTRIBUTION.jSharePct);
+    const kShareC = Math.round(profitC * ACCOUNT2_DISTRIBUTION.kSharePct);
+    const companyShareC = Math.round(profitC * ACCOUNT2_DISTRIBUTION.companySharePct);
+
     return {
       ...e,
       netChange: fromC(netChangeC),
       balanceAfter: fromC(balanceC),
+      jShare: fromC(jShareC),
+      kShare: fromC(kShareC),
+      companyShare: fromC(companyShareC),
     };
   });
 }

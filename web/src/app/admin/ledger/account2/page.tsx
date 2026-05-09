@@ -77,8 +77,11 @@ export default async function Account2Page({
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
         <div className="hud-label mb-2">Ledger / Account 2</div>
         <h1 className="text-2xl font-black mb-1 font-hud">2 つめ口座 日次入力 - {investor?.name} さん</h1>
-        <p className="text-text-muted text-sm mb-6">
-          初期残高: ${initialBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })} / 利益は全額運用者のもの。withdrawal は経費出金額
+        <p className="text-text-muted text-sm mb-2">
+          初期残高: ${initialBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })} (Hさんの資本金 / 分配対象外) / withdrawal は経費出金額
+        </p>
+        <p className="text-text-muted text-xs mb-6">
+          利益分配率 (固定): <span className="text-amber-300">J 20% / K 30% / 会社内部留保 50%</span> (Hさんは取り分なし)
         </p>
 
         <Account2Form investorId={investorId} computed={computed} initialBalance={initialBalance} />
