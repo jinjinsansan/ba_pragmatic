@@ -64,6 +64,7 @@ export async function POST(req: NextRequest) {
           investor_id: payload.investor_id,
           trade_date: payload.trade_date,
           daily_profit: Number(payload.daily_profit),
+          investor_recharge: Number(payload.investor_recharge ?? 0),
           notes: payload.notes ?? null,
         }
         onConflict = 'investor_id,trade_date'

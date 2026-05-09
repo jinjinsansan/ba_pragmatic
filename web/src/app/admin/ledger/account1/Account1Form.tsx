@@ -18,6 +18,7 @@ export default function Account1Form({
   const [isPending, startTransition] = useTransition()
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
   const [profit, setProfit] = useState('')
+  const [recharge, setRecharge] = useState('')
   const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
 
@@ -37,6 +38,7 @@ export default function Account1Form({
           investor_id: investorId,
           trade_date: date,
           daily_profit: parseFloat(profit),
+          investor_recharge: parseFloat(recharge || '0'),
           notes: notes || null,
         },
       }),
@@ -48,6 +50,7 @@ export default function Account1Form({
       return
     }
     setProfit('')
+    setRecharge('')
     setNotes('')
     startTransition(() => router.refresh())
   }
@@ -78,7 +81,7 @@ export default function Account1Form({
       <form onSubmit={submit} className="glass-card p-4 rounded-xl">
         <div className="text-sm text-text-muted mb-3">新規/更新 (同じ日付は上書き)</div>
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-          <label className="sm:col-span-3 flex flex-col gap-1">
+          <label className="sm:col-span-2 flex flex-col gap-1">
             <span className="text-xs text-text-muted">取引日</span>
             <input
               type="date"
@@ -88,7 +91,7 @@ export default function Account1Form({
               required
             />
           </label>
-          <label className="sm:col-span-3 flex flex-col gap-1">
+          <label className="sm:col-span-2 flex flex-col gap-1">
             <span className="text-xs text-text-muted">日次利益 (USD)</span>
             <input
               type="number"
@@ -98,6 +101,17 @@ export default function Account1Form({
               className="px-3 py-2 rounded bg-black/40 border border-text-muted/30 text-text font-mono"
               placeholder="0.00"
               required
+            />
+          </label>
+          <label className="sm:col-span-2 flex flex-col gap-1">
+            <span className="text-xs text-text-muted" title="Hさんが当日 1つめから別チャージへ自発入金した額">Hさん再入金 (USD)</span>
+            <input
+              type="number"
+              step="0.01"
+              value={recharge}
+              onChange={(e) => setRecharge(e.target.value)}
+              className="px-3 py-2 rounded bg-black/40 border border-cyan-500/30 text-text font-mono"
+              placeholder="0.00"
             />
           </label>
           <label className="sm:col-span-4 flex flex-col gap-1">
@@ -129,12 +143,13 @@ export default function Account1Form({
             <tr>
               <th className="pb-2 px-2">日付</th>
               <th className="pb-2 px-2 text-right">日次利益</th>
-              <th className="pb-2 px-2 text-right text-emerald-400">投資家 (20%)</th>
+              <th className="pb-2 px-2 text-right text-cyan-400">Hさん再入金</th>
+              <th className="pb-2 px-2 text-right text-emerald-400">Hさん実受取</th>
               <th className="pb-2 px-2 text-right text-amber-400">J (20%)</th>
               <th className="pb-2 px-2 text-right text-amber-400">K (30%)</th>
-              <th className="pb-2 px-2 text-right text-amber-400">会社 (30%)</th>
+              <th className="pb-2 px-2 text-right text-amber-400">会社内部留保 (30%)</th>
               <th className="pb-2 px-2 text-right">チャージ返金 (80%)</th>
-              <th className="pb-2 px-2 text-right">受取累計</th>
+              <th className="pb-2 px-2 text-right">実受取累計</th>
               <th className="pb-2 px-2 text-right">残チャージ</th>
               <th className="pb-2 px-2">操作</th>
             </tr>
@@ -142,7 +157,7 @@ export default function Account1Form({
           <tbody>
             {computed.length === 0 ? (
               <tr>
-                <td colSpan={10} className="py-8 text-center text-text-muted">
+                <td colSpan={11} className="py-8 text-center text-text-muted">
                   まだ入力がありません
                 </td>
               </tr>
@@ -151,7 +166,8 @@ export default function Account1Form({
                 <tr key={e.id ?? e.tradeDate} className="border-b border-text-muted/10 hover:bg-accent/5">
                   <td className="py-2 px-2 font-mono">{e.tradeDate}</td>
                   <td className="py-2 px-2 text-right font-mono">{formatCurrency(e.dailyProfit)}</td>
-                  <td className="py-2 px-2 text-right font-mono text-emerald-300">{formatCurrency(e.investorShare)}</td>
+                  <td className="py-2 px-2 text-right font-mono text-cyan-300">{formatCurrency(e.investorRecharge)}</td>
+                  <td className="py-2 px-2 text-right font-mono text-emerald-300">{formatCurrency(e.investorNetReceived)}</td>
                   <td className="py-2 px-2 text-right font-mono">{formatCurrency(e.jShare)}</td>
                   <td className="py-2 px-2 text-right font-mono">{formatCurrency(e.kShare)}</td>
                   <td className="py-2 px-2 text-right font-mono">{formatCurrency(e.companyShare)}</td>
@@ -176,7 +192,12 @@ export default function Account1Form({
               <tr className="font-bold">
                 <td className="py-2 px-2">合計</td>
                 <td className="py-2 px-2 text-right font-mono">{formatCurrency(totalProfit)}</td>
-                <td className="py-2 px-2 text-right font-mono text-emerald-300">{formatCurrency(totalInvestor)}</td>
+                <td className="py-2 px-2 text-right font-mono text-cyan-300">
+                  {formatCurrency(computed.reduce((a, e) => a + e.investorRecharge, 0))}
+                </td>
+                <td className="py-2 px-2 text-right font-mono text-emerald-300">
+                  {formatCurrency(computed.reduce((a, e) => a + e.investorNetReceived, 0))}
+                </td>
                 <td className="py-2 px-2 text-right font-mono">
                   {formatCurrency(computed.reduce((a, e) => a + e.jShare, 0))}
                 </td>

@@ -183,10 +183,20 @@ export default async function AdminLedgerPage() {
                   <div className="rounded-lg p-4 border border-emerald-500/30" style={{ background: 'rgba(34,197,94,0.08)' }}>
                     <div className="text-xs text-emerald-400 font-semibold tracking-widest mb-3">INVESTOR ({s.investor_name}) - 投資家から見える数値</div>
                     <div className="grid grid-cols-2 gap-2 text-sm">
-                      <div className="text-text-muted">受け取った利益累計</div>
-                      <div className="font-mono text-right text-emerald-300 font-bold">{fmt(s.investor_received_total)}</div>
-                      <div className="text-text-muted">画面上のチャージ資金残高</div>
-                      <div className="font-mono text-right text-emerald-300 font-bold">{fmt(s.displayed_charge_balance)}</div>
+                      <div className="text-text-muted">1つめ累計利益 (Hさん粗出金)</div>
+                      <div className="font-mono text-right">{fmt(s.account1_total_profit)}</div>
+                      <div className="text-text-muted">Hさん再入金累計 (別チャージへ)</div>
+                      <div className="font-mono text-right text-cyan-300">{fmt(s.investor_recharge_total)}</div>
+                      <div className="text-text-muted border-t border-text-muted/20 pt-1">実受取累計 (粗出金 − 再入金)</div>
+                      <div className="font-mono text-right text-emerald-300 font-bold border-t border-text-muted/20 pt-1">{fmt(s.investor_net_received)}</div>
+                      <div className="text-text-muted">本来の取り分 (1つめ 20%)</div>
+                      <div className="font-mono text-right text-text-dim">{fmt(s.investor_received_total)}</div>
+                      <div className="text-text-muted">過剰受取残 (補正対象)</div>
+                      <div className={`font-mono text-right font-bold ${parseFloat(s.investor_overpaid ?? 0) > 0.01 ? 'text-amber-300' : 'text-emerald-300'}`}>
+                        {fmt(s.investor_overpaid)}
+                      </div>
+                      <div className="text-text-muted border-t border-text-muted/20 pt-1">画面上のチャージ資金残高</div>
+                      <div className="font-mono text-right text-emerald-300 font-bold border-t border-text-muted/20 pt-1">{fmt(s.displayed_charge_balance)}</div>
                     </div>
                   </div>
 

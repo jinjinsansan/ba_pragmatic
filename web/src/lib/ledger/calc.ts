@@ -26,27 +26,30 @@ const sumC = (xs: number[]): number => xs.reduce((a, b) => a + Math.round(b * 10
 /**
  * 1 つめ口座 日次計算 (§4.1)
  * 投資家の取り分・運用者各人の取り分・チャージ返金・累計を計算
+ * Hさんの別チャージへの自発入金 (investor_recharge) も差引に反映
  */
 export function computeAccount1Daily(
   entries: Account1DailyEntry[],
   rule: DistributionRule,
   initialChargeBalance: number,
 ): Account1Computed[] {
-  let runningInvestorTotalC = 0;
+  let runningNetReceivedC = 0;
   let runningChargeBalanceC = toC(initialChargeBalance);
 
   const sorted = [...entries].sort((a, b) => a.tradeDate.localeCompare(b.tradeDate));
 
   return sorted.map((e) => {
     const profitC = toC(e.dailyProfit);
+    const rechargeC = toC(e.investorRecharge ?? 0);
     const investorShareC = Math.round(profitC * rule.investorSharePct);
     const jShareC = Math.round(profitC * rule.jSharePct);
     const kShareC = Math.round(profitC * rule.kSharePct);
     const companyShareC = Math.round(profitC * rule.companySharePct);
     const chargeRefundC = jShareC + kShareC + companyShareC;
+    const netReceivedC = profitC - rechargeC;
 
-    runningInvestorTotalC += investorShareC;
-    runningChargeBalanceC -= chargeRefundC;
+    runningNetReceivedC += netReceivedC;
+    runningChargeBalanceC = runningChargeBalanceC - chargeRefundC + rechargeC;
 
     return {
       ...e,
@@ -56,7 +59,9 @@ export function computeAccount1Daily(
       companyShare: fromC(companyShareC),
       chargeRefund: fromC(chargeRefundC),
       investorWithdrawal: e.dailyProfit,
-      investorTotalAfter: fromC(runningInvestorTotalC),
+      investorRecharge: fromC(rechargeC),
+      investorNetReceived: fromC(netReceivedC),
+      investorTotalAfter: fromC(runningNetReceivedC),
       chargeBalanceAfter: fromC(runningChargeBalanceC),
     };
   });

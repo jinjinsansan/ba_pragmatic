@@ -41,19 +41,22 @@ export interface Account1DailyEntry {
   investorId: string;
   tradeDate: string;            // YYYY-MM-DD
   dailyProfit: number;          // 入力値
+  investorRecharge?: number;    // Hさんが当日 1 つめから別チャージへ自発入金した額
   notes?: string;
 }
 
 /** 1 つめ口座 計算結果 (= UI 表示用、§4.1) */
 export interface Account1Computed extends Account1DailyEntry {
-  investorShare: number;        // 投資家取り分
+  investorShare: number;        // 投資家取り分 (利益 × 20%、概念上)
   jShare: number;
   kShare: number;
   companyShare: number;
   chargeRefund: number;         // = 80% 合計
   investorWithdrawal: number;   // = dailyProfit
-  investorTotalAfter: number;   // 累計 H 受取
-  chargeBalanceAfter: number;   // 累計 chargeBalance
+  investorRecharge: number;     // Hさん→別チャージ 自発入金額 (default 0)
+  investorNetReceived: number;  // 当日 Hさん 実受取 = dailyProfit − investorRecharge
+  investorTotalAfter: number;   // 累計 (実受取累計、= Σ investorNetReceived)
+  chargeBalanceAfter: number;   // 累計 chargeBalance (initial − 80%累計 + recharge累計)
 }
 
 /** 2 つめ口座 日次入力 */

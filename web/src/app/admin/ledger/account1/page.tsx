@@ -76,6 +76,7 @@ export default async function Account1Page({
     investorId: e.investor_id,
     tradeDate: e.trade_date,
     dailyProfit: parseFloat(e.daily_profit),
+    investorRecharge: parseFloat(e.investor_recharge ?? 0),
     notes: e.notes ?? undefined,
   }))
 
