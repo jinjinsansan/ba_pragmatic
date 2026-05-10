@@ -643,10 +643,11 @@ let _learnSession = {
 let _autoBet = {
   active: false,
   pStreak: 0,           // P連続カウンター (我々が連続負けした回数)
-  // executor tracking (total_bets ベースのラウンド完了検知)
-  lastTotalBets: null,  // 前回 poll 時の total_bets
-  lastWins: null,       // 前回 poll 時の wins
-  lastLosses: null,     // 前回 poll 時の losses
+  // executor tracking (selected table 上の GUI 合計値でラウンド完了検知)
+  lastTotalBets: null,  // 前回 poll 時の total_bets 合計
+  lastWins: null,       // 前回 poll 時の wins 合計
+  lastLosses: null,     // 前回 poll 時の losses 合計
+  lastTies: null,       // 前回 poll 時の ties 合計
   lastLookSentAt: null, // LOOK送信時刻 (ms) — タイムアウト検知用
 };
 
@@ -777,6 +778,7 @@ function _autoBetStart() {
   _autoBet.lastTotalBets = null;
   _autoBet.lastWins = null;
   _autoBet.lastLosses = null;
+  _autoBet.lastTies = null;
   _autoBet.lastLookSentAt = null;
   _renderAutoBetStatus();
   updateButtonsGating();
@@ -788,6 +790,7 @@ function _autoBetStop(reason) {
   _autoBet.lastTotalBets = null;
   _autoBet.lastWins = null;
   _autoBet.lastLosses = null;
+  _autoBet.lastTies = null;
   _autoBet.lastLookSentAt = null;
   _renderAutoBetStatus();
   updateButtonsGating();
@@ -835,7 +838,7 @@ function _autoBetSendNext() {
   _renderAutoBetStatus();
 }
 
-// _autoBetCheck: executor の total_bets 増加をラウンド完了シグナルとして使う。
+// _autoBetCheck: selected table 上の GUI 合計 total_bets 増加をラウンド完了シグナルとして使う。
 // スナップショット gameId 検知の代わりに executor heartbeat を参照することで
 // タイミングのズレによる多重送信・送信漏れを防ぐ。
 // LOOK ラウンド (BET しないため total_bets が増えない) は 40 秒タイムアウトで検知。
@@ -845,20 +848,33 @@ function _autoBetCheck() {
   if (!_autoBet.active) return;
   if (!selected.table_id) return;
 
-  const exec = (_state.executors || []).find(e => e.bettable && e.gui)
-            || (_state.executors || [])[0];
-  if (!exec) return;
-  const gui = exec.gui || {};
+  const standby = getStandbyExecutors();
+  const targets = selected.table_id ? standby.filter(_executorOnSelectedTable) : standby;
+  if (!targets.length) return;
 
-  const curTotalBets = Number(gui.total_bets) || 0;
-  const curWins      = Number(gui.wins)        || 0;
-  const curLosses    = Number(gui.losses)      || 0;
+  const agg = targets.reduce((a, e) => {
+    const g = e.gui || {};
+    const s = e.seq || {};
+    a.totalBets += Number(g.total_bets) || 0;
+    a.wins += Number(g.wins) || 0;
+    a.losses += Number(g.losses) || 0;
+    a.ties += Number(g.ties) || 0;
+    const bet = Number(s.bet_amount || g.bet_amount) || 0;
+    if (bet > a.maxBet) a.maxBet = bet;
+    return a;
+  }, { totalBets: 0, wins: 0, losses: 0, ties: 0, maxBet: 0 });
+
+  const curTotalBets = agg.totalBets;
+  const curWins      = agg.wins;
+  const curLosses    = agg.losses;
+  const curTies      = agg.ties;
 
   // ── 初回: 基準値を記録して即 BET 送信 ──
   if (_autoBet.lastTotalBets === null) {
     _autoBet.lastTotalBets = curTotalBets;
     _autoBet.lastWins      = curWins;
     _autoBet.lastLosses    = curLosses;
+    _autoBet.lastTies      = curTies;
     _autoBetSendNext();
     return;
   }
@@ -875,7 +891,17 @@ function _autoBetCheck() {
     // losses 増加 = PLAYER 勝ち = 我々の負け → 連続+1
     if (curLosses > _autoBet.lastLosses)      _autoBet.pStreak++;
     else if (curWins > _autoBet.lastWins)     _autoBet.pStreak = 0;
-    // TIE: 変化なし
+    else if (curTies > (_autoBet.lastTies || 0)) {
+      // TIE: 変化なし
+    } else {
+      // 差分が取れない場合のみ snapshot を補完利用
+      const snap = _learnSessionCurrentSnap();
+      if (snap && snap.last_hand) {
+        const w = String(snap.last_hand.winner || '').toUpperCase();
+        if (w.includes('PLAYER'))      _autoBet.pStreak++;
+        else if (w.includes('BANKER')) _autoBet.pStreak = 0;
+      }
+    }
   } else {
     // LOOK タイムアウト: BET しなかったので executor 統計が更新されない。
     // スナップショットから最終結果を補完してカウンターを更新。
@@ -891,12 +917,12 @@ function _autoBetCheck() {
   _autoBet.lastTotalBets = curTotalBets;
   _autoBet.lastWins      = curWins;
   _autoBet.lastLosses    = curLosses;
+  _autoBet.lastTies      = curTies;
   _autoBet.lastLookSentAt = null;
 
-  // ── $200 停止判定: 追跡中 executor のみ確認 (他executor の高額BETで誤停止しないよう) ──
-  const execBet = Number((exec.seq || {}).bet_amount || (exec.gui || {}).bet_amount) || 0;
-  if (execBet >= 200) {
-    _autoBetStop(`$200 到達 (BET額: $${execBet.toFixed(0)})`);
+  // ── $200 停止判定: selected table の対象GUIのみ確認 ──
+  if (agg.maxBet >= 200) {
+    _autoBetStop(`$200 到達 (BET額: $${agg.maxBet.toFixed(0)})`);
     return;
   }
 
