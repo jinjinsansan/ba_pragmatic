@@ -165,16 +165,6 @@ export default async function AdminLedgerPage() {
                     </div>
                   </div>
 
-                  {/* 口座残高 */}
-                  <div className="rounded-lg p-4 border border-slate-500/20" style={{ background: 'rgba(100,116,139,0.05)' }}>
-                    <div className="text-xs text-slate-400 font-semibold tracking-widest mb-3">ACCOUNT BALANCES</div>
-                    <div className="grid grid-cols-2 gap-2 text-sm">
-                      <div className="text-text-muted">2 つめ口座 現在残高</div>
-                      <div className="font-mono text-right">{fmt(s.account2_balance)}</div>
-                      <div className="text-text-muted">別チャージ残高</div>
-                      <div className="font-mono text-right">{fmt(s.reserve_balance)}</div>
-                    </div>
-                  </div>
                 </div>
 
                 {/* 右カラム: 現状サマリ */}
