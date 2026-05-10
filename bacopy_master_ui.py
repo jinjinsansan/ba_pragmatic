@@ -894,13 +894,10 @@ function _autoBetCheck() {
   _autoBet.lastLosses    = curLosses;
   _autoBet.lastLookSentAt = null;
 
-  // ── $200 停止判定 (bet_amount は e.seq または e.gui 以下) ──
-  const maxBet = Math.max(0, ...(_state.executors || []).map(e => {
-    const g = e.gui || {}; const s = e.seq || {};
-    return Number(s.bet_amount || g.bet_amount) || 0;
-  }));
-  if (maxBet >= 200) {
-    _autoBetStop(`$200 到達 (最高BET額: $${maxBet.toFixed(0)})`);
+  // ── $200 停止判定: 追跡中 executor のみ確認 (他executor の高額BETで誤停止しないよう) ──
+  const execBet = Number((exec.seq || {}).bet_amount || (exec.gui || {}).bet_amount) || 0;
+  if (execBet >= 200) {
+    _autoBetStop(`$200 到達 (BET額: $${execBet.toFixed(0)})`);
     return;
   }
 
@@ -1203,13 +1200,15 @@ function renderExecutors(){
     if(e.session_elsewhere_unresolved) pills += ' <span class="pill err">セッション奪取</span>';
     if(stateSaveFail > 0) pills += ` <span class="pill err">STATE保存失敗×${stateSaveFail}</span>`;
     const errHtml = e.error ? `<div class="err">${escHtml(e.error)}</div>` : '';
+    const _eid = escHtml(e.executor_id); const _elbl = escHtml(e.label||e.executor_id);
     c.innerHTML = `
       <div class="top-row">
-        <div>
-          <div class="value big">${escHtml(e.label||e.executor_id)}</div>
+        <div style="flex:1">
+          <div class="value big">${_elbl}</div>
           <div class="value small" style="color:var(--text-muted)">${escHtml(e.user_email||'(メール未設定)')} &middot; ${escHtml(e.os||'-')}</div>
         </div>
-        <div style="display:flex;flex-direction:column;gap:4px;text-align:right">
+        <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+          <button onclick="deleteExecutor('${_eid}','${_elbl}')" title="このGUIをDBから削除" style="background:transparent;border:1px solid rgba(255,51,68,0.4);color:rgba(255,100,100,0.7);border-radius:4px;padding:2px 7px;cursor:pointer;font-size:11px;line-height:1.4">✕</button>
           <div>${pills}</div>
           <div class="value small" style="color:var(--text-muted)">${fmtAge(ageSec)}前</div>
         </div>
@@ -1255,6 +1254,21 @@ function renderExecutors(){
       ${errHtml}`;
     wrap.appendChild(c);
   }
+}
+
+function deleteExecutor(executorId, label) {
+  if (!confirm(`「${label}」を削除しますか？\nDB から完全削除されます（元に戻せません）。`)) return;
+  fetch('/api/executors/' + encodeURIComponent(executorId), {
+    method: 'DELETE',
+    headers: { 'Authorization': 'Bearer ' + _apiKey, 'X-CSRF-Token': _csrf },
+  }).then(r => r.json()).then(res => {
+    if (res && res.ok) {
+      showToast(`「${label}」を削除しました`, 'ok');
+      refreshOnce();
+    } else {
+      showToast('削除失敗: ' + (res && res.error || '?'), 'err');
+    }
+  }).catch(() => showToast('削除: 通信エラー', 'err'));
 }
 
 function renderExecutorSelect(){

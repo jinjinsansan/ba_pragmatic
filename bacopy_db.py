@@ -743,3 +743,15 @@ def get_executor_email(executor_id: str) -> str:
         return str(row[0] or "") if row else ""
     finally:
         conn.close()
+
+
+def delete_executor(executor_id: str) -> bool:
+    """executor を DB から削除する。戻り値: True=削除成功, False=該当なし。"""
+    conn = sqlite3.connect(_db_path())
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM executors WHERE executor_id=?", (executor_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()

@@ -44,6 +44,7 @@ from bacopy_db import (
     cancel_pending_bets_for_executor,
     cancel_all_pending_decisions,
     get_decision_target_executor,
+    delete_executor,
 )
 
 from decision_logger import (
@@ -532,6 +533,19 @@ class _Handler(BaseHTTPRequestHandler):
                     if _DECISION_WAIT_TICK != tick:
                         continue
                     _DECISION_WAIT_COND.wait(timeout=remaining)
+        return _send_json(self, 404, {"ok": False, "error": "not_found"})
+
+    def do_DELETE(self):  # noqa: N802
+        u = urlparse(self.path)
+        if not _auth_ok(self.headers):
+            return _send_json(self, 401, {"ok": False, "error": "unauthorized"})
+        # DELETE /api/executors/{executor_id}
+        if u.path.startswith("/api/executors/"):
+            executor_id = u.path[len("/api/executors/"):]
+            if not executor_id:
+                return _send_json(self, 400, {"ok": False, "error": "executor_id required"})
+            deleted = delete_executor(executor_id)
+            return _send_json(self, 200, {"ok": True, "deleted": deleted, "executor_id": executor_id})
         return _send_json(self, 404, {"ok": False, "error": "not_found"})
 
     def do_POST(self):  # noqa: N802
