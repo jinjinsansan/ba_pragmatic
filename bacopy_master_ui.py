@@ -163,6 +163,7 @@ body.show-bt .big-btn.hidden-by-default{display:flex}
 /* ===== AUTO BET button ===== */
 .auto-btn{padding:10px 16px;border-radius:10px;border:1.5px solid #444;background:var(--bg-glass);color:var(--text-muted);font-family:var(--font-hud);font-weight:700;font-size:13px;letter-spacing:3px;cursor:pointer;transition:all 0.2s;display:flex;flex-direction:column;align-items:center;gap:2px;width:100%}
 .auto-btn:hover{transform:translateY(-1px);border-color:#666}
+.auto-btn:active{transform:translateY(2px) scale(0.97);box-shadow:0 0 6px rgba(0,229,255,0.3) inset;transition:transform 0.05s,box-shadow 0.05s}
 .auto-btn.on{background:linear-gradient(180deg,rgba(0,255,136,0.18),rgba(0,255,136,0.04));border-color:rgba(0,255,136,0.55);color:var(--win);box-shadow:0 0 14px rgba(0,255,136,0.25);animation:autoPulse 2.5s ease-in-out infinite}
 @keyframes autoPulse{0%,100%{box-shadow:0 0 10px rgba(0,255,136,0.2)}50%{box-shadow:0 0 26px rgba(0,255,136,0.55)}}
 .auto-btn .auto-sub{font-size:10px;letter-spacing:2px;opacity:0.65;font-weight:400;margin-top:1px}
@@ -844,8 +845,6 @@ function _autoBetCheck() {
   if (!_autoBet.active) return;
   if (!selected.table_id) return;
 
-  // 参照する executor: bettable かつ gui データあり優先
-  // ※ total_bets 等は e.gui 以下にネストされている
   const exec = (_state.executors || []).find(e => e.bettable && e.gui)
             || (_state.executors || [])[0];
   if (!exec) return;
@@ -929,9 +928,12 @@ async function refreshOnce(){
     _state.stats = st;
     _state.snapshots = snaps;
     _learnSessionCheck();   // ラウンド変化を監視→自動LOOK記録
-    _autoBetCheck();        // AUTO BET: ラウンド変化を監視→自動BET/LOOK送信
     _updateSessionStatus(); // セッション経過時間表示更新
-    _state.executors = (execs && execs.executors)||[];
+    // executor を先に更新してから AUTO BET チェック (count=0 バグ修正)
+    if (execs && execs.executors && execs.executors.length > 0) {
+      _state.executors = execs.executors;
+    }
+    _autoBetCheck();        // AUTO BET: ラウンド変化を監視→自動BET/LOOK送信
     _state.decisions.pending = (pend && pend.decisions)||[];
     _state.decisions.processing = (proc && proc.decisions)||[];
     _state.decisions.done = (done && done.decisions)||[];
