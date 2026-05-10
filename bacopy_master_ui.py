@@ -160,6 +160,20 @@ body.show-bt .big-btn.hidden-by-default{display:flex}
 .act-status.ok{color:var(--win);border-color:rgba(0,255,136,0.35)}
 .act-status.err{color:var(--lose);border-color:rgba(255,51,102,0.35)}
 .act-status.processing{color:var(--tie);border-color:rgba(255,204,0,0.35)}
+/* ===== AUTO BET button ===== */
+.auto-btn{padding:10px 16px;border-radius:10px;border:1.5px solid #444;background:var(--bg-glass);color:var(--text-muted);font-family:var(--font-hud);font-weight:700;font-size:13px;letter-spacing:3px;cursor:pointer;transition:all 0.2s;display:flex;flex-direction:column;align-items:center;gap:2px;width:100%}
+.auto-btn:hover{transform:translateY(-1px);border-color:#666}
+.auto-btn.on{background:linear-gradient(180deg,rgba(0,255,136,0.18),rgba(0,255,136,0.04));border-color:rgba(0,255,136,0.55);color:var(--win);box-shadow:0 0 14px rgba(0,255,136,0.25);animation:autoPulse 2.5s ease-in-out infinite}
+@keyframes autoPulse{0%,100%{box-shadow:0 0 10px rgba(0,255,136,0.2)}50%{box-shadow:0 0 26px rgba(0,255,136,0.55)}}
+.auto-btn .auto-sub{font-size:10px;letter-spacing:2px;opacity:0.65;font-weight:400;margin-top:1px}
+/* ===== Session buttons ===== */
+.sess-btn{padding:8px 14px;border-radius:8px;border:1.5px solid #333;background:var(--bg-glass);font-family:var(--font-hud);font-weight:600;font-size:11px;letter-spacing:2px;cursor:pointer;transition:all 0.2s;flex:1;min-width:80px}
+.sess-btn.start{color:#00e5ff;border-color:rgba(0,229,255,0.4)}
+.sess-btn.start:hover{background:rgba(0,229,255,0.08);box-shadow:0 0 12px rgba(0,229,255,0.2);transform:translateY(-1px)}
+.sess-btn.start.rec{color:#ff3344;border-color:rgba(255,51,68,0.5);animation:recPulse 1.5s ease-in-out infinite}
+@keyframes recPulse{0%,100%{box-shadow:0 0 6px rgba(255,51,68,0.2)}50%{box-shadow:0 0 18px rgba(255,51,68,0.5)}}
+.sess-btn.end{color:#ff8888;border-color:rgba(255,136,136,0.4)}
+.sess-btn.end:hover{background:rgba(255,51,68,0.06);transform:translateY(-1px)}
 
 input,select{width:100%;background:var(--bg-glass);border:1px solid var(--border);color:var(--text);padding:9px 11px;border-radius:6px;font-family:var(--font-body);font-size:12px}
 input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 10px rgba(0,229,255,0.25)}
@@ -447,15 +461,18 @@ body.bet-open .big-btn.player::after,body.bet-open .big-btn.banker::after,body.b
       <button id="btnLook" style="display:none"></button>
       <div id="lastActionBox" class="act-status">待機中</div>
       <!-- AUTO BET -->
-      <div id="autoBetPanel" style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <button id="btnAutoBet" class="big-btn" style="background:#555;font-size:12px;padding:6px 12px;flex:1;min-width:80px" title="AUTO BET: BANKERに自動ベット。P連続5回以上でLOOK。最高BET $200で自動停止。">AUTO</button>
-        <div id="autoBetStatus" style="font-size:11px;color:var(--text-muted)">AUTO OFF</div>
+      <div id="autoBetPanel" style="margin-top:10px">
+        <button id="btnAutoBet" class="auto-btn" title="AUTO BET: BANKERに自動ベット。P連続5回以上でLOOK。最高BET $200で自動停止。">
+          <span id="autoBetLabel">⚡ AUTO BET</span>
+          <span class="auto-sub" id="autoBetSubLabel">OFF — タップで開始</span>
+        </button>
+        <div id="autoBetStatus" style="font-size:11px;color:var(--text-muted);margin-top:5px;text-align:center;font-family:var(--font-mono)">P連続: —</div>
       </div>
       <!-- 学習セッション管理 -->
-      <div id="sessionPanel" style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <button id="btnSessionStart" class="big-btn" style="background:#1a7a3a;font-size:12px;padding:6px 12px;flex:1;min-width:80px" title="学習セッション開始: このボタンを押してから友人がプレイ。BETしなかったラウンドが自動でLOOKとして記録される。">▶ セッション開始</button>
-        <button id="btnSessionEnd" class="big-btn" style="background:#555;font-size:12px;padding:6px 12px;flex:1;min-width:80px;display:none" title="学習セッション終了">■ セッション終了</button>
-        <div id="sessionStatus" style="font-size:11px;color:var(--text-muted)">学習OFF</div>
+      <div id="sessionPanel" style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <button id="btnSessionStart" class="sess-btn start" title="学習セッション開始: このボタンを押してから友人がプレイ。BETしなかったラウンドが自動でLOOKとして記録される。">▶ 学習REC</button>
+        <button id="btnSessionEnd" class="sess-btn end" style="display:none" title="学習セッション終了">■ REC停止</button>
+        <div id="sessionStatus" style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono)">REC OFF</div>
       </div>
     </div>
   </aside>
@@ -621,10 +638,15 @@ let _learnSession = {
 
 // ===== AUTO BET 管理 =====
 // BANKER固定の自動ベット。P連続5回以上でLOOK。最高BET $200で自動停止。
+// トリガー: スナップショット gameId ではなく executor の total_bets 増加で検知。
 let _autoBet = {
   active: false,
   pStreak: 0,           // P連続カウンター (我々が連続負けした回数)
-  currentGameId: null,  // 追跡中のgameId
+  // executor tracking (total_bets ベースのラウンド完了検知)
+  lastTotalBets: null,  // 前回 poll 時の total_bets
+  lastWins: null,       // 前回 poll 時の wins
+  lastLosses: null,     // 前回 poll 時の losses
+  lastLookSentAt: null, // LOOK送信時刻 (ms) — タイムアウト検知用
 };
 
 function _learnSessionCurrentSnap(){
@@ -727,20 +749,23 @@ function _endSession(){
 // ===== AUTO BET 関数群 =====
 function _renderAutoBetStatus() {
   const btn = document.getElementById('btnAutoBet');
+  const lbl = document.getElementById('autoBetLabel');
+  const sub = document.getElementById('autoBetSubLabel');
   const st  = document.getElementById('autoBetStatus');
   if (!btn || !st) return;
   if (_autoBet.active) {
-    btn.style.background = '#1a7a3a';
-    btn.textContent = 'AUTO 稼働中';
+    btn.classList.add('on');
+    if (lbl) lbl.textContent = '⚡ AUTO BET';
     const looking = _autoBet.pStreak >= 4;
-    const col = looking ? '#e74c3c' : '#4caf50';
-    st.innerHTML = `P連続: <span style="color:${col};font-weight:bold">${_autoBet.pStreak}回${looking?' (LOOK中)':''}</span>`;
-    st.style.color = '';
+    if (sub) sub.textContent = looking ? 'LOOK中' : '稼働中 — BANKER';
+    const col = looking ? '#e74c3c' : 'var(--win)';
+    st.innerHTML = `P連続: <span style="color:${col};font-weight:bold">${_autoBet.pStreak}回${looking?' — 次手LOOK':''}</span>`;
   } else {
-    btn.style.background = '#555';
-    btn.textContent = 'AUTO';
-    st.textContent = 'AUTO OFF';
-    st.style.color = 'var(--text-muted)';
+    btn.classList.remove('on');
+    if (lbl) lbl.textContent = '⚡ AUTO BET';
+    if (sub) sub.textContent = 'OFF — タップで開始';
+    st.textContent = 'P連続: —';
+    st.style.color = '';
   }
 }
 
@@ -748,7 +773,10 @@ function _autoBetStart() {
   if (!selected.table_id) { showToast('テーブルを選択してください', 'err'); return; }
   _autoBet.active = true;
   _autoBet.pStreak = 0;
-  _autoBet.currentGameId = null;
+  _autoBet.lastTotalBets = null;
+  _autoBet.lastWins = null;
+  _autoBet.lastLosses = null;
+  _autoBet.lastLookSentAt = null;
   _renderAutoBetStatus();
   updateButtonsGating();
   showToast('AUTO BET 開始 — BANKER 自動ベット', 'ok');
@@ -756,7 +784,10 @@ function _autoBetStart() {
 
 function _autoBetStop(reason) {
   _autoBet.active = false;
-  _autoBet.currentGameId = null;
+  _autoBet.lastTotalBets = null;
+  _autoBet.lastWins = null;
+  _autoBet.lastLosses = null;
+  _autoBet.lastLookSentAt = null;
   _renderAutoBetStatus();
   updateButtonsGating();
   if (reason) {
@@ -794,44 +825,82 @@ function _autoBetSendDecision(action, side) {
   }).catch(() => {});
 }
 
+// _autoBetSendNext: 次の BET/LOOK 決定を送る共通処理
+function _autoBetSendNext() {
+  const action = _autoBet.pStreak >= 4 ? 'LOOK' : 'BET';
+  const side   = action === 'BET' ? 'BANKER' : '';
+  _autoBetSendDecision(action, side);
+  _autoBet.lastLookSentAt = action === 'LOOK' ? Date.now() : null;
+  _renderAutoBetStatus();
+}
+
+// _autoBetCheck: executor の total_bets 増加をラウンド完了シグナルとして使う。
+// スナップショット gameId 検知の代わりに executor heartbeat を参照することで
+// タイミングのズレによる多重送信・送信漏れを防ぐ。
+// LOOK ラウンド (BET しないため total_bets が増えない) は 40 秒タイムアウトで検知。
+const _AUTO_BET_LOOK_TIMEOUT_MS = 40000;
+
 function _autoBetCheck() {
   if (!_autoBet.active) return;
   if (!selected.table_id) return;
-  const snap = _learnSessionCurrentSnap();
-  if (!snap || !snap.last_hand) return;
-  const gameId = snap.last_hand.gameId ? String(snap.last_hand.gameId) : null;
-  if (!gameId) return;
 
-  if (_autoBet.currentGameId === null) {
-    _autoBet.currentGameId = gameId;
-    _renderAutoBetStatus();
+  // 参照する executor: bettable 優先、なければ最初の要素
+  const exec = (_state.executors || []).find(e => e.bettable && e.total_bets != null)
+            || (_state.executors || []).find(e => e.total_bets != null);
+  if (!exec) return;
+
+  const curTotalBets = Number(exec.total_bets) || 0;
+  const curWins      = Number(exec.wins)        || 0;
+  const curLosses    = Number(exec.losses)      || 0;
+
+  // ── 初回: 基準値を記録して即 BET 送信 ──
+  if (_autoBet.lastTotalBets === null) {
+    _autoBet.lastTotalBets = curTotalBets;
+    _autoBet.lastWins      = curWins;
+    _autoBet.lastLosses    = curLosses;
+    _autoBetSendNext();
     return;
   }
-  if (gameId === _autoBet.currentGameId) return; // 同じラウンド
 
-  // ── ラウンド変化検知 ──
-  const winner = String(snap.last_hand.winner || '').toUpperCase();
-  _autoBet.currentGameId = gameId;
+  const betCompleted  = curTotalBets > _autoBet.lastTotalBets;
+  const lookTimedOut  = _autoBet.lastLookSentAt !== null
+                     && (Date.now() - _autoBet.lastLookSentAt) > _AUTO_BET_LOOK_TIMEOUT_MS;
 
-  if (winner.includes('PLAYER')) {
-    _autoBet.pStreak++;
-  } else if (winner.includes('BANKER')) {
-    _autoBet.pStreak = 0;
+  if (!betCompleted && !lookTimedOut) return;
+
+  // ── P連続カウンター更新 ──
+  if (betCompleted) {
+    // wins 増加 = BANKER 勝ち = 我々の勝ち → 連続リセット
+    // losses 増加 = PLAYER 勝ち = 我々の負け → 連続+1
+    if (curLosses > _autoBet.lastLosses)      _autoBet.pStreak++;
+    else if (curWins > _autoBet.lastWins)     _autoBet.pStreak = 0;
+    // TIE: 変化なし
+  } else {
+    // LOOK タイムアウト: BET しなかったので executor 統計が更新されない。
+    // スナップショットから最終結果を補完してカウンターを更新。
+    const snap = _learnSessionCurrentSnap();
+    if (snap && snap.last_hand) {
+      const w = String(snap.last_hand.winner || '').toUpperCase();
+      if (w.includes('PLAYER'))      _autoBet.pStreak++;
+      else if (w.includes('BANKER')) _autoBet.pStreak = 0;
+    }
   }
-  // TIE: カウント変化なし
 
-  // $200 停止判定 (全受け子の最高 bet_amount)
+  // 基準値を更新
+  _autoBet.lastTotalBets = curTotalBets;
+  _autoBet.lastWins      = curWins;
+  _autoBet.lastLosses    = curLosses;
+  _autoBet.lastLookSentAt = null;
+
+  // ── $200 停止判定 ──
   const maxBet = Math.max(0, ...(_state.executors || []).map(e => Number(e.bet_amount) || 0));
   if (maxBet >= 200) {
     _autoBetStop(`$200 到達 (最高BET額: $${maxBet.toFixed(0)})`);
     return;
   }
 
-  // BET/LOOK 判定: P連続4回までBET、5回以上でLOOK
-  const action = _autoBet.pStreak >= 4 ? 'LOOK' : 'BET';
-  const side   = action === 'BET' ? 'BANKER' : '';
-  _autoBetSendDecision(action, side);
-  _renderAutoBetStatus();
+  // ── 次の BET/LOOK 送信 ──
+  _autoBetSendNext();
 }
 
 // 直近 fetch 結果のハッシュ (簡易 fingerprint) で差分検知し, 変化時のみ再描画.
