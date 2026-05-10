@@ -1478,6 +1478,13 @@ def _update_from_game_msg(state: _PragmaticState, msg: dict[str, Any]) -> None:
         gid = str(msg["game"].get("id") or "")
         if gid:
             state.current_game_id = gid
+        # カードデータ調査ログ: game メッセージの全フィールドを記録（実装前の確認用）
+        _gd = msg["game"]
+        if any(k in _gd for k in ("cards", "player", "banker", "winner", "result", "state", "scores")):
+            try:
+                send_log(f"[card-debug] {json.dumps(_gd, ensure_ascii=False)[:600]}")
+            except Exception:
+                pass
         return
     if "timer" in msg and isinstance(msg["timer"], dict):
         state.last_timer = str(msg["timer"].get("value") or "")
