@@ -161,9 +161,10 @@ body.show-bt .big-btn.hidden-by-default{display:flex}
 .act-status.err{color:var(--lose);border-color:rgba(255,51,102,0.35)}
 .act-status.processing{color:var(--tie);border-color:rgba(255,204,0,0.35)}
 /* ===== AUTO BET button ===== */
-.auto-btn{padding:10px 16px;border-radius:10px;border:1.5px solid #444;background:var(--bg-glass);color:var(--text-muted);font-family:var(--font-hud);font-weight:700;font-size:13px;letter-spacing:3px;cursor:pointer;transition:all 0.2s;display:flex;flex-direction:column;align-items:center;gap:2px;width:100%}
-.auto-btn:hover{transform:translateY(-1px);border-color:#666}
-.auto-btn:active{transform:translateY(2px) scale(0.97);box-shadow:0 0 6px rgba(0,229,255,0.3) inset;transition:transform 0.05s,box-shadow 0.05s}
+.auto-btn{padding:10px 16px;border-radius:10px;border:1.5px solid #4d5a66;background:linear-gradient(180deg,rgba(180,210,235,0.16),rgba(70,90,110,0.12));color:var(--text-muted);font-family:var(--font-hud);font-weight:700;font-size:13px;letter-spacing:3px;cursor:pointer;transition:all 0.15s;display:flex;flex-direction:column;align-items:center;gap:2px;width:100%;position:relative;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.35),0 0 0 1px rgba(255,255,255,0.04) inset,0 2px 8px rgba(120,180,220,0.16) inset}
+.auto-btn:hover{transform:translateY(-2px);border-color:#7c9ab2;box-shadow:0 8px 18px rgba(0,0,0,0.38),0 0 16px rgba(124,154,178,0.25),0 2px 8px rgba(120,180,220,0.2) inset}
+.auto-btn:active{transform:translateY(2px) scale(0.98);box-shadow:0 1px 4px rgba(0,0,0,0.5),0 0 10px rgba(0,229,255,0.28) inset;transition:transform 0.05s,box-shadow 0.05s}
+.auto-btn:active::before{content:"";position:absolute;inset:0;border-radius:inherit;background:rgba(255,255,255,0.12);animation:btnFlash 0.25s ease-out;pointer-events:none}
 .auto-btn.on{background:linear-gradient(180deg,rgba(0,255,136,0.18),rgba(0,255,136,0.04));border-color:rgba(0,255,136,0.55);color:var(--win);box-shadow:0 0 14px rgba(0,255,136,0.25);animation:autoPulse 2.5s ease-in-out infinite}
 @keyframes autoPulse{0%,100%{box-shadow:0 0 10px rgba(0,255,136,0.2)}50%{box-shadow:0 0 26px rgba(0,255,136,0.55)}}
 .auto-btn .auto-sub{font-size:10px;letter-spacing:2px;opacity:0.65;font-weight:400;margin-top:1px}
@@ -649,6 +650,9 @@ let _autoBet = {
   lastLosses: null,     // 前回 poll 時の losses 合計
   lastTies: null,       // 前回 poll 時の ties 合計
   lastLookSentAt: null, // LOOK送信時刻 (ms) — タイムアウト検知用
+  lastSentAt: null,     // 直近 AUTO 送信時刻 (ms)
+  lastSentAction: null, // 直近 AUTO 送信アクション ('BET'|'LOOK')
+  lastBetWindowOpen: false, // 直近 poll 時の BET窓 open 状態（立ち上がり検知用）
 };
 
 function _learnSessionCurrentSnap(){
@@ -780,6 +784,9 @@ function _autoBetStart() {
   _autoBet.lastLosses = null;
   _autoBet.lastTies = null;
   _autoBet.lastLookSentAt = null;
+  _autoBet.lastSentAt = null;
+  _autoBet.lastSentAction = null;
+  _autoBet.lastBetWindowOpen = false;
   _renderAutoBetStatus();
   updateButtonsGating();
   showToast('AUTO BET 開始 — BANKER 自動ベット', 'ok');
@@ -792,6 +799,9 @@ function _autoBetStop(reason) {
   _autoBet.lastLosses = null;
   _autoBet.lastTies = null;
   _autoBet.lastLookSentAt = null;
+  _autoBet.lastSentAt = null;
+  _autoBet.lastSentAction = null;
+  _autoBet.lastBetWindowOpen = false;
   _renderAutoBetStatus();
   updateButtonsGating();
   if (reason) {
@@ -803,8 +813,18 @@ function _autoBetStop(reason) {
 }
 
 function _autoBetSendDecision(action, side) {
-  if (document.body.classList.contains('stopped')) return;
-  if (!selected.table_id) return;
+  const actJa = {LOOK:'様子見','BET':'BET','SWITCH_TABLE':'テーブル移動'}[action]||action;
+  const actLabel = actJa + (side ? ('/'+side) : '');
+  if (document.body.classList.contains('stopped')) {
+    showToast('緊急停止中です', 'err');
+    setActionBox('['+actLabel+'] ❌ 緊急停止中', 'err');
+    return;
+  }
+  if (!selected.table_id) {
+    showToast('テーブルを選択してください', 'err');
+    setActionBox('['+actLabel+'] ❌ テーブル未選択', 'err');
+    return;
+  }
   const provider = document.getElementById('providerSel').value;
   const did = decisionId();
   const _seqExec = _state.executors.find(e => e.seq && e.bettable) || _state.executors.find(e => e.seq);
@@ -822,11 +842,25 @@ function _autoBetSendDecision(action, side) {
     },
   };
   if (action === 'BET') _learnSession.betSentThisRound = true;
+  lastDecisionWatch = { id:did, action, side:side||'', startedAt:Date.now(), targetExecId:'', targetTable:selected.table_name };
+  if(action === 'BET') document.body.classList.add('sending-bet');
+  setActionBox('['+actLabel+'] 📨 AUTO送信中...','processing');
   apiPost('/api/decisions', payload).then(res => {
     if (res && res.accepted) {
       showToast(`AUTO: ${action}${side ? '/' + side : ''} 送信`, 'ok');
+      setActionBox('['+actLabel+'] ⏳ AUTO受理 → executor 実行中...','processing');
+    } else {
+      document.body.classList.remove('sending-bet');
+      showToast('AUTO送信失敗: '+fmt(res), 'err');
+      setActionBox('['+actLabel+'] ❌ AUTO送信失敗: '+(res && (res.error||res.reason)||'?'),'err');
+      lastDecisionWatch = null;
     }
-  }).catch(() => {});
+  }).catch(err => {
+    document.body.classList.remove('sending-bet');
+    showToast('AUTO通信エラー: '+err, 'err');
+    setActionBox('['+actLabel+'] ❌ AUTO通信エラー','err');
+    lastDecisionWatch = null;
+  });
 }
 
 // _autoBetSendNext: 次の BET/LOOK 決定を送る共通処理
@@ -834,6 +868,8 @@ function _autoBetSendNext() {
   const action = _autoBet.pStreak >= 4 ? 'LOOK' : 'BET';
   const side   = action === 'BET' ? 'BANKER' : '';
   _autoBetSendDecision(action, side);
+  _autoBet.lastSentAt = Date.now();
+  _autoBet.lastSentAction = action;
   _autoBet.lastLookSentAt = action === 'LOOK' ? Date.now() : null;
   _renderAutoBetStatus();
 }
@@ -843,6 +879,12 @@ function _autoBetSendNext() {
 // タイミングのズレによる多重送信・送信漏れを防ぐ。
 // LOOK ラウンド (BET しないため total_bets が増えない) は 40 秒タイムアウトで検知。
 const _AUTO_BET_LOOK_TIMEOUT_MS = 40000;
+function _autoBetHasOutstandingDecision(){
+  const isAuto = d => String((((d||{}).friend_action||{}).note||'')).toLowerCase() === 'auto_bet';
+  const pend = (_state.decisions && _state.decisions.pending) || [];
+  const proc = (_state.decisions && _state.decisions.processing) || [];
+  return pend.some(isAuto) || proc.some(isAuto);
+}
 
 function _autoBetCheck() {
   if (!_autoBet.active) return;
@@ -868,22 +910,44 @@ function _autoBetCheck() {
   const curWins      = agg.wins;
   const curLosses    = agg.losses;
   const curTies      = agg.ties;
+  const anyBetWindowOpen = targets.length > 0 && targets.some(_isBetWindowOpen);
+  const betWindowOpenEdge = anyBetWindowOpen && !_autoBet.lastBetWindowOpen;
+  const outstanding = _autoBetHasOutstandingDecision();
 
-  // ── 初回: 基準値を記録して即 BET 送信 ──
+  // ── 初回: 基準値のみ記録（BET窓が開いたタイミングで送信） ──
   if (_autoBet.lastTotalBets === null) {
     _autoBet.lastTotalBets = curTotalBets;
     _autoBet.lastWins      = curWins;
     _autoBet.lastLosses    = curLosses;
     _autoBet.lastTies      = curTies;
-    _autoBetSendNext();
+  }
+
+  // まだ1回も送っていない状態: BET窓が開くまで待機してから送信
+  if (_autoBet.lastSentAction === null) {
+    if (!outstanding && betWindowOpenEdge) _autoBetSendNext();
+    _autoBet.lastBetWindowOpen = anyBetWindowOpen;
     return;
   }
 
   const betCompleted  = curTotalBets > _autoBet.lastTotalBets;
   const lookTimedOut  = _autoBet.lastLookSentAt !== null
                      && (Date.now() - _autoBet.lastLookSentAt) > _AUTO_BET_LOOK_TIMEOUT_MS;
+  if (outstanding) {
+    _autoBet.lastBetWindowOpen = anyBetWindowOpen;
+    return;
+  }
 
-  if (!betCompleted && !lookTimedOut) return;
+  if (!betCompleted && !lookTimedOut) {
+    // 前回送信が失敗で反映されなかった場合は、次のBET窓立ち上がりで再送
+    if (betWindowOpenEdge) {
+      _autoBet.lastSentAt = null;
+      _autoBet.lastSentAction = null;
+      _autoBet.lastLookSentAt = null;
+      _autoBetSendNext();
+    }
+    _autoBet.lastBetWindowOpen = anyBetWindowOpen;
+    return;
+  }
 
   // ── P連続カウンター更新 ──
   if (betCompleted) {
@@ -919,15 +983,15 @@ function _autoBetCheck() {
   _autoBet.lastLosses    = curLosses;
   _autoBet.lastTies      = curTies;
   _autoBet.lastLookSentAt = null;
+  _autoBet.lastSentAt = null;
+  _autoBet.lastSentAction = null;
+  _autoBet.lastBetWindowOpen = anyBetWindowOpen;
 
   // ── $200 停止判定: selected table の対象GUIのみ確認 ──
   if (agg.maxBet >= 200) {
     _autoBetStop(`$200 到達 (BET額: $${agg.maxBet.toFixed(0)})`);
     return;
   }
-
-  // ── 次の BET/LOOK 送信 ──
-  _autoBetSendNext();
 }
 
 // 直近 fetch 結果のハッシュ (簡易 fingerprint) で差分検知し, 変化時のみ再描画.
