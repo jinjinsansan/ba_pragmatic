@@ -446,6 +446,11 @@ body.bet-open .big-btn.player::after,body.bet-open .big-btn.banker::after,body.b
       <!-- btnLook は削除済 (UX: LOOK は使われていない). JS も無効化. -->
       <button id="btnLook" style="display:none"></button>
       <div id="lastActionBox" class="act-status">待機中</div>
+      <!-- AUTO BET -->
+      <div id="autoBetPanel" style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <button id="btnAutoBet" class="big-btn" style="background:#555;font-size:12px;padding:6px 12px;flex:1;min-width:80px" title="AUTO BET: BANKERに自動ベット。P連続5回以上でLOOK。最高BET $200で自動停止。">AUTO</button>
+        <div id="autoBetStatus" style="font-size:11px;color:var(--text-muted)">AUTO OFF</div>
+      </div>
       <!-- 学習セッション管理 -->
       <div id="sessionPanel" style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <button id="btnSessionStart" class="big-btn" style="background:#1a7a3a;font-size:12px;padding:6px 12px;flex:1;min-width:80px" title="学習セッション開始: このボタンを押してから友人がプレイ。BETしなかったラウンドが自動でLOOKとして記録される。">▶ セッション開始</button>
@@ -614,6 +619,14 @@ let _learnSession = {
   autoLookCount: 0,         // 自動LOOK記録数
 };
 
+// ===== AUTO BET 管理 =====
+// BANKER固定の自動ベット。P連続5回以上でLOOK。最高BET $200で自動停止。
+let _autoBet = {
+  active: false,
+  pStreak: 0,           // P連続カウンター (我々が連続負けした回数)
+  currentGameId: null,  // 追跡中のgameId
+};
+
 function _learnSessionCurrentSnap(){
   const provider = document.getElementById('providerSel').value;
   const list = (_state.snapshots && _state.snapshots.snapshots && _state.snapshots.snapshots[provider]) || {};
@@ -711,6 +724,116 @@ function _endSession(){
     .catch(() => showToast(`学習セッション終了。自動LOOK記録: ${_learnSession.autoLookCount}件`, 'ok'));
 }
 
+// ===== AUTO BET 関数群 =====
+function _renderAutoBetStatus() {
+  const btn = document.getElementById('btnAutoBet');
+  const st  = document.getElementById('autoBetStatus');
+  if (!btn || !st) return;
+  if (_autoBet.active) {
+    btn.style.background = '#1a7a3a';
+    btn.textContent = 'AUTO 稼働中';
+    const looking = _autoBet.pStreak >= 4;
+    const col = looking ? '#e74c3c' : '#4caf50';
+    st.innerHTML = `P連続: <span style="color:${col};font-weight:bold">${_autoBet.pStreak}回${looking?' (LOOK中)':''}</span>`;
+    st.style.color = '';
+  } else {
+    btn.style.background = '#555';
+    btn.textContent = 'AUTO';
+    st.textContent = 'AUTO OFF';
+    st.style.color = 'var(--text-muted)';
+  }
+}
+
+function _autoBetStart() {
+  if (!selected.table_id) { showToast('テーブルを選択してください', 'err'); return; }
+  _autoBet.active = true;
+  _autoBet.pStreak = 0;
+  _autoBet.currentGameId = null;
+  _renderAutoBetStatus();
+  updateButtonsGating();
+  showToast('AUTO BET 開始 — BANKER 自動ベット', 'ok');
+}
+
+function _autoBetStop(reason) {
+  _autoBet.active = false;
+  _autoBet.currentGameId = null;
+  _renderAutoBetStatus();
+  updateButtonsGating();
+  if (reason) {
+    alert('AUTO BET 停止 — ' + reason + '\n手動に切り替えてください。');
+    showToast('AUTO BET 停止: ' + reason, 'err');
+  } else {
+    showToast('AUTO BET 停止', 'ok');
+  }
+}
+
+function _autoBetSendDecision(action, side) {
+  if (document.body.classList.contains('stopped')) return;
+  if (!selected.table_id) return;
+  const provider = document.getElementById('providerSel').value;
+  const did = decisionId();
+  const _seqExec = _state.executors.find(e => e.seq && e.bettable) || _state.executors.find(e => e.seq);
+  const _seqState = (_seqExec && _seqExec.seq) || {};
+  const payload = {
+    decision_id: did, provider,
+    table_id: selected.table_id, table_name: selected.table_name,
+    qpid_table_id: String(selected.qpid_table_id || ''),
+    target_executor_id: '',
+    friend_action: {
+      action, side: side || '', amount: 0, note: 'auto_bet',
+      in_learning_session: _learnSession.active,
+      overshoot: _seqState.overshoot != null ? Number(_seqState.overshoot) : null,
+      unit_idx: _seqState.unit_idx != null ? Number(_seqState.unit_idx) : null,
+    },
+  };
+  if (action === 'BET') _learnSession.betSentThisRound = true;
+  apiPost('/api/decisions', payload).then(res => {
+    if (res && res.accepted) {
+      showToast(`AUTO: ${action}${side ? '/' + side : ''} 送信`, 'ok');
+    }
+  }).catch(() => {});
+}
+
+function _autoBetCheck() {
+  if (!_autoBet.active) return;
+  if (!selected.table_id) return;
+  const snap = _learnSessionCurrentSnap();
+  if (!snap || !snap.last_hand) return;
+  const gameId = snap.last_hand.gameId ? String(snap.last_hand.gameId) : null;
+  if (!gameId) return;
+
+  if (_autoBet.currentGameId === null) {
+    _autoBet.currentGameId = gameId;
+    _renderAutoBetStatus();
+    return;
+  }
+  if (gameId === _autoBet.currentGameId) return; // 同じラウンド
+
+  // ── ラウンド変化検知 ──
+  const winner = String(snap.last_hand.winner || '').toUpperCase();
+  _autoBet.currentGameId = gameId;
+
+  if (winner.includes('PLAYER')) {
+    _autoBet.pStreak++;
+  } else if (winner.includes('BANKER')) {
+    _autoBet.pStreak = 0;
+  }
+  // TIE: カウント変化なし
+
+  // $200 停止判定 (全受け子の最高 bet_amount)
+  const maxBet = Math.max(0, ...(_state.executors || []).map(e => Number(e.bet_amount) || 0));
+  if (maxBet >= 200) {
+    _autoBetStop(`$200 到達 (最高BET額: $${maxBet.toFixed(0)})`);
+    return;
+  }
+
+  // BET/LOOK 判定: P連続4回までBET、5回以上でLOOK
+  const action = _autoBet.pStreak >= 4 ? 'LOOK' : 'BET';
+  const side   = action === 'BET' ? 'BANKER' : '';
+  _autoBetSendDecision(action, side);
+  _renderAutoBetStatus();
+}
+
 // 直近 fetch 結果のハッシュ (簡易 fingerprint) で差分検知し, 変化時のみ再描画.
 // 500ms 間隔 poll × innerHTML 丸ごと再構築 = 視覚的なフラッシュを防ぐ.
 let _lastRenderFingerprint = { snaps: '', execs: '', decs: '' };
@@ -735,6 +858,7 @@ async function refreshOnce(){
     _state.stats = st;
     _state.snapshots = snaps;
     _learnSessionCheck();   // ラウンド変化を監視→自動LOOK記録
+    _autoBetCheck();        // AUTO BET: ラウンド変化を監視→自動BET/LOOK送信
     _updateSessionStatus(); // セッション経過時間表示更新
     _state.executors = (execs && execs.executors)||[];
     _state.decisions.pending = (pend && pend.decisions)||[];
@@ -1236,7 +1360,10 @@ function renderTables(){
       renderDetailPanel();
       renderStatsBar();
       const clickToSwitch = document.getElementById('autoSwitchToggle').checked;
-      if(clickToSwitch && !wasSame) sendDecision('SWITCH_TABLE','');
+      if(clickToSwitch && !wasSame){
+        const ok = confirm(`テーブルを「${toJaTableName(name||it.tid)}」に切り替えますか？\nexecutorがロビーへ移動します。`);
+        if(ok) sendDecision('SWITCH_TABLE','');
+      }
     };
     wrap.appendChild(btn);
   }
@@ -1412,7 +1539,7 @@ function updateButtonsGating(){
   document.getElementById('btnLook').disabled = nOnTarget===0;
   document.getElementById('btnB').disabled = !allowB;
   document.getElementById('btnT').disabled = !allowT;
-  document.getElementById('btnSwitch').disabled = !selected.table_id || nTargets===0;
+  document.getElementById('btnSwitch').disabled = !selected.table_id || nTargets===0 || _autoBet.active;
   const info=document.getElementById('broadcastInfo');
   const listEl=document.getElementById('broadcastList');
   const switchSt = document.getElementById('switchStatus');
@@ -1722,13 +1849,19 @@ document.getElementById('autoSwitchToggle').onchange = ()=>{ persistState(); };
     showToast('結果表示遅延: '+v+'s','ok');
   });
 })();
-document.getElementById('btnSwitch').onclick = ()=> sendDecision('SWITCH_TABLE','');
+document.getElementById('btnSwitch').onclick = ()=>{
+  const tname = selected ? toJaTableName(selected.table_name||selected.table_id||'?') : '?';
+  if(confirm(`テーブルを「${tname}」に切り替えますか？\nexecutorがロビーへ移動します。`)) sendDecision('SWITCH_TABLE','');
+};
 document.getElementById('btnLook').onclick = ()=> sendDecision('LOOK','');
 document.getElementById('btnP').onclick = ()=> sendDecision('BET','PLAYER');
 document.getElementById('btnB').onclick = ()=> sendDecision('BET','BANKER');
 document.getElementById('btnT').onclick = ()=> sendDecision('BET','TIE');
 document.getElementById('btnSessionStart').onclick = _startSession;
 document.getElementById('btnSessionEnd').onclick   = _endSession;
+document.getElementById('btnAutoBet').onclick = () => {
+  if (_autoBet.active) { _autoBetStop(null); } else { _autoBetStart(); }
+};
 document.getElementById('modeToggle').onclick = toggleMode;
 document.getElementById('emergencyStop').onclick = toggleStop;
 document.getElementById('favBtn').onclick = toggleFavorite;

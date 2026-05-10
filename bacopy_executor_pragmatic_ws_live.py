@@ -4927,6 +4927,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         send_action("Waiting for Stake table entry... Please enter a baccarat table in the opened browser window.")
         t0 = time.time()
         last_notice = 0.0
+        _WT_RETRY_INTERVAL = 120.0  # 120秒ごとにロビー再スイープ
+        _WT_MAX_RETRIES = 3
+        _wt_retry_count = 0
         while not (state.game_ws_url and state.table_id and state.user_id and state.jsession_id):
             _dismiss_session_elsewhere_modal(page, state)
             try:
@@ -4942,13 +4945,54 @@ def main(argv: Optional[list[str]] = None) -> int:
             except Exception:
                 pass
 
+            _elapsed = time.time() - t0
+
+            # 120秒ごとに自動リトライ（最大3回）
+            _due_retry = int(_elapsed // _WT_RETRY_INTERVAL)
+            if _due_retry > _wt_retry_count:
+                if _wt_retry_count >= _WT_MAX_RETRIES:
+                    # リトライ上限超過 → executor 終了してユーザーに再起動を促す
+                    _msg = f"[wait-table] retry exhausted ({_WT_MAX_RETRIES}回) — game WS not received after {_elapsed:.0f}s"
+                    try: send_log(_msg)
+                    except Exception: pass
+                    try: send_action(f"WAIT TABLE タイムアウト ({_WT_MAX_RETRIES}回リトライ失敗) — 停止→再開してください")
+                    except Exception: pass
+                    raise RuntimeError(_msg)
+                _wt_retry_count += 1
+                _retry_tn = _initial_substr
+                _retry_qpid = _master_qpid
+                try:
+                    _m_tn, _m_qpid, _ = _fetch_master_last_table()
+                    if _m_tn or _m_qpid:
+                        _retry_tn, _retry_qpid = _m_tn, _m_qpid
+                except Exception:
+                    pass
+                try:
+                    send_log(f"[wait-table] auto-retry {_wt_retry_count}/{_WT_MAX_RETRIES} — {_elapsed:.0f}s 経過、ロビー再スイープ (qpid={_retry_qpid or '-'})")
+                    send_action(f"WAIT TABLE — ロビー再スイープ中 ({_wt_retry_count}/{_WT_MAX_RETRIES}回目)")
+                except Exception:
+                    pass
+                try:
+                    _join_table(
+                        page,
+                        table_substr=_retry_tn,
+                        qpid_table_id=_retry_qpid,
+                        auto_click_wait_sec=30,
+                        state=state,
+                        on_tick=lambda: heartbeat("running"),
+                        is_initial=False,
+                    )
+                except Exception as _wt_e:
+                    try: send_log(f"[wait-table] auto-retry failed: {_wt_e}")
+                    except Exception: pass
+
             if time.time() - last_notice >= 30.0:
                 last_notice = time.time()
                 try:
-                    print(f"[Stage 5] waiting... elapsed={time.time()-t0:.0f}s url={page.url}", flush=True)
+                    print(f"[Stage 5] waiting... elapsed={_elapsed:.0f}s url={page.url}", flush=True)
                 except Exception:
-                    print(f"[Stage 5] waiting... elapsed={time.time()-t0:.0f}s", flush=True)
-                send_action("Waiting for Stake table entry... (login/click a table in the browser window)")
+                    print(f"[Stage 5] waiting... elapsed={_elapsed:.0f}s", flush=True)
+                send_action(f"Waiting for Stake table entry... ({_elapsed:.0f}s / retry {_wt_retry_count}/{_WT_MAX_RETRIES})")
                 # Master UI に pending SWITCH_TABLE があれば自動でクリック試行
                 try:
                     _s5_tn, _s5_qpid, _s5_cat = _fetch_master_last_table()
