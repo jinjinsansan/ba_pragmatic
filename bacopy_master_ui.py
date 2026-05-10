@@ -844,14 +844,16 @@ function _autoBetCheck() {
   if (!_autoBet.active) return;
   if (!selected.table_id) return;
 
-  // 参照する executor: bettable 優先、なければ最初の要素
-  const exec = (_state.executors || []).find(e => e.bettable && e.total_bets != null)
-            || (_state.executors || []).find(e => e.total_bets != null);
+  // 参照する executor: bettable かつ gui データあり優先
+  // ※ total_bets 等は e.gui 以下にネストされている
+  const exec = (_state.executors || []).find(e => e.bettable && e.gui)
+            || (_state.executors || [])[0];
   if (!exec) return;
+  const gui = exec.gui || {};
 
-  const curTotalBets = Number(exec.total_bets) || 0;
-  const curWins      = Number(exec.wins)        || 0;
-  const curLosses    = Number(exec.losses)      || 0;
+  const curTotalBets = Number(gui.total_bets) || 0;
+  const curWins      = Number(gui.wins)        || 0;
+  const curLosses    = Number(gui.losses)      || 0;
 
   // ── 初回: 基準値を記録して即 BET 送信 ──
   if (_autoBet.lastTotalBets === null) {
@@ -892,8 +894,11 @@ function _autoBetCheck() {
   _autoBet.lastLosses    = curLosses;
   _autoBet.lastLookSentAt = null;
 
-  // ── $200 停止判定 ──
-  const maxBet = Math.max(0, ...(_state.executors || []).map(e => Number(e.bet_amount) || 0));
+  // ── $200 停止判定 (bet_amount は e.seq または e.gui 以下) ──
+  const maxBet = Math.max(0, ...(_state.executors || []).map(e => {
+    const g = e.gui || {}; const s = e.seq || {};
+    return Number(s.bet_amount || g.bet_amount) || 0;
+  }));
   if (maxBet >= 200) {
     _autoBetStop(`$200 到達 (最高BET額: $${maxBet.toFixed(0)})`);
     return;
