@@ -24,8 +24,8 @@ export async function POST(req: NextRequest) {
   if (!amount || !wallet_address || !network) {
     return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
   }
-  if (!['TRC-20', 'ERC-20'].includes(network)) {
-    return NextResponse.json({ error: 'Invalid network' }, { status: 400 })
+  if (network !== 'TRC-20') {
+    return NextResponse.json({ error: 'Invalid network (TRC-20 only)' }, { status: 400 })
   }
 
   const admin = createAdminClient()
