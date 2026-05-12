@@ -1003,12 +1003,6 @@ function _autoBetCheck() {
     _autoBetStop(`$200 到達 (BET額: $${agg.maxBet.toFixed(0)})`);
     return;
   }
-
-  // [Bug1/2修正] BET窓がすでに開いていれば即座に送信
-  // LOOKタイムアウト後の再開遅延 & betCompleted時のエッジ検知ミスを防止
-  if (!outstanding && anyBetWindowOpen) {
-    _autoBetSendNext();
-  }
 }
 
 // 直近 fetch 結果のハッシュ (簡易 fingerprint) で差分検知し, 変化時のみ再描画.
