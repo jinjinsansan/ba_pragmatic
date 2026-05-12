@@ -48,6 +48,8 @@ BET_MODE_FLAT_1USD = "flat_1usd"
 BET_MODE_SEQ_USER10 = "seq_user10"
 BET_MODE_NEW_SEQ = "newseq"
 BET_MODE_NEW_SEQ_30 = "newseq30"
+BET_MODE_SMALL3 = "small3"    # SMALL SEQ $3スタート (3,5,7,...,1000)
+BET_MODE_SMALL02 = "small02"  # SMALL SEQ $0.20スタート (0.2,0.4,...,66.6)
 BET_MODE_COUNTER_SEQ7 = "counter_seq7"  # legacy
 
 SEQ_USER10 = [
@@ -64,8 +66,24 @@ SEQ_NEW = [
     1090, 1260, 1440, 1640, 1870, 2150, 2450, 2800,
 ]
 
+# SMALL SEQ $3スタート (元祖ロジック準拠, 最大$1000)
+SEQ_SMALL3 = [
+    3, 5, 7, 12, 17, 23, 30,
+    38, 47, 57, 68, 70, 83, 97,
+    112, 128, 145, 165, 190, 220, 255, 300, 360,
+    420, 500, 600, 700, 800, 900, 1000,
+]
 
-def _seq_for_bet_mode(mode: str) -> list[int]:
+# SMALL SEQ $0.20スタート (SEQ_SMALL3を比率0.2/3でスケール、$0.20刻み、重複修正済み、最大$66.6)
+SEQ_SMALL02 = [
+    0.2, 0.4, 0.6, 0.8, 1.2, 1.6, 2.0,
+    2.6, 3.2, 3.8, 4.6, 4.8, 5.6, 6.4,
+    7.4, 8.6, 9.6, 11.0, 12.6, 14.6, 17.0, 20.0, 24.0,
+    28.0, 33.4, 40.0, 46.6, 53.4, 60.0, 66.6,
+]
+
+
+def _seq_for_bet_mode(mode: str) -> list:
     m = str(mode or "").strip().lower()
     if m == BET_MODE_SEQ_USER10:
         return list(SEQ_USER10)
@@ -73,6 +91,10 @@ def _seq_for_bet_mode(mode: str) -> list[int]:
         return list(SEQ_NEW)
     if m == BET_MODE_NEW_SEQ_30:
         return list(SEQ_NEW[1:])  # $30スタート (最初の$10をスキップ)
+    if m == BET_MODE_SMALL3:
+        return list(SEQ_SMALL3)
+    if m == BET_MODE_SMALL02:
+        return list(SEQ_SMALL02)
     if m == BET_MODE_FLAT_1USD:
         return [1]
     return list(SEQ_COUNTER)  # legacy fallback
@@ -453,22 +475,24 @@ class Seq7Session:
             self.daily_open_balance = float(balance)
         self._save_state()
 
-    def bet_unit(self) -> int:
+    def bet_unit(self) -> float:
+        # float対応: SMALL02など小数SEQでint()截断を防ぐ
         idx = self.tracker.current_unit_idx
         unit = self.seq[min(idx, len(self.seq) - 1)]
-        return int(unit)
+        return float(unit)
 
     def bet_amount(self) -> float:
-        return float(self.bet_unit()) * float(self.chip_base)
+        return self.bet_unit() * float(self.chip_base)
 
-    def effective_profit_chips(self) -> int:
-        cp = int(self.tracker.cumulative_profit)
+    def effective_profit_chips(self) -> float:
+        # float対応: SMALL02など小数SEQでint()截断を防ぐ
+        cp = float(self.tracker.cumulative_profit)
         turns = self.tracker.current_turns
         if turns:
             wins = turns.count("O")
             losses = turns.count("X")
             unit = self.seq[min(self.tracker.current_unit_idx, len(self.seq) - 1)]
-            cp += (wins - losses) * int(unit)
+            cp += (wins - losses) * float(unit)
         return cp
 
     def should_reset(self) -> bool:
@@ -4268,8 +4292,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     bet_mode = str(args.bet_mode or BET_MODE_FLAT_1USD).strip().lower()
     seq_for_mode = _seq_for_bet_mode(bet_mode)
-    # flat_1usd / seq_user10 / newseq は「SEQの値=USD」として扱うため chip_base=1 固定
-    if bet_mode in (BET_MODE_FLAT_1USD, BET_MODE_SEQ_USER10, BET_MODE_NEW_SEQ, BET_MODE_NEW_SEQ_30):
+    # flat_1usd / seq_user10 / newseq / small系 は「SEQの値=USD」として扱うため chip_base=1 固定
+    if bet_mode in (BET_MODE_FLAT_1USD, BET_MODE_SEQ_USER10, BET_MODE_NEW_SEQ, BET_MODE_NEW_SEQ_30, BET_MODE_SMALL3, BET_MODE_SMALL02):
         chip_base = 1.0
     else:
         chip_base = float(args.chip_base) if float(args.chip_base or 0) > 0 else float(args.flat_amount or 1.0)
@@ -5385,6 +5409,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         except Exception:
             max_recover_attempts = 5
         _stake_balance_nudge_last_at = 0.0  # Stake WS balance silence 対策 (#6)
+        _blank_screen_since: float | None = None  # [Bug4] 白画面継続開始時刻
 
         def _clear_pragmatic_session_state() -> None:
             # identifiers
@@ -5724,6 +5749,57 @@ def main(argv: Optional[list[str]] = None) -> int:
                         send_log(f"[stake-ws] WS totally dead {int(_stake_ws_total_silence)}s — triggering recover")
                         recover_session(f"stake_ws_dead {int(_stake_ws_total_silence)}s")
                     continue
+            except Exception:
+                pass
+
+            # [Bug4] BLANK SCREEN watchdog: iframe未取得/主要DOM欠落/body空を継続検知して復旧
+            try:
+                _BLANK_SCREEN_TRIGGER_SEC = 30  # 30秒以上継続で recover_session 発動
+                _blank_js = """
+                    () => {
+                        try {
+                            const body = document.body;
+                            if (!body || !body.innerHTML || body.innerHTML.trim().length < 50)
+                                return 'body_empty';
+                            const iframe = document.querySelector(
+                                'iframe[src*="pragmatic"], iframe[src*="dga"], iframe[src*="game"]'
+                            );
+                            const canvas  = document.querySelector('canvas');
+                            const video   = document.querySelector('video');
+                            if (!iframe && !canvas && !video) return 'no_game_element';
+                            return 'ok';
+                        } catch(e) { return 'eval_error_' + String(e).slice(0,40); }
+                    }
+                """
+                _blank_result = page.evaluate(_blank_js, timeout=3000)
+                if _blank_result != "ok":
+                    if _blank_screen_since is None:
+                        _blank_screen_since = time.time()
+                        send_log(f"[blank-screen] 白画面検知開始: {_blank_result}")
+                    else:
+                        _blank_elapsed = time.time() - _blank_screen_since
+                        if (
+                            _blank_elapsed >= _BLANK_SCREEN_TRIGGER_SEC
+                            and not recover_exhausted
+                            and time.time() - float(last_recover_at or 0) >= float(args.ws_recover_cooldown_sec or 60)
+                        ):
+                            try:
+                                _ss_path = f"/tmp/blank_screen_{int(time.time())}.png"
+                                page.screenshot(path=_ss_path)
+                                send_log(f"[blank-screen] スクリーンショット保存: {_ss_path}")
+                            except Exception as _sse:
+                                send_log(f"[blank-screen] スクリーンショット失敗: {_sse}")
+                            send_log(
+                                f"[blank-screen] {int(_blank_elapsed)}秒継続({_blank_result}) "
+                                f"→ recover_session 発動"
+                            )
+                            _blank_screen_since = None
+                            recover_session(f"blank_screen_{_blank_result}")
+                            continue
+                else:
+                    if _blank_screen_since is not None:
+                        send_log("[blank-screen] 解消 → 監視リセット")
+                    _blank_screen_since = None
             except Exception:
                 pass
 

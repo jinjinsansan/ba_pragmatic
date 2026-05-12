@@ -653,6 +653,7 @@ let _autoBet = {
   lastSentAt: null,     // 直近 AUTO 送信時刻 (ms)
   lastSentAction: null, // 直近 AUTO 送信アクション ('BET'|'LOOK')
   lastBetWindowOpen: false, // 直近 poll 時の BET窓 open 状態（立ち上がり検知用）
+  lastResolvedGameId: null, // [Bug3修正] snapshot補完で処理済みのgameId（二重処理防止）
 };
 
 function _learnSessionCurrentSnap(){
@@ -787,6 +788,7 @@ function _autoBetStart() {
   _autoBet.lastSentAt = null;
   _autoBet.lastSentAction = null;
   _autoBet.lastBetWindowOpen = false;
+  _autoBet.lastResolvedGameId = null;
   _renderAutoBetStatus();
   updateButtonsGating();
   showToast('AUTO BET 開始 — BANKER 自動ベット', 'ok');
@@ -802,6 +804,7 @@ function _autoBetStop(reason) {
   _autoBet.lastSentAt = null;
   _autoBet.lastSentAction = null;
   _autoBet.lastBetWindowOpen = false;
+  _autoBet.lastResolvedGameId = null;
   _renderAutoBetStatus();
   updateButtonsGating();
   if (reason) {
@@ -958,22 +961,30 @@ function _autoBetCheck() {
     else if (curTies > (_autoBet.lastTies || 0)) {
       // TIE: 変化なし
     } else {
-      // 差分が取れない場合のみ snapshot を補完利用
+      // 差分が取れない場合のみ snapshot を補完利用 [Bug3修正: gameId重複チェック付き]
       const snap = _learnSessionCurrentSnap();
       if (snap && snap.last_hand) {
-        const w = String(snap.last_hand.winner || '').toUpperCase();
-        if (w.includes('PLAYER'))      _autoBet.pStreak++;
-        else if (w.includes('BANKER')) _autoBet.pStreak = 0;
+        const gid = String(snap.last_hand.gameId || '');
+        if (!gid || gid !== _autoBet.lastResolvedGameId) {
+          const w = String(snap.last_hand.winner || '').toUpperCase();
+          if (w.includes('PLAYER'))      _autoBet.pStreak++;
+          else if (w.includes('BANKER')) _autoBet.pStreak = 0;
+          if (gid) _autoBet.lastResolvedGameId = gid;
+        }
       }
     }
   } else {
     // LOOK タイムアウト: BET しなかったので executor 統計が更新されない。
-    // スナップショットから最終結果を補完してカウンターを更新。
+    // スナップショットから最終結果を補完 [Bug3修正: gameId重複チェック付き]
     const snap = _learnSessionCurrentSnap();
     if (snap && snap.last_hand) {
-      const w = String(snap.last_hand.winner || '').toUpperCase();
-      if (w.includes('PLAYER'))      _autoBet.pStreak++;
-      else if (w.includes('BANKER')) _autoBet.pStreak = 0;
+      const gid = String(snap.last_hand.gameId || '');
+      if (!gid || gid !== _autoBet.lastResolvedGameId) {
+        const w = String(snap.last_hand.winner || '').toUpperCase();
+        if (w.includes('PLAYER'))      _autoBet.pStreak++;
+        else if (w.includes('BANKER')) _autoBet.pStreak = 0;
+        if (gid) _autoBet.lastResolvedGameId = gid;
+      }
     }
   }
 
@@ -991,6 +1002,12 @@ function _autoBetCheck() {
   if (agg.maxBet >= 200) {
     _autoBetStop(`$200 到達 (BET額: $${agg.maxBet.toFixed(0)})`);
     return;
+  }
+
+  // [Bug1/2修正] BET窓がすでに開いていれば即座に送信
+  // LOOKタイムアウト後の再開遅延 & betCompleted時のエッジ検知ミスを防止
+  if (!outstanding && anyBetWindowOpen) {
+    _autoBetSendNext();
   }
 }
 
