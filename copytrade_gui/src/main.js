@@ -132,6 +132,7 @@ let lastStartConfig = null;
 let autoRestartCount = 0;
 let lastSpawnAt = 0;
 let autoRestartTimer = null;
+let _botSpawning = false;
 const MAX_AUTO_RESTARTS = 10;
 const AUTO_RESTART_DELAY = 5000;
 const STABLE_RUN_THRESHOLD = 5 * 60 * 1000;
@@ -175,7 +176,7 @@ function schedulePeriodicRestart() {
   const ms = Math.floor(h * 3600 * 1000);
   console.log(`[periodic-restart] scheduled every ${h}h`);
   periodicRestartTimer = setInterval(() => {
-    if (!botProcess) return;
+    if (!botProcess || _botSpawning) return;
 
     console.log('[periodic-restart] firing (preventive restart)');
     _telegramNotifyFromMain('🔄 bacopy periodic restart (' + h + 'h maintenance)');
@@ -190,7 +191,7 @@ function schedulePeriodicRestart() {
 
 
       setTimeout(() => {
-        if (!botProcess && cfg) {
+        if (!botProcess && cfg && !_botSpawning) {
           try { _doStartBot && _doStartBot(cfg); } catch (e) { console.warn('[periodic-restart] respawn err:', e && e.message); }
         }
       }, 5000);
@@ -693,6 +694,11 @@ function startBot(config) {
 }
 
 function _doStartBot(config) {
+  if (_botSpawning) {
+    console.log('[Main] _doStartBot: already spawning, skipped');
+    return;
+  }
+  _botSpawning = true;
 
 
 
@@ -744,6 +750,7 @@ function _doStartBot(config) {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
+  _botSpawning = false;
 
 
 
@@ -824,6 +831,7 @@ function _doStartBot(config) {
 }
 
 function stopBot() {
+  _botSpawning = false;
   if (!botProcess) {
     stopWatchdog();
     return;
