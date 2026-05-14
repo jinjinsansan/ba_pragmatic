@@ -5256,7 +5256,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return False
             if not state.last_bets_open_at:
                 return False
-            max_age = float(os.getenv("BACOPY_BET_WINDOW_OPEN_MAX_SEC", "15") or 15)
+            max_age = float(os.getenv("BACOPY_BET_WINDOW_OPEN_MAX_SEC", "17") or 17)
             return (now - float(state.last_bets_open_at or 0)) < max_age
 
         def wait_bets_open(timeout_sec: float) -> Optional[str]:

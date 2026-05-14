@@ -510,7 +510,7 @@ const LS = {
   favorites:'bacopy_master_favorites', mode:'bacopy_master_mode',
   stopped:'bacopy_master_stopped',
 };
-const BET_WINDOW_MAX_AGE_SEC = 12;
+const BET_WINDOW_MAX_AGE_SEC = 17;
 let selected = { provider:'pragmatic', table_id:'', table_name:'', qpid_table_id:'' };
 let favorites = new Set();
 let prevHands = {};  // tid -> hands (for flash detection)
@@ -776,43 +776,45 @@ function _renderAutoBetStatus() {
   }
 }
 
+function _syncAutoBetFromServer(state){
+  if(!state || typeof state !== 'object') return;
+  _autoBet.active = !!state.active;
+  _autoBet.pStreak = Number(state.p_streak || 0);
+  _renderAutoBetStatus();
+}
+
 function _autoBetStart() {
   if (!selected.table_id) { showToast('テーブルを選択してください', 'err'); return; }
-  _autoBet.active = true;
-  _autoBet.pStreak = 0;
-  _autoBet.lastTotalBets = null;
-  _autoBet.lastWins = null;
-  _autoBet.lastLosses = null;
-  _autoBet.lastTies = null;
-  _autoBet.lastLookSentAt = null;
-  _autoBet.lastSentAt = null;
-  _autoBet.lastSentAction = null;
-  _autoBet.lastBetWindowOpen = false;
-  _autoBet.lastResolvedGameId = null;
-  _renderAutoBetStatus();
-  updateButtonsGating();
-  showToast('AUTO BET 開始 — BANKER 自動ベット', 'ok');
+  apiPost('/api/auto-bet/start', {
+    provider: document.getElementById('providerSel').value,
+    table_id: selected.table_id,
+    table_name: selected.table_name,
+  }).then(res => {
+    if(res && res.ok){
+      _syncAutoBetFromServer(res.auto_bet || {});
+      updateButtonsGating();
+      showToast('AUTO BET 開始（サーバー常駐）', 'ok');
+      return;
+    }
+    showToast('AUTO BET開始失敗: '+fmt(res), 'err');
+  }).catch(err => {
+    showToast('AUTO BET開始通信エラー: '+err, 'err');
+  });
 }
 
 function _autoBetStop(reason) {
-  _autoBet.active = false;
-  _autoBet.lastTotalBets = null;
-  _autoBet.lastWins = null;
-  _autoBet.lastLosses = null;
-  _autoBet.lastTies = null;
-  _autoBet.lastLookSentAt = null;
-  _autoBet.lastSentAt = null;
-  _autoBet.lastSentAction = null;
-  _autoBet.lastBetWindowOpen = false;
-  _autoBet.lastResolvedGameId = null;
-  _renderAutoBetStatus();
-  updateButtonsGating();
-  if (reason) {
-    alert('AUTO BET 停止 — ' + reason + '\n手動に切り替えてください。');
-    showToast('AUTO BET 停止: ' + reason, 'err');
-  } else {
-    showToast('AUTO BET 停止', 'ok');
-  }
+  apiPost('/api/auto-bet/stop', { reason: reason || 'manual_ui_stop' }).then(res => {
+    if(res && res.ok){
+      _syncAutoBetFromServer(res.auto_bet || {});
+      updateButtonsGating();
+      if (reason) showToast('AUTO BET 停止: ' + reason, 'err');
+      else showToast('AUTO BET 停止', 'ok');
+      return;
+    }
+    showToast('AUTO BET停止失敗: '+fmt(res), 'err');
+  }).catch(err => {
+    showToast('AUTO BET停止通信エラー: '+err, 'err');
+  });
 }
 
 function _autoBetSendDecision(action, side) {
@@ -890,6 +892,8 @@ function _autoBetHasOutstandingDecision(){
 }
 
 function _autoBetCheck() {
+  // AUTO BET はサーバー常駐ワーカーに移行済み。UI側では送信ロジックを実行しない。
+  return;
   if (!_autoBet.active) return;
   if (!selected.table_id) return;
 
@@ -1009,6 +1013,10 @@ function _autoBetCheck() {
 // 500ms 間隔 poll × innerHTML 丸ごと再構築 = 視覚的なフラッシュを防ぐ.
 let _lastRenderFingerprint = { snaps: '', execs: '', decs: '' };
 let _refreshInFlight = false;
+let _historyRefreshTick = 0;
+const _HISTORY_REFRESH_EVERY_TICKS = 8; // 250ms poll の 8回に1回 (=約2秒) だけ履歴を再取得
+const _DECISIONS_DONE_LIMIT = 300;
+const _DECISIONS_ERROR_LIMIT = 120;
 
 async function refreshOnce(){
   if(_refreshInFlight) return;  // 多重発火防止 (前回 fetch 未完了なら skip)
@@ -1016,29 +1024,34 @@ async function refreshOnce(){
   try {
     const provider=document.getElementById('providerSel').value;
     selected.provider=provider;
+    const fetchHistory = (_historyRefreshTick++ % _HISTORY_REFRESH_EVERY_TICKS) === 0;
     const [st, snaps, execs, pend, proc, done, err, appr] = await Promise.all([
       apiGet('/api/status'),
       apiGet('/api/snapshots'),
       apiGet('/api/executors'),
       apiGet('/api/decisions?status=pending&limit=100'),
       apiGet('/api/decisions?status=processing&limit=100'),
-      apiGet('/api/decisions?status=done&limit=2000'),
-      apiGet('/api/decisions?status=error&limit=500'),
+      fetchHistory
+        ? apiGet(`/api/decisions?status=done&limit=${_DECISIONS_DONE_LIMIT}`)
+        : Promise.resolve({ decisions: _state.decisions.done || [] }),
+      fetchHistory
+        ? apiGet(`/api/decisions?status=error&limit=${_DECISIONS_ERROR_LIMIT}`)
+        : Promise.resolve({ decisions: _state.decisions.error || [] }),
       apiGet('/api/approved-users'),
     ]);
     _state.stats = st;
+    _syncAutoBetFromServer((st && st.auto_bet) || null);
     _state.snapshots = snaps;
     _learnSessionCheck();   // ラウンド変化を監視→自動LOOK記録
     _updateSessionStatus(); // セッション経過時間表示更新
-    // executor を先に更新してから AUTO BET チェック (count=0 バグ修正)
-    if (execs && execs.executors && execs.executors.length > 0) {
-      _state.executors = execs.executors;
-    }
-    _autoBetCheck();        // AUTO BET: ラウンド変化を監視→自動BET/LOOK送信
     _state.decisions.pending = (pend && pend.decisions)||[];
     _state.decisions.processing = (proc && proc.decisions)||[];
     _state.decisions.done = (done && done.decisions)||[];
     _state.decisions.error = (err && err.decisions)||[];
+    // executor を先に更新してから AUTO BET チェック (count=0 バグ修正)
+    if (execs && execs.executors && execs.executors.length > 0) {
+      _state.executors = execs.executors;
+    }
     _state.approvedUsers = (appr && appr.users)||[];
     _state.approvedErr = (appr && !appr.ok) ? (appr.error||'approved-users fetch failed') : '';
 
