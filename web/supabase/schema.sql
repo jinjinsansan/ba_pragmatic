@@ -25,12 +25,16 @@ CREATE POLICY "Admins can update all profiles" ON profiles FOR UPDATE USING (
 -- Auto-create profile on signup
 CREATE OR REPLACE FUNCTION handle_new_user()
 RETURNS TRIGGER AS $$
+DECLARE
+  meta_referred_by TEXT;
 BEGIN
-  INSERT INTO profiles (id, email, referral_code)
+  meta_referred_by := NULLIF(TRIM(COALESCE(NEW.raw_user_meta_data->>'referred_by', '')), '');
+  INSERT INTO profiles (id, email, referral_code, referred_by)
   VALUES (
     NEW.id,
     NEW.email,
-    'REF-' || UPPER(SUBSTR(MD5(NEW.id::TEXT), 1, 8))
+    'REF-' || UPPER(SUBSTR(MD5(NEW.id::TEXT), 1, 8)),
+    meta_referred_by
   );
   RETURN NEW;
 END;

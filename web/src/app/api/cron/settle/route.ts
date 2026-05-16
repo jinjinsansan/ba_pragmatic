@@ -12,6 +12,12 @@ function roundMoney(n: number) {
   return Math.round((Number(n) || 0) * 100) / 100
 }
 
+function isFeatureEnabled(value: string | undefined, defaultValue = false) {
+  const raw = String(value ?? '').trim().toLowerCase()
+  if (!raw) return defaultValue
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on'
+}
+
 async function sendTelegram(message: string) {
   const token = process.env.ADMIN_TELEGRAM_BOT_TOKEN
   const chatId = process.env.ADMIN_TELEGRAM_CHAT_ID
@@ -79,7 +85,20 @@ async function settleUser(
     .eq('date', dateStr)
     .maybeSingle()
 
-  if (existing) return { ok: false, error: 'Already settled for this date' }
+  let shouldInsertDeduction = true
+  if (existing) {
+    const { data: existingInvoice, error: existingInvoiceErr } = await admin
+      .from('daily_profit_invoices')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('settle_date', dateStr)
+      .maybeSingle()
+    const invoiceTableMissing = existingInvoiceErr?.code === '42P01' || String(existingInvoiceErr?.message || '').toLowerCase().includes('does not exist')
+    if (invoiceTableMissing || existingInvoice?.id) {
+      return { ok: false, error: 'Already settled for this date' }
+    }
+    shouldInsertDeduction = false
+  }
 
   const balanceBefore = Number(billing.balance) || 0
   const baseBotConfig = (billing as any)?.bot_config && typeof (billing as any).bot_config === 'object'
@@ -91,8 +110,22 @@ async function settleUser(
   const netProfit = roundMoney(dailyProfit + carryLoss)
   const operatorRate = Math.min(1, Math.max(0, Number(billing.profit_share_rate) || 0))
   const rawReferrerShareRate = (billing as any).referrer_share_rate ?? (billing as any)?.bot_config?.referrer_share_rate
-  const referrerShareRate = Math.min(1, Math.max(0, Number(rawReferrerShareRate ?? 0.2) || 0.2))
-  const dynamicReferralEnabled = String(process.env.LAPLACE_ENABLE_DYNAMIC_REFERRAL_SPLIT || '0') === '1'
+  const parsedReferrerShareRate = Number(rawReferrerShareRate)
+  const hasConfiguredReferrerRate =
+    rawReferrerShareRate !== null &&
+    rawReferrerShareRate !== undefined &&
+    String(rawReferrerShareRate).trim() !== ''
+  const defaultReferrerShareRate = 0.2
+  const referrerShareRate = Math.min(
+    1,
+    Math.max(
+      0,
+      Number.isFinite(parsedReferrerShareRate)
+        ? parsedReferrerShareRate
+        : (hasConfiguredReferrerRate ? 0 : defaultReferrerShareRate),
+    ),
+  )
+  const dynamicReferralEnabled = isFeatureEnabled(process.env.LAPLACE_ENABLE_DYNAMIC_REFERRAL_SPLIT, false)
   let feeAmount = 0
   let referrerFeeAmount = 0
   let newCarryLoss = 0
@@ -145,21 +178,27 @@ async function settleUser(
     carry_loss: newCarryLoss,
     note: settlementNote,
   }
-  let { error: deductionErr } = await admin.from('deductions').insert(deductionPayload)
-  if (deductionErr?.code === '42703') {
-    const fallbackPayload = {
-      user_id: userId,
-      date: dateStr,
-      daily_profit: roundMoney(dailyProfit),
-      fee_amount: feeAmount,
-      carry_loss: newCarryLoss,
-      note: `${settlementNote} | src=${pnlSource} | outstanding=$${outstandingAmount.toFixed(2)} | referrer_fee=$${referrerFeeAmount.toFixed(2)}`,
+  if (shouldInsertDeduction) {
+    let { error: deductionErr } = await admin.from('deductions').insert(deductionPayload)
+    if (deductionErr?.code === '42703') {
+      const fallbackPayload = {
+        user_id: userId,
+        date: dateStr,
+        daily_profit: roundMoney(dailyProfit),
+        fee_amount: feeAmount,
+        carry_loss: newCarryLoss,
+        note: `${settlementNote} | src=${pnlSource} | outstanding=$${outstandingAmount.toFixed(2)} | referrer_fee=$${referrerFeeAmount.toFixed(2)}`,
+      }
+      const retry = await admin.from('deductions').insert(fallbackPayload)
+      deductionErr = retry.error || null
     }
-    const retry = await admin.from('deductions').insert(fallbackPayload)
-    deductionErr = retry.error || null
-  }
-  if (deductionErr) {
-    return { ok: false, error: `deduction_insert_failed:${deductionErr.message}` }
+    // race-safe: another worker inserted the row first
+    if (deductionErr?.code === '23505') {
+      deductionErr = null
+    }
+    if (deductionErr) {
+      return { ok: false, error: `deduction_insert_failed:${deductionErr.message}` }
+    }
   }
 
   const { error: invoiceErr } = await admin.from('daily_profit_invoices').upsert({
@@ -299,10 +338,6 @@ export async function GET(req: NextRequest) {
   const skipReasons: Record<string, number> = {}
   const errors: Array<{ user_id: string; error: string }> = []
 
-  // Stale threshold: 最後の balance 更新が昨日 23時 より前なら stale (信頼できない)
-  const staleCutoff = new Date(yesterday)
-  staleCutoff.setHours(23, 0, 0, 0)
-
   for (const b of billings) {
     if (b.is_free) { skipped++; skipReasons['free'] = (skipReasons['free'] || 0) + 1; continue }
     const userEmail = emailByUserId.get(String(b.user_id)) || ''
@@ -332,14 +367,15 @@ export async function GET(req: NextRequest) {
       skipReasons['incomplete_state'] = (skipReasons['incomplete_state'] || 0) + 1
       continue
     }
-    // daily_open.date が settle 対象日 (昨日) と一致しているかチェック
-    if (daily_open_date !== dateStr) {
+    // daily_open.date がある場合は settle 対象日 (昨日) と一致しているかチェック
+    if (daily_open_date && daily_open_date !== dateStr) {
       skipped++
       skipReasons['stale_daily_open'] = (skipReasons['stale_daily_open'] || 0) + 1
       continue
     }
-    // last_balance_at が昨日23時以降でない = GUI 長時間停止 → skip
-    if (new Date(last_balance_at) < staleCutoff) {
+    // last_balance_at は settle 対象日 (昨日/JST) であることを要求
+    const lastBalanceDateJst = new Date(last_balance_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' })
+    if (!lastBalanceDateJst || lastBalanceDateJst !== dateStr) {
       skipped++
       skipReasons['stale_balance'] = (skipReasons['stale_balance'] || 0) + 1
       continue

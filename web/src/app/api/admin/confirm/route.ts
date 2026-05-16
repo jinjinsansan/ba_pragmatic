@@ -7,6 +7,12 @@ function roundMoney(n: number) {
   return Math.round((Number(n) || 0) * 100) / 100
 }
 
+function isFeatureEnabled(value: string | undefined, defaultValue = false) {
+  const raw = String(value ?? '').trim().toLowerCase()
+  if (!raw) return defaultValue
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on'
+}
+
 async function consumeUnpaidInvoices(admin: ReturnType<typeof createAdminClient>, userId: string, startingBalance: number) {
   let remaining = roundMoney(startingBalance)
   let totalOutstanding = 0
@@ -78,8 +84,8 @@ export async function POST(req: NextRequest) {
 
   const { type, id, userId, amount } = await req.json()
   const admin = createAdminClient()
-  const dynamicReferralEnabled = String(process.env.LAPLACE_ENABLE_DYNAMIC_REFERRAL_SPLIT || '0') === '1'
-  const chargeReferralEnabled = String(process.env.LAPLACE_ENABLE_CHARGE_REFERRAL || '1') === '1'
+  const dynamicReferralEnabled = isFeatureEnabled(process.env.LAPLACE_ENABLE_DYNAMIC_REFERRAL_SPLIT, false)
+  const chargeReferralEnabled = isFeatureEnabled(process.env.LAPLACE_ENABLE_CHARGE_REFERRAL, true)
 
   if (type === 'order') {
     await admin.from('orders').update({ status: 'confirmed', confirmed_at: new Date().toISOString() }).eq('id', id)

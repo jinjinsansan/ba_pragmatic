@@ -48,7 +48,12 @@ export async function POST(req: NextRequest) {
           const { data: currentBilling } = await admin.from('billing').select('bot_config').eq('user_id', userId).maybeSingle()
           const currentConfig = currentBilling?.bot_config && typeof currentBilling.bot_config === 'object' ? currentBilling.bot_config : {}
           const nextConfig = { ...(currentConfig as Record<string, unknown>), referrer_share_rate: parsed }
-          await admin.from('billing').upsert({ user_id: userId, bot_config: nextConfig, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+          const fallback = await admin
+            .from('billing')
+            .upsert({ user_id: userId, bot_config: nextConfig, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+          if (fallback.error) {
+            return NextResponse.json({ error: fallback.error.message }, { status: 500 })
+          }
         } else if (upsert.error) {
           return NextResponse.json({ error: upsert.error.message }, { status: 500 })
         }
