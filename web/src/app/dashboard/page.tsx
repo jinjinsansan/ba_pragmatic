@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase-server'
 import { createAdminClient } from '@/lib/supabase-admin'
+import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import DashboardClient from './DashboardClient'
@@ -21,6 +22,7 @@ export default async function DashboardPage() {
     { data: orders },
     { data: charges },
     { data: deductions },
+    { data: invoices },
     { data: deliverables },
     { data: commissions },
     { data: withdrawals },
@@ -30,6 +32,7 @@ export default async function DashboardPage() {
     supabase.from('orders').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     supabase.from('charges').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
     supabase.from('deductions').select('*').eq('user_id', user.id).order('date', { ascending: false }).limit(30),
+    supabase.from('daily_profit_invoices').select('*').eq('user_id', user.id).order('settle_date', { ascending: false }).limit(30),
     supabase.from('deliverables').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1),
     supabase.from('referral_commissions').select('*').eq('referrer_id', user.id),
     supabase.from('referral_withdrawals').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
@@ -77,6 +80,9 @@ export default async function DashboardPage() {
   const hasActiveCharge = billing && billing.balance > 0 && !billing.suspended
   const canDownload = !!deliverables?.length
   const telegramLinked = !!billing?.bot_config?.customer_telegram_chat_id
+  const telegramUsername = String(billing?.bot_config?.customer_telegram_username || '').trim()
+  const telegramLinkedAtRaw = String(billing?.bot_config?.customer_telegram_linked_at || '').trim()
+  const telegramLinkedAt = telegramLinkedAtRaw ? new Date(telegramLinkedAtRaw).toLocaleString('ja-JP') : ''
   const telegramLink = buildCustomerTelegramStartLink(user.id)
   const latestDeliverable = deliverables?.[0]
   const deliverableDate = latestDeliverable?.created_at
@@ -89,6 +95,86 @@ export default async function DashboardPage() {
   else if (billing?.suspended) status = 'suspended'
   else if (!hasActiveCharge) status = 'dry_run'
   else status = 'active'
+
+  const jstDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' })
+  const todayDeductionRows = (deductions || []).filter((d: any) => String(d.date || '') === jstDate)
+  const todayProfit = todayDeductionRows.reduce((s: number, d: any) => s + Number(d.daily_profit || 0), 0)
+  const todayFee = todayDeductionRows.reduce((s: number, d: any) => s + Number(d.fee_amount || 0), 0)
+  const outstandingAmount = (invoices || [])
+    .filter((i: any) => String(i.status || '') === 'unpaid')
+    .reduce((s: number, i: any) => s + Number(i.outstanding_amount || 0), 0)
+  const nextSettlementAt = '毎日 JST 00:05 以降'
+  const isLocked = !!billing?.suspended
+
+  const nextSteps: Array<{ done: boolean; title: string; actionText?: string; href?: string; desc: string }> = [
+    { done: !!latestOrder, title: 'ライセンス購入', actionText: '購入する', href: '/purchase', desc: 'まずライセンスを有効化します。' },
+    { done: !!hasActiveCharge, title: '残高チャージ', actionText: 'チャージする', href: '/dashboard/charge', desc: 'ライブ運用には残高が必要です。' },
+    { done: telegramLinked, title: 'Telegram通知連携', actionText: '連携する', href: telegramLink || '', desc: '精算・未払い・開始通知を受信します。' },
+  ]
+  const pendingStep = nextSteps.find(s => !s.done)
+
+  const timeline: Array<{ at: number; label: string; detail: string; tone: 'ok' | 'warn' | 'info' }> = []
+  if (telegramLinkedAtRaw) {
+    timeline.push({
+      at: new Date(telegramLinkedAtRaw).getTime(),
+      label: 'Telegram連携完了',
+      detail: telegramUsername ? `@${telegramUsername} と連携` : 'Telegram通知を有効化',
+      tone: 'ok',
+    })
+  }
+  for (const c of (charges || []).slice(0, 8)) {
+    timeline.push({
+      at: new Date(c.created_at).getTime(),
+      label: `チャージ申請 (${String(c.status)})`,
+      detail: `$${Number(c.amount || 0).toFixed(2)} / ${new Date(c.created_at).toLocaleDateString('ja-JP')}`,
+      tone: c.status === 'confirmed' ? 'ok' : 'warn',
+    })
+  }
+  for (const d of (deductions || []).slice(0, 8)) {
+    timeline.push({
+      at: new Date(`${d.date}T00:00:00+09:00`).getTime(),
+      label: '日次精算',
+      detail: `${d.date} / PnL ${Number(d.daily_profit || 0) >= 0 ? '+' : ''}$${Number(d.daily_profit || 0).toFixed(2)} / Fee $${Number(d.fee_amount || 0).toFixed(2)}`,
+      tone: Number(d.fee_amount || 0) > 0 ? 'warn' : 'info',
+    })
+  }
+  for (const i of (invoices || []).slice(0, 8)) {
+    const settleDate = String(i.settle_date || '')
+    timeline.push({
+      at: settleDate ? new Date(`${settleDate}T00:00:00+09:00`).getTime() : 0,
+      label: `請求ステータス (${String(i.status || 'none')})`,
+      detail: `${settleDate} / outstanding $${Number(i.outstanding_amount || 0).toFixed(2)}`,
+      tone: i.status === 'unpaid' ? 'warn' : 'ok',
+    })
+  }
+  timeline.sort((a, b) => b.at - a.at)
+  const recentTimeline = timeline.slice(0, 8)
+
+  async function unlinkTelegramAction() {
+    'use server'
+    const actionSupabase = await createClient()
+    const { data: { user: actionUser } } = await actionSupabase.auth.getUser()
+    if (!actionUser) return
+    const actionAdmin = createAdminClient()
+    const { data: row } = await actionAdmin
+      .from('billing')
+      .select('bot_config')
+      .eq('user_id', actionUser.id)
+      .maybeSingle()
+    const currentConfig = row?.bot_config && typeof row.bot_config === 'object'
+      ? ({ ...(row.bot_config as Record<string, unknown>) })
+      : {}
+    delete currentConfig.customer_telegram_chat_id
+    delete currentConfig.customer_telegram_username
+    delete currentConfig.customer_telegram_linked_at
+    currentConfig.customer_telegram_enabled = false
+    await actionAdmin.from('billing').upsert({
+      user_id: actionUser.id,
+      bot_config: currentConfig,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id' })
+    revalidatePath('/dashboard')
+  }
 
   return (
     <div className="min-h-screen">
@@ -142,6 +228,71 @@ export default async function DashboardPage() {
                 Charge Balance
               </Link>
             )}
+          </div>
+        </div>
+
+        {/* Next Step + Daily Summary (mobile-first) */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
+          <div className="p-5 rounded-2xl glass-card">
+            <div className="hud-label mb-2">Next Action</div>
+            <h2 className="text-lg font-hud mb-3">次にやること</h2>
+            {pendingStep ? (
+              <div className="space-y-3">
+                <div className="text-sm text-text">{pendingStep.title}</div>
+                <div className="text-xs text-text-muted">{pendingStep.desc}</div>
+                {pendingStep.href && (
+                  <Link
+                    href={pendingStep.href}
+                    className="btn-primary inline-block px-5 py-2.5 w-full text-center"
+                    target={pendingStep.href.startsWith('http') ? '_blank' : undefined}
+                    rel={pendingStep.href.startsWith('http') ? 'noreferrer' : undefined}
+                  >
+                    {pendingStep.actionText || '進む'}
+                  </Link>
+                )}
+              </div>
+            ) : (
+              <div className="text-sm text-green-400">すべての初期セットアップが完了しています。</div>
+            )}
+            <div className="mt-4 space-y-2">
+              {nextSteps.map((s, idx) => (
+                <div key={s.title} className="flex items-start gap-3 text-xs">
+                  <span className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border ${s.done ? 'border-green-500/40 text-green-400' : 'border-accent/40 text-accent'}`}>
+                    {s.done ? '✓' : idx + 1}
+                  </span>
+                  <div>
+                    <div className={s.done ? 'text-green-400' : 'text-text'}>{s.title}</div>
+                    <div className="text-text-dim">{s.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="p-5 rounded-2xl glass-card">
+            <div className="hud-label mb-2">Today Snapshot</div>
+            <h2 className="text-lg font-hud mb-3">今日の運用サマリー</h2>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="p-3 rounded-lg bg-bg-glass border border-accent/10">
+                <div className="text-[11px] text-text-dim">Today PnL</div>
+                <div className={`text-lg font-bold ${todayProfit >= 0 ? 'text-green-400' : 'text-banker'}`}>
+                  {todayProfit >= 0 ? '+' : ''}${todayProfit.toFixed(2)}
+                </div>
+              </div>
+              <div className="p-3 rounded-lg bg-bg-glass border border-accent/10">
+                <div className="text-[11px] text-text-dim">Today Fee</div>
+                <div className="text-lg font-bold text-accent">${todayFee.toFixed(2)}</div>
+              </div>
+              <div className="p-3 rounded-lg bg-bg-glass border border-accent/10">
+                <div className="text-[11px] text-text-dim">Outstanding</div>
+                <div className={`text-lg font-bold ${outstandingAmount > 0 ? 'text-yellow-400' : 'text-green-400'}`}>${outstandingAmount.toFixed(2)}</div>
+              </div>
+              <div className="p-3 rounded-lg bg-bg-glass border border-accent/10">
+                <div className="text-[11px] text-text-dim">Lock Status</div>
+                <div className={`text-lg font-bold ${isLocked ? 'text-banker' : 'text-green-400'}`}>{isLocked ? 'LOCKED' : 'ACTIVE'}</div>
+              </div>
+            </div>
+            <div className="text-xs text-text-muted mt-3">次回精算: {nextSettlementAt}</div>
           </div>
         </div>
 
@@ -204,22 +355,34 @@ export default async function DashboardPage() {
           <div className="p-6 rounded-2xl glass-card">
             <h2 className="text-lg font-bold mb-4">Telegram通知連携</h2>
             <div className="text-sm text-text-muted mb-3">
-              1タップで顧客向け通知を連携できます（日次精算・未払い/入金反映・セッション開始通知）。
+              このダッシュボードのアカウント（{profile?.email || 'your account'}）にTelegramを紐づけます。
+              日次精算・未払い/入金反映・セッション開始通知を受け取れます。
             </div>
             {telegramLinked ? (
               <div className="space-y-2">
                 <div className="text-sm text-green-400 font-semibold">連携済み</div>
-                {telegramLink && (
-                  <a
-                    href={telegramLink}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="btn-primary inline-block px-5 py-2.5"
-                  >
-                    Telegramを開く
-                  </a>
-                )}
-                <div className="text-xs text-text-muted">解除したい場合はBotで /stop を送信してください。</div>
+                <div className="text-xs text-text-muted">
+                  {telegramUsername ? `連携先: @${telegramUsername}` : '連携先: Telegramアカウント'}
+                  {telegramLinkedAt ? ` / 連携日時: ${telegramLinkedAt}` : ''}
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  {telegramLink && (
+                    <a
+                      href={telegramLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="btn-primary inline-block px-5 py-2.5 text-center"
+                    >
+                      Telegramを開く
+                    </a>
+                  )}
+                  <form action={unlinkTelegramAction}>
+                    <button type="submit" className="btn-outline px-5 py-2.5 w-full sm:w-auto">
+                      ワンタップ解除
+                    </button>
+                  </form>
+                </div>
+                <div className="text-xs text-text-muted">再連携は「Telegramを開く」→ /start 実行で完了します。</div>
               </div>
             ) : telegramLink ? (
               <div className="space-y-2">
@@ -231,13 +394,44 @@ export default async function DashboardPage() {
                 >
                   1タップ連携する
                 </a>
-                <div className="text-xs text-text-muted">Telegramで /start が実行されると連携完了です。</div>
+                <div className="text-xs text-text-muted">Telegramで /start が実行されると、このアカウントに紐づいて連携完了です。</div>
               </div>
             ) : (
               <div className="text-sm text-yellow-400">現在は連携リンクを生成できません（環境設定未完了）。</div>
             )}
           </div>
 
+        </div>
+
+        {/* Timeline */}
+        <div className="p-6 rounded-2xl glass-card mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold">運用タイムライン</h2>
+            <span className="text-xs text-text-dim">最新8件</span>
+          </div>
+          {recentTimeline.length ? (
+            <div className="space-y-3">
+              {recentTimeline.map((item, idx) => (
+                <div key={`${item.label}-${item.at}-${idx}`} className="p-3 rounded-xl bg-bg-glass border border-accent/10">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className={`text-sm font-semibold ${
+                        item.tone === 'ok' ? 'text-green-400' :
+                        item.tone === 'warn' ? 'text-yellow-400' :
+                        'text-text'
+                      }`}>{item.label}</div>
+                      <div className="text-xs text-text-muted mt-1">{item.detail}</div>
+                    </div>
+                    <div className="text-[11px] text-text-dim whitespace-nowrap">
+                      {item.at ? new Date(item.at).toLocaleDateString('ja-JP') : '—'}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-text-muted">まだ履歴がありません。チャージ・精算が発生するとここに表示されます。</p>
+          )}
         </div>
 
         {/* Referral Section */}
