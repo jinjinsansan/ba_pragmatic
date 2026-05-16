@@ -1,4 +1,10 @@
 {
+  "rewrites": [
+    {
+      "source": "/api/session-state/",
+      "destination": "/api/session-state"
+    }
+  ],
   "crons": [
     {
       "path": "/api/cron/settle",
