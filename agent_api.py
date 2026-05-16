@@ -296,7 +296,7 @@ def send_status(session, balance: float = 0, cumulative_money_actual: float | No
 
 # ======== Supabase session-state sync ========
 
-_SESSION_SITE_URL = os.getenv("LAPLACE_SITE_URL", "https://bafather.uk").rstrip("/")
+_SESSION_SITE_URL = os.getenv("LAPLACE_SITE_URL", "https://www.bafather.uk").rstrip("/")
 _SESSION_API_KEY = os.getenv("LAPLACE_SITE_API_KEY", "").strip() or os.getenv("LAPLACE_API_KEY", "").strip()
 _SESSION_SYNC_INTERVAL = 5.0
 _session_sync_inflight = False

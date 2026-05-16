@@ -273,14 +273,36 @@ def _schedule_session_state_sync_bafather(seq7: "Seq7Session") -> None:
                 "api_key": laplace_key,
                 "session_state": ss,
             }).encode("utf-8")
-            req = _ur_ss.Request(
+            session_site = (os.getenv("BACOPY_SESSION_SITE_URL", "") or os.getenv("NEXT_PUBLIC_SITE_URL", "")).strip().rstrip("/")
+            urls: list[str] = []
+            if session_site:
+                urls.extend([
+                    f"{session_site}/api/session-state",
+                    f"{session_site}/api/session-state/",
+                ])
+            urls.extend([
+                "https://www.bafather.uk/api/session-state",
+                "https://www.bafather.uk/api/session-state/",
+                "https://bafather.uk/api/session-state",
                 "https://bafather.uk/api/session-state/",
-                data=payload_bytes,
-                headers={"Content-Type": "application/json", "User-Agent": "bacopy-engine/1.0"},
-                method="POST",
-            )
-            with _ur_ss.urlopen(req, timeout=10):
-                pass
+            ])
+            posted = False
+            last_err = None
+            for target_url in urls:
+                req = _ur_ss.Request(
+                    target_url,
+                    data=payload_bytes,
+                    headers={"Content-Type": "application/json", "User-Agent": "bacopy-engine/1.0"},
+                    method="POST",
+                )
+                try:
+                    with _ur_ss.urlopen(req, timeout=10):
+                        posted = True
+                        break
+                except Exception as e:
+                    last_err = e
+            if not posted and last_err is not None:
+                raise last_err
         except Exception as e:
             print(f"[bafather-session] POST failed: {e}", flush=True)
         finally:
