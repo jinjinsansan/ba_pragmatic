@@ -108,8 +108,8 @@ export default function ReportPage() {
           <button
             onClick={handleLogin}
             style={{
-              width: '100%', padding: '10px', background: 'linear-gradient(135deg, #c9a875, #e6c98b)',
-              border: '1px solid rgba(230, 201, 139, 0.8)', borderRadius: '6px', color: '#1a140d', fontSize: '13px',
+              width: '100%', padding: '10px', background: 'linear-gradient(135deg, #005f7a, #00b8d4)',
+              border: '1px solid rgba(0, 229, 255, 0.55)', borderRadius: '6px', color: '#ffffff', fontSize: '13px',
               fontWeight: 700, letterSpacing: '2px', cursor: 'pointer',
             }}
           >

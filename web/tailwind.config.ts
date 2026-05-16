@@ -9,23 +9,23 @@ export default {
   theme: {
     extend: {
       colors: {
-        'bg-primary': '#0a0807',
-        'bg-secondary': '#14110d',
-        'bg-card': 'rgba(28, 24, 18, 0.9)',
-        'bg-glass': 'rgba(36, 30, 22, 0.58)',
-        text: '#f3e9d2',
-        'text-muted': '#a89d83',
-        'text-dim': '#6b624f',
+        'bg-primary': '#05080f',
+        'bg-secondary': '#0b101b',
+        'bg-card': 'rgba(15, 20, 35, 0.9)',
+        'bg-glass': 'rgba(10, 19, 34, 0.72)',
+        text: '#e0e8f0',
+        'text-muted': '#7888a0',
+        'text-dim': '#4a5568',
         player: {
-          DEFAULT: '#7a9778',
-          dark: '#5f785e',
+          DEFAULT: '#00ff88',
+          dark: '#00c869',
         },
         banker: {
-          DEFAULT: '#b14a43',
-          dark: '#8f3a34',
+          DEFAULT: '#ff3366',
+          dark: '#c81f4b',
         },
-        tie: '#d9a64a',
-        accent: '#c9a875',
+        tie: '#ffcc00',
+        accent: '#00e5ff',
       },
       fontFamily: {
         hud: ['var(--font-disp)', 'var(--font-jp)', 'serif'],

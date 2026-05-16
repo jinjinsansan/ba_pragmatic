@@ -3,23 +3,23 @@
 @tailwind utilities;
 
 :root {
-  --bg: #0a0807;
-  --bg-paper: #14110d;
-  --bg-card: rgba(28, 24, 18, 0.9);
-  --bg-glass: rgba(36, 30, 22, 0.58);
-  --accent: #c9a875;
-  --accent-bright: #e6c98b;
-  --accent-dim: rgba(201, 168, 117, 0.14);
-  --win: #7a9778;
-  --lose: #b14a43;
-  --tie: #d9a64a;
-  --text: #f3e9d2;
-  --text-muted: #a89d83;
-  --text-dim: #6b624f;
-  --border: rgba(201, 168, 117, 0.22);
-  --border-strong: rgba(201, 168, 117, 0.44);
+  --bg: #05080f;
+  --bg-paper: #0b101b;
+  --bg-card: rgba(15, 20, 35, 0.9);
+  --bg-glass: rgba(10, 19, 34, 0.72);
+  --accent: #00e5ff;
+  --accent-bright: #5bf2ff;
+  --accent-dim: rgba(0, 229, 255, 0.14);
+  --win: #00ff88;
+  --lose: #ff3366;
+  --tie: #ffcc00;
+  --text: #e0e8f0;
+  --text-muted: #7888a0;
+  --text-dim: #4a5568;
+  --border: rgba(0, 229, 255, 0.22);
+  --border-strong: rgba(0, 229, 255, 0.44);
   --shadow-soft: 0 10px 30px rgba(0, 0, 0, 0.45);
-  --shadow-gold: 0 0 28px rgba(201, 168, 117, 0.14);
+  --shadow-gold: 0 0 28px rgba(0, 229, 255, 0.2);
 }
 
 @layer base {
@@ -32,19 +32,21 @@
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
+    position: relative;
+    isolation: isolate;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
 
   h1, h2, h3, h4 {
-    font-family: var(--font-disp), var(--font-jp), serif;
-    letter-spacing: 0.03em;
-    font-weight: 600;
+    font-family: var(--font-disp), var(--font-jp), sans-serif;
+    letter-spacing: 0.06em;
+    font-weight: 700;
   }
 
   ::selection {
     background: var(--accent-dim);
-    color: #1b1610;
+    color: #051017;
   }
 }
 
@@ -53,10 +55,10 @@ body::before {
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(1200px 460px at 50% -90px, rgba(201, 168, 117, 0.14), transparent 62%),
-    linear-gradient(180deg, #0a0807 0%, #0d0a08 100%);
+    radial-gradient(1200px 460px at 50% -90px, rgba(0, 229, 255, 0.14), transparent 62%),
+    linear-gradient(180deg, #05080f 0%, #070c16 100%);
   pointer-events: none;
-  z-index: 0;
+  z-index: -2;
   opacity: 1;
 }
 
@@ -65,36 +67,36 @@ body::after {
   position: fixed;
   inset: 0;
   background-image:
-    linear-gradient(rgba(201, 168, 117, 0.028) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(201, 168, 117, 0.028) 1px, transparent 1px);
-  background-size: 44px 44px;
+    linear-gradient(rgba(0, 229, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 229, 255, 0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
   pointer-events: none;
-  z-index: 0;
-  opacity: 0.35;
+  z-index: -1;
+  opacity: 0.45;
 }
 
 @layer components {
   .glass-panel {
     @apply bg-bg-card/95 border backdrop-blur-xl;
     border-color: var(--border);
-    box-shadow: var(--shadow-soft);
+    box-shadow: var(--shadow-soft), inset 0 1px 0 rgba(0, 229, 255, 0.08);
   }
 
   .glass-card {
     @apply bg-bg-card border backdrop-blur-xl;
     border-color: var(--border);
-    box-shadow: var(--shadow-soft), var(--shadow-gold);
+    box-shadow: var(--shadow-soft), var(--shadow-gold), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   }
 
   .glass-soft {
     @apply bg-bg-glass border backdrop-blur-xl;
-    border-color: rgba(201, 168, 117, 0.12);
+    border-color: rgba(0, 229, 255, 0.14);
   }
 
   .hud-title {
     @apply uppercase tracking-[0.26em] text-accent;
-    font-family: var(--font-disp), var(--font-jp), serif;
-    font-weight: 600;
+    font-family: var(--font-disp), var(--font-jp), sans-serif;
+    font-weight: 700;
   }
 
   .hud-label {
@@ -103,38 +105,38 @@ body::after {
   }
 
   .btn-primary {
-    @apply text-[#1a140d] uppercase tracking-[0.2em] text-[11px] px-6 py-3 rounded-md transition;
-    font-family: var(--font-disp), var(--font-jp), serif;
+    @apply text-white uppercase tracking-[0.2em] text-[11px] px-6 py-3 rounded-md transition;
+    font-family: var(--font-disp), var(--font-jp), sans-serif;
     font-weight: 700;
-    background: linear-gradient(135deg, #c9a875 0%, #e6c98b 55%, #c9a875 100%);
-    border: 1px solid rgba(230, 201, 139, 0.8);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 0 18px rgba(201, 168, 117, 0.28);
+    background: linear-gradient(135deg, #005f7a 0%, #00b8d4 100%);
+    border: 1px solid rgba(0, 229, 255, 0.55);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 0 18px rgba(0, 229, 255, 0.32);
   }
 
   .btn-primary:hover {
-    filter: brightness(1.04);
+    filter: brightness(1.1);
     transform: translateY(-1px);
   }
 
   .btn-outline {
     @apply text-accent uppercase tracking-[0.2em] text-[11px] px-6 py-3 rounded-md transition;
-    font-family: var(--font-disp), var(--font-jp), serif;
-    border: 1px solid rgba(201, 168, 117, 0.48);
-    background: rgba(20, 16, 12, 0.55);
+    font-family: var(--font-disp), var(--font-jp), sans-serif;
+    border: 1px solid rgba(0, 229, 255, 0.48);
+    background: rgba(5, 14, 24, 0.55);
   }
 
   .btn-outline:hover {
-    background: rgba(201, 168, 117, 0.12);
-    border-color: rgba(230, 201, 139, 0.8);
+    background: rgba(0, 229, 255, 0.1);
+    border-color: rgba(0, 229, 255, 0.8);
   }
 
   .input-field {
     @apply w-full px-4 py-3 rounded-md bg-bg-glass text-text focus:outline-none transition;
-    border: 1px solid rgba(201, 168, 117, 0.24);
+    border: 1px solid rgba(0, 229, 255, 0.24);
   }
 
   .input-field:focus {
-    border-color: rgba(230, 201, 139, 0.8);
-    box-shadow: 0 0 0 2px rgba(201, 168, 117, 0.16);
+    border-color: rgba(0, 229, 255, 0.8);
+    box-shadow: 0 0 0 2px rgba(0, 229, 255, 0.2);
   }
 }
