@@ -398,6 +398,50 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  let reconciliationMessage = 'Reconciliation: n/a'
+  const dateDeductions = await admin
+    .from('deductions')
+    .select('id', { count: 'exact', head: true })
+    .eq('date', dateStr)
+  const dateInvoices = await admin
+    .from('daily_profit_invoices')
+    .select('id', { count: 'exact', head: true })
+    .eq('settle_date', dateStr)
+  const invoiceTableMissing =
+    dateInvoices.error?.code === '42P01' ||
+    String(dateInvoices.error?.message || '').toLowerCase().includes('does not exist')
+  if (!dateDeductions.error && !dateInvoices.error) {
+    const dCount = Number(dateDeductions.count || 0)
+    const iCount = Number(dateInvoices.count || 0)
+    reconciliationMessage = `Reconciliation: deductions=${dCount}, invoices=${iCount}${dCount === iCount ? '' : ' (MISMATCH)'}`
+  } else if (invoiceTableMissing) {
+    reconciliationMessage = 'Reconciliation: invoice table missing (fallback mode)'
+  } else {
+    reconciliationMessage = `Reconciliation: check failed (${dateDeductions.error?.message || dateInvoices.error?.message || 'unknown'})`
+  }
+
+  const compactSkipReasons = Object.entries(skipReasons)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([k, v]) => `${k}:${v}`)
+    .join(', ')
+  const compactSources = Object.entries(pnlSourceCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `${k}:${v}`)
+    .join(', ')
+  const compactErrors = errors.slice(0, 3).map(e => `${e.user_id.slice(0, 8)}:${e.error}`).join(' | ')
+  await sendTelegram(
+    `<b>Daily Settle Summary</b>\n` +
+    `Date: ${dateStr}\n` +
+    `Settled: <b>${settled}</b>, Skipped: <b>${skipped}</b>, Errors: <b>${errors.length}</b>\n` +
+    `Sources: ${compactSources || 'none'}\n` +
+    `Skip: ${compactSkipReasons || 'none'}\n` +
+    `${reconciliationMessage}\n` +
+    `MasterPnL: enabled=${masterPnl.enabled ? 1 : 0}, matched=${masterPnl.map.size}` +
+    (masterPnl.error ? `, err=${masterPnl.error}` : '') +
+    (compactErrors ? `\nErrors: ${compactErrors}` : '')
+  )
+
   return NextResponse.json({
     message: `Settled ${settled}, skipped ${skipped}`,
     date: dateStr,
