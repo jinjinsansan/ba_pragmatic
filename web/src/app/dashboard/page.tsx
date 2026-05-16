@@ -103,6 +103,9 @@ export default async function DashboardPage() {
   const outstandingAmount = (invoices || [])
     .filter((i: any) => String(i.status || '') === 'unpaid')
     .reduce((s: number, i: any) => s + Number(i.outstanding_amount || 0), 0)
+  const pendingChargeCount = (charges || []).filter((c: any) => String(c.status || '') !== 'confirmed').length
+  const lastConfirmedCharge = (charges || []).find((c: any) => String(c.status || '') === 'confirmed')
+  const walletAddress = String(process.env.NEXT_PUBLIC_USDT_TRC20 || '').trim()
   const nextSettlementAt = '毎日 JST 00:05 以降'
   const isLocked = !!billing?.suspended
 
@@ -229,6 +232,50 @@ export default async function DashboardPage() {
               </Link>
             )}
           </div>
+        </div>
+
+        {/* Charge Quick Guide */}
+        <div className="p-5 rounded-2xl glass-card mb-8">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <div className="hud-label mb-1">Charge Guide</div>
+              <h2 className="text-lg font-hud">資金追加（チャージ）</h2>
+              <p className="text-xs text-text-muted mt-1">
+                ライブ運用には残高が必要です。迷わないように手順を固定表示しています。
+              </p>
+            </div>
+            <Link href="/dashboard/charge" className="btn-primary px-5 py-2.5 w-full sm:w-auto text-center">
+              今すぐ資金追加
+            </Link>
+          </div>
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+            <div className="p-3 rounded-lg bg-bg-glass border border-accent/10">
+              <div className="text-text-dim">現在残高</div>
+              <div className="text-base font-semibold text-text mt-1">${Number(billing?.balance || 0).toFixed(2)}</div>
+            </div>
+            <div className="p-3 rounded-lg bg-bg-glass border border-accent/10">
+              <div className="text-text-dim">未確認チャージ</div>
+              <div className={`text-base font-semibold mt-1 ${pendingChargeCount > 0 ? 'text-yellow-400' : 'text-green-400'}`}>
+                {pendingChargeCount} 件
+              </div>
+            </div>
+            <div className="p-3 rounded-lg bg-bg-glass border border-accent/10">
+              <div className="text-text-dim">最終反映</div>
+              <div className="text-base font-semibold text-text mt-1">
+                {lastConfirmedCharge ? new Date(lastConfirmedCharge.created_at).toLocaleDateString('ja-JP') : '未反映'}
+              </div>
+            </div>
+          </div>
+          <div className="mt-4 space-y-2 text-xs text-text-muted">
+            <div className="flex items-start gap-2"><span className="text-accent">1.</span><span>チャージ画面で金額を入力して申請</span></div>
+            <div className="flex items-start gap-2"><span className="text-accent">2.</span><span>USDT (TRC-20) を送金</span></div>
+            <div className="flex items-start gap-2"><span className="text-accent">3.</span><span>管理承認後に残高へ反映（未払いがあれば自動充当）</span></div>
+          </div>
+          {walletAddress && (
+            <div className="mt-3 text-[11px] text-text-dim break-all">
+              送金先(TRC-20): {walletAddress}
+            </div>
+          )}
         </div>
 
         {/* Next Step + Daily Summary (mobile-first) */}
