@@ -2,11 +2,9 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { useTranslations } from 'next-intl'
 import { createClient } from '@/lib/supabase-browser'
 
 export default function ChargePage() {
-  const t = useTranslations('charge')
   const [amount, setAmount] = useState('')
   const network = 'TRC-20' as const
   const [promoCode, setPromoCode] = useState('')
@@ -29,19 +27,19 @@ export default function ChargePage() {
       .single()
 
     if (!data) {
-      setPromoMessage(t('promo.invalid'))
+      setPromoMessage('Invalid promo code')
       setPromoValid(false)
     } else if (data.used_count >= data.max_uses) {
-      setPromoMessage(t('promo.expired'))
+      setPromoMessage('Promo code expired')
       setPromoValid(false)
     } else if (data.type === 'charge_free') {
-      setPromoMessage(t('promo.chargeFree'))
+      setPromoMessage('Free charge promo applied')
       setPromoValid(true)
     } else if (data.type === 'discount') {
-      setPromoMessage(t('promo.discount', { percent: data.discount_percent }))
+      setPromoMessage(`Discount applied (${data.discount_percent}%)`)
       setPromoValid(true)
     } else {
-      setPromoMessage(t('promo.applied'))
+      setPromoMessage('Promo applied')
       setPromoValid(true)
     }
   }
@@ -70,20 +68,20 @@ export default function ChargePage() {
       <div className="min-h-screen flex items-center justify-center px-4 sm:px-6">
         <div className="max-w-lg text-center glass-card p-6 sm:p-10">
           <div className="text-5xl mb-6">{isFree ? '🎉' : '✅'}</div>
-          <h1 className="text-2xl sm:text-3xl font-bold mb-4 font-hud">{isFree ? t('done.activated') : t('done.submitted')}</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold mb-4 font-hud">{isFree ? 'Activated' : 'Request Submitted'}</h1>
           {isFree ? (
-            <p className="text-text-muted mb-8">{t('done.activatedMsg')}</p>
+            <p className="text-text-muted mb-8">Your free charge has been activated.</p>
           ) : (
             <>
-              <p className="text-text-muted mb-4">{t('done.sendPrefix')} <span className="text-text font-bold">${finalAmount} USDT</span> (TRC-20) {t('done.sendSuffix')}</p>
+              <p className="text-text-muted mb-4">Please send <span className="text-text font-bold">${finalAmount} USDT</span> (TRC-20) to the wallet below.</p>
               <div className="p-4 rounded-xl glass-soft font-mono text-sm text-player break-all mb-4">
-                {process.env.NEXT_PUBLIC_USDT_TRC20 || t('walletMissing.trc')}
+                {process.env.NEXT_PUBLIC_USDT_TRC20 || 'TRC20 wallet not configured'}
               </div>
-              <p className="text-text-muted text-sm mb-8">{t('done.confirmMsg')}</p>
+              <p className="text-text-muted text-sm mb-8">After transfer, wait for admin confirmation.</p>
             </>
           )}
           <button onClick={() => router.push('/dashboard')} className="btn-primary px-8 py-3 w-full sm:w-auto">
-            {t('done.goDashboard')}
+            Go to Dashboard
           </button>
         </div>
       </div>
@@ -93,40 +91,40 @@ export default function ChargePage() {
   return (
     <div className="min-h-screen py-16 sm:py-24 px-4 sm:px-6">
       <div className="max-w-lg mx-auto">
-        <div className="hud-label text-center mb-2">{t('hudLabel')}</div>
-        <h1 className="text-2xl sm:text-3xl font-black text-center mb-2 font-hud">{t('title')}</h1>
-        <p className="text-center text-sm sm:text-base text-text-muted mb-10 sm:mb-12">{t('subtitle')}</p>
+        <div className="hud-label text-center mb-2">Wallet</div>
+        <h1 className="text-2xl sm:text-3xl font-black text-center mb-2 font-hud">Charge Balance</h1>
+        <p className="text-center text-sm sm:text-base text-text-muted mb-10 sm:mb-12">Add USDT balance to enable live betting.</p>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
-            <label className="block text-sm text-text-muted mb-2">{t('amountLabel')}</label>
+            <label className="block text-sm text-text-muted mb-2">Amount (USD)</label>
             <input type="number" min="100" step="100" value={amount}
               onChange={e => setAmount(e.target.value)}
               className="input-field"
-              placeholder={t('amountPlaceholder')} />
+              placeholder="Minimum 100" />
           </div>
 
           <div>
-            <label className="block text-sm text-text-muted mb-2">{t('networkLabel')}</label>
+            <label className="block text-sm text-text-muted mb-2">Network</label>
             <div className="p-3 rounded-xl border border-accent/60 bg-accent/10 text-accent text-center">
               TRC-20 (USDT)
             </div>
           </div>
 
           <div>
-          <label className="block text-sm text-text-muted mb-2">{t('promoLabel')} <span className="text-text-dim">{t('optional')}</span></label>
+          <label className="block text-sm text-text-muted mb-2">Promo Code <span className="text-text-dim">(optional)</span></label>
           <div className="flex flex-col sm:flex-row gap-3">
               <input value={promoCode} onChange={e => setPromoCode(e.target.value)}
                 className="input-field flex-1"
-                placeholder={t('promoPlaceholder')} />
-            <button onClick={checkPromo} className="btn-outline px-6 py-3 w-full sm:w-auto">{t('apply')}</button>
+                placeholder="Enter promo code" />
+            <button onClick={checkPromo} className="btn-outline px-6 py-3 w-full sm:w-auto">Apply</button>
             </div>
             {promoMessage && <p className={`text-sm mt-2 ${promoValid ? 'text-green-400' : 'text-banker'}`}>{promoMessage}</p>}
           </div>
 
           <button type="submit" disabled={loading}
             className="w-full btn-primary py-4 text-base sm:text-lg disabled:opacity-50">
-            {loading ? t('submitting') : t('submit')}
+            {loading ? 'Submitting...' : 'Submit Charge Request'}
           </button>
         </form>
       </div>
