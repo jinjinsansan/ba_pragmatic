@@ -5,6 +5,7 @@ import Link from 'next/link'
 import DashboardClient from './DashboardClient'
 import SupportForm from './SupportForm'
 import ReferralSection from './ReferralSection'
+import { buildCustomerTelegramStartLink } from '@/lib/customer-telegram'
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -49,11 +50,22 @@ export default async function DashboardPage() {
     ? await admin.from('charges').select('user_id, amount').in('user_id', referredIds).eq('status', 'confirmed')
     : { data: [] }
 
+  const commissionByReferred = new Map<string, number>()
+  for (const c of (commissions || [])) {
+    const rid = String((c as any).referred_id || '')
+    if (!rid) continue
+    commissionByReferred.set(rid, (commissionByReferred.get(rid) || 0) + Number((c as any).commission_amount || 0))
+  }
+
   const referredWithCharges = (referredProfiles || []).map(p => {
     const totalCharged = (allReferredCharges || [])
       .filter(c => c.user_id === p.id)
       .reduce((s, c) => s + Number(c.amount), 0)
-    return { ...p, total_charged: totalCharged, commission: totalCharged * 0.05 }
+    return {
+      ...p,
+      total_charged: totalCharged,
+      commission: commissionByReferred.get(p.id) || 0,
+    }
   })
 
   const totalEarned = commissions?.reduce((s, c) => s + Number(c.commission_amount), 0) ?? 0
@@ -64,6 +76,8 @@ export default async function DashboardPage() {
   const hasPackage = latestOrder?.status === 'delivered' || latestOrder?.status === 'confirmed'
   const hasActiveCharge = billing && billing.balance > 0 && !billing.suspended
   const canDownload = !!deliverables?.length
+  const telegramLinked = !!billing?.bot_config?.customer_telegram_chat_id
+  const telegramLink = buildCustomerTelegramStartLink(user.id)
   const latestDeliverable = deliverables?.[0]
   const deliverableDate = latestDeliverable?.created_at
     ? new Date(latestDeliverable.created_at).toISOString().split('T')[0]
@@ -184,6 +198,43 @@ export default async function DashboardPage() {
               <p className="text-text-muted">Your download is being prepared...</p>
             ) : (
               <p className="text-text-muted">Purchase a license to download.</p>
+            )}
+          </div>
+
+          <div className="p-6 rounded-2xl glass-card">
+            <h2 className="text-lg font-bold mb-4">Telegram通知連携</h2>
+            <div className="text-sm text-text-muted mb-3">
+              1タップで顧客向け通知を連携できます（日次精算・未払い/入金反映・セッション開始通知）。
+            </div>
+            {telegramLinked ? (
+              <div className="space-y-2">
+                <div className="text-sm text-green-400 font-semibold">連携済み</div>
+                {telegramLink && (
+                  <a
+                    href={telegramLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn-primary inline-block px-5 py-2.5"
+                  >
+                    Telegramを開く
+                  </a>
+                )}
+                <div className="text-xs text-text-muted">解除したい場合はBotで /stop を送信してください。</div>
+              </div>
+            ) : telegramLink ? (
+              <div className="space-y-2">
+                <a
+                  href={telegramLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn-primary inline-block px-5 py-2.5"
+                >
+                  1タップ連携する
+                </a>
+                <div className="text-xs text-text-muted">Telegramで /start が実行されると連携完了です。</div>
+              </div>
+            ) : (
+              <div className="text-sm text-yellow-400">現在は連携リンクを生成できません（環境設定未完了）。</div>
             )}
           </div>
 

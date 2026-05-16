@@ -66,6 +66,29 @@ export async function POST(req: NextRequest) {
   }
 
   if (!billing.is_free) {
+    const { data: unpaidInvoice, error: unpaidErr } = await admin
+      .from('daily_profit_invoices')
+      .select('outstanding_amount, settle_date')
+      .eq('user_id', profile.id)
+      .eq('status', 'unpaid')
+      .gt('outstanding_amount', 0)
+      .order('settle_date', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    const unpaidMissingTable = unpaidErr?.code === '42P01' || String(unpaidErr?.message || '').toLowerCase().includes('does not exist')
+    if (!unpaidMissingTable && unpaidInvoice && Number(unpaidInvoice.outstanding_amount) > 0) {
+      return NextResponse.json({
+        ok: false,
+        reason: `Daily profit share payment is pending ($${Number(unpaidInvoice.outstanding_amount).toFixed(2)}). Please charge/pay before live betting.`,
+      })
+    }
+    const fallbackOutstanding = Number((billing as any)?.bot_config?.outstanding_fee_amount || 0)
+    if (fallbackOutstanding > 0) {
+      return NextResponse.json({
+        ok: false,
+        reason: `Daily profit share payment is pending ($${fallbackOutstanding.toFixed(2)}). Please charge/pay before live betting.`,
+      })
+    }
     if (billing.suspended) {
       return NextResponse.json({ ok: false, reason: 'Your account is suspended. Please contact admin.' })
     }

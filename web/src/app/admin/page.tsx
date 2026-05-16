@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase-server'
 import { createAdminClient } from '@/lib/supabase-admin'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import TelegramBroadcastPanel from './TelegramBroadcastPanel'
 
 export const dynamic = 'force-dynamic'
 
@@ -40,7 +41,7 @@ export default async function AdminPage() {
             <Link href="/admin/promos" className="text-text-muted hover:text-text">プロモ</Link>
             <Link href="/admin/tickets" className="text-text-muted hover:text-text">チケット</Link>
             <Link href="/admin/withdrawals" className="text-text-muted hover:text-text">出金申請</Link>
-            <Link href="/admin/ledger" className="text-emerald-400 hover:text-emerald-300">📊 資金管理</Link>
+            {/* <Link href="/admin/ledger" className="text-emerald-400 hover:text-emerald-300">📊 資金管理</Link> */}
             <Link href="/dashboard" className="text-text-muted hover:text-text">マイページ</Link>
           </div>
         </div>
@@ -71,11 +72,13 @@ export default async function AdminPage() {
             <div className="text-3xl font-black text-green-400">{pendingWithdrawals || 0}</div>
             <div className="text-sm text-text-muted mt-1">出金申請</div>
           </Link>
-          <Link href="/admin/ledger" className="p-6 rounded-2xl glass-card hover:border-emerald-400/60 transition" style={{ background: 'rgba(34,197,94,0.05)' }}>
+          {/* <Link href="/admin/ledger" className="p-6 rounded-2xl glass-card hover:border-emerald-400/60 transition" style={{ background: 'rgba(34,197,94,0.05)' }}>
             <div className="text-3xl font-black text-emerald-400">📊</div>
             <div className="text-sm text-text-muted mt-1">資金管理</div>
-          </Link>
+          </Link> */}
         </div>
+
+        <TelegramBroadcastPanel />
       </div>
     </div>
   )

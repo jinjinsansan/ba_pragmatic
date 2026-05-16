@@ -89,6 +89,7 @@ CREATE TABLE billing (
   balance NUMERIC(12,2) DEFAULT 0,
   total_charged NUMERIC(12,2) DEFAULT 0,
   profit_share_rate NUMERIC(4,2) DEFAULT 0.20,
+  referrer_share_rate NUMERIC(4,2) DEFAULT 0.20,
   carry_loss NUMERIC(12,2) DEFAULT 0,
   is_free BOOLEAN DEFAULT FALSE,
   suspended BOOLEAN DEFAULT FALSE,
@@ -105,6 +106,7 @@ CREATE TABLE billing (
 -- ALTER TABLE billing ADD COLUMN IF NOT EXISTS gui_state JSONB DEFAULT '{}'::jsonb;
 -- ALTER TABLE billing ADD COLUMN IF NOT EXISTS session_state JSONB DEFAULT '{}'::jsonb;
 -- ALTER TABLE billing ADD COLUMN IF NOT EXISTS recommended_tables JSONB DEFAULT '[]'::jsonb;
+-- ALTER TABLE billing ADD COLUMN IF NOT EXISTS referrer_share_rate NUMERIC(4,2) DEFAULT 0.20;
 
 ALTER TABLE billing ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Users can view own billing" ON billing FOR SELECT USING (auth.uid() = user_id);
@@ -119,6 +121,9 @@ CREATE TABLE deductions (
   date DATE NOT NULL,
   daily_profit NUMERIC(12,2) NOT NULL,
   fee_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+  referrer_fee_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+  outstanding_fee_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+  pnl_source TEXT DEFAULT 'session_state',
   carry_loss NUMERIC(12,2) DEFAULT 0,
   note TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
@@ -127,6 +132,34 @@ CREATE TABLE deductions (
 ALTER TABLE deductions ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Users can view own deductions" ON deductions FOR SELECT USING (auth.uid() = user_id);
 CREATE POLICY "Admins can do anything on deductions" ON deductions FOR ALL USING (
+  EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND is_admin = TRUE)
+);
+
+-- 5.1 Daily profit invoices (Telegram billing ledger)
+CREATE TABLE daily_profit_invoices (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  settle_date DATE NOT NULL,
+  daily_profit NUMERIC(12,2) NOT NULL DEFAULT 0,
+  net_profit NUMERIC(12,2) NOT NULL DEFAULT 0,
+  operator_rate NUMERIC(6,4) NOT NULL DEFAULT 0,
+  operator_fee_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+  referrer_fee_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+  paid_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+  outstanding_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'none' CHECK (status IN ('none', 'paid', 'unpaid')),
+  note TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (user_id, settle_date)
+);
+
+CREATE INDEX idx_daily_profit_invoices_user_settle_date ON daily_profit_invoices(user_id, settle_date DESC);
+CREATE INDEX idx_daily_profit_invoices_status ON daily_profit_invoices(status, settle_date DESC);
+
+ALTER TABLE daily_profit_invoices ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can view own daily profit invoices" ON daily_profit_invoices FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Admins can do anything on daily profit invoices" ON daily_profit_invoices FOR ALL USING (
   EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND is_admin = TRUE)
 );
 

@@ -14,6 +14,8 @@ const DEFAULT_BOT_CONFIG = {
 
 export default function UserRow({ user, billing }: { user: any; billing: any }) {
   const [rate, setRate] = useState(billing?.profit_share_rate ? (billing.profit_share_rate * 100).toString() : '20')
+  const initialRefRate = Number(billing?.referrer_share_rate ?? billing?.bot_config?.referrer_share_rate)
+  const [refRate, setRefRate] = useState(Number.isFinite(initialRefRate) ? (initialRefRate * 100).toString() : '20')
   const [loading, setLoading] = useState(false)
   const [showConfig, setShowConfig] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -72,20 +74,40 @@ export default function UserRow({ user, billing }: { user: any; billing: any }) 
           })()}
         </td>
         <td className="py-3">
-          <div className="flex items-center gap-2">
-            <input
-              type="number" min="0" max="100" value={rate}
-              onChange={e => setRate(e.target.value)}
-              className="w-16 px-2 py-1 rounded bg-bg-primary border border-white/10 text-white text-sm"
-            />
-            <span className="text-slate-500">%</span>
-            <button
-              onClick={() => updateUser('set_rate', parseFloat(rate) / 100)}
-              disabled={loading}
-              className="px-2 py-1 rounded text-xs bg-player/20 text-player hover:bg-player/30 transition disabled:opacity-50"
-            >
-              設定
-            </button>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-slate-500 w-10">運営</span>
+              <input
+                type="number" min="0" max="100" step="10" value={rate}
+                onChange={e => setRate(e.target.value)}
+                className="w-16 px-2 py-1 rounded bg-bg-primary border border-white/10 text-white text-sm"
+              />
+              <span className="text-slate-500">%</span>
+              <button
+                onClick={() => updateUser('set_rate', parseFloat(rate) / 100)}
+                disabled={loading}
+                className="px-2 py-1 rounded text-xs bg-player/20 text-player hover:bg-player/30 transition disabled:opacity-50"
+              >
+                設定
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-slate-500 w-10">紹介</span>
+              <input
+                type="number" min="0" max="100" step="10" value={refRate}
+                onChange={e => setRefRate(e.target.value)}
+                className="w-16 px-2 py-1 rounded bg-bg-primary border border-white/10 text-white text-sm"
+              />
+              <span className="text-slate-500">%*</span>
+              <button
+                onClick={() => updateUser('set_referrer_rate', parseFloat(refRate) / 100)}
+                disabled={loading}
+                className="px-2 py-1 rounded text-xs bg-green-500/20 text-green-400 hover:bg-green-500/30 transition disabled:opacity-50"
+              >
+                設定
+              </button>
+            </div>
+            <div className="text-[10px] text-slate-500">*運営取り分内で紹介者に渡す割合</div>
           </div>
         </td>
         <td className="py-3">

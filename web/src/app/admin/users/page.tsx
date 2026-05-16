@@ -31,7 +31,7 @@ export default async function AdminUsersPage() {
             <Link href="/admin/users" className="text-text font-semibold">ユーザー</Link>
             <Link href="/admin/promos" className="text-text-muted hover:text-text">プロモ</Link>
             <Link href="/admin/tickets" className="text-text-muted hover:text-text">チケット</Link>
-            <Link href="/admin/ledger" className="text-emerald-400 hover:text-emerald-300">📊 資金管理</Link>
+            {/* <Link href="/admin/ledger" className="text-emerald-400 hover:text-emerald-300">📊 資金管理</Link> */}
           </div>
         </div>
       </nav>
@@ -45,7 +45,7 @@ export default async function AdminUsersPage() {
               <th className="pb-3">メール</th>
               <th className="pb-3">残高</th>
               <th className="pb-3">当日PnL</th>
-              <th className="pb-3">利益分配率</th>
+              <th className="pb-3">分配率(運営/紹介)</th>
               <th className="pb-3">ステータス</th>
               <th className="pb-3">紹介コード</th>
               <th className="pb-3">登録日</th>

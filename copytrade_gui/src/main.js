@@ -1107,15 +1107,31 @@ async function billingStatus() {
   async function _fetchBillingRows(accessToken) {
     return _httpsJson(
       'GET',
-      `${cfg.url}/rest/v1/billing?select=bot_paid,balance,suspended,is_free&limit=1`,
+      `${cfg.url}/rest/v1/billing?select=bot_paid,balance,suspended,is_free,bot_config&limit=1`,
+      null,
+      { apikey: cfg.anonKey, Authorization: `Bearer ${accessToken}` }
+    );
+  }
+  async function _fetchUnpaidInvoices(accessToken) {
+    return _httpsJson(
+      'GET',
+      `${cfg.url}/rest/v1/daily_profit_invoices?select=outstanding_amount,settle_date&status=eq.unpaid&outstanding_amount=gt.0&order=settle_date.desc&limit=1`,
       null,
       { apikey: cfg.anonKey, Authorization: `Bearer ${accessToken}` }
     );
   }
 
   let rows = null;
+  let unpaidRows = null;
   try {
     rows = await _fetchBillingRows(session.access_token);
+    try {
+      unpaidRows = await _fetchUnpaidInvoices(session.access_token);
+    } catch (invoiceErr) {
+      const msg = (invoiceErr && invoiceErr.message ? String(invoiceErr.message) : '').toLowerCase();
+      if (!(msg.includes('does not exist') || msg.includes('daily_profit_invoices'))) throw invoiceErr;
+      unpaidRows = [];
+    }
   } catch (e) {
     if (e && e.statusCode === 401) {
 
@@ -1124,6 +1140,13 @@ async function billingStatus() {
       const s2 = await ensureSession();
       if (!s2) return { ok: false, reason: 'Not signed in', balance: 0 };
       rows = await _fetchBillingRows(s2.access_token);
+      try {
+        unpaidRows = await _fetchUnpaidInvoices(s2.access_token);
+      } catch (invoiceErr) {
+        const msg = (invoiceErr && invoiceErr.message ? String(invoiceErr.message) : '').toLowerCase();
+        if (!(msg.includes('does not exist') || msg.includes('daily_profit_invoices'))) throw invoiceErr;
+        unpaidRows = [];
+      }
     } else {
 
 
@@ -1140,12 +1163,20 @@ async function billingStatus() {
   const isFree = !!data.is_free;
   const botPaid = !!data.bot_paid;
   const suspended = !!data.suspended;
+  const unpaid = Array.isArray(unpaidRows) && unpaidRows.length ? unpaidRows[0] : null;
+  const fallbackOutstanding = data && data.bot_config && typeof data.bot_config === 'object' ? Number(data.bot_config.outstanding_fee_amount || 0) : 0;
+  const unpaidAmount = unpaid && Number(unpaid.outstanding_amount) > 0
+    ? Number(unpaid.outstanding_amount)
+    : (fallbackOutstanding > 0 ? fallbackOutstanding : 0);
 
   if (!botPaid) {
     return { ok: false, reason: 'License not active. Please complete your purchase.', balance };
   }
 
   if (!isFree) {
+    if (unpaidAmount > 0) {
+      return { ok: false, reason: `Daily profit share payment is pending ($${unpaidAmount.toFixed(2)}). Please charge/pay before live betting.`, balance };
+    }
     if (suspended) {
       return { ok: false, reason: 'Your account is suspended. Please contact admin.', balance };
     }

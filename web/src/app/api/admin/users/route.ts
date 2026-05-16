@@ -13,6 +13,15 @@ export async function POST(req: NextRequest) {
   const { userId, action, value } = await req.json()
   const admin = createAdminClient()
 
+  function parseRate(v: unknown) {
+    const n = Number(v)
+    if (!Number.isFinite(n)) return null
+    if (n < 0 || n > 1) return null
+    const pct = Math.round(n * 100)
+    if (pct % 10 !== 0) return null
+    return pct / 100
+  }
+
   switch (action) {
     case 'suspend':
       await admin.from('billing').upsert({ user_id: userId, suspended: true, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
@@ -21,7 +30,29 @@ export async function POST(req: NextRequest) {
       await admin.from('billing').upsert({ user_id: userId, suspended: false, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
       break
     case 'set_rate':
-      await admin.from('billing').upsert({ user_id: userId, profit_share_rate: value, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+      {
+        const parsed = parseRate(value)
+        if (parsed === null) return NextResponse.json({ error: 'profit_share_rate must be 0-1 in 10% steps' }, { status: 400 })
+        await admin.from('billing').upsert({ user_id: userId, profit_share_rate: parsed, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+      }
+      break
+    case 'set_referrer_rate':
+      {
+        const parsed = parseRate(value)
+        if (parsed === null) return NextResponse.json({ error: 'referrer_share_rate must be 0-1 in 10% steps' }, { status: 400 })
+        const upsert = await admin.from('billing').upsert(
+          { user_id: userId, referrer_share_rate: parsed, updated_at: new Date().toISOString() },
+          { onConflict: 'user_id' },
+        )
+        if (upsert.error?.code === '42703' || String(upsert.error?.message || '').toLowerCase().includes('does not exist')) {
+          const { data: currentBilling } = await admin.from('billing').select('bot_config').eq('user_id', userId).maybeSingle()
+          const currentConfig = currentBilling?.bot_config && typeof currentBilling.bot_config === 'object' ? currentBilling.bot_config : {}
+          const nextConfig = { ...(currentConfig as Record<string, unknown>), referrer_share_rate: parsed }
+          await admin.from('billing').upsert({ user_id: userId, bot_config: nextConfig, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+        } else if (upsert.error) {
+          return NextResponse.json({ error: upsert.error.message }, { status: 500 })
+        }
+      }
       break
     case 'free_license':
       await admin.from('billing').upsert({
@@ -61,7 +92,6 @@ export async function POST(req: NextRequest) {
       }, { onConflict: 'user_id' })
       break
     }
-      break
     case 'activate':
       await admin.from('billing').upsert({ user_id: userId, suspended: false, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
       break
