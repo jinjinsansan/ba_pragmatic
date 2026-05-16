@@ -95,7 +95,7 @@ export default async function DashboardPage() {
       {/* Header */}
       <nav className="glass-panel border-b border-accent/20 rounded-none">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <Link href="/" className="text-sm font-hud tracking-[0.35em] text-accent">LAPLACE</Link>
+          <Link href="/" className="text-sm font-hud tracking-[0.35em] text-accent">BAFATHER</Link>
           <div className="flex items-center gap-3 sm:gap-4 flex-wrap justify-end">
             {profile?.is_admin && <Link href="/admin" className="text-sm text-text-muted hover:text-text">Admin</Link>}
             <DashboardClient />
@@ -104,8 +104,8 @@ export default async function DashboardPage() {
       </nav>
 
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-10">
-        <div className="hud-label mb-2">Account Overview</div>
-        <h1 className="text-2xl sm:text-3xl font-black mb-6 sm:mb-8 font-hud">My Dashboard</h1>
+        <div className="hud-label mb-2">II · Member Console</div>
+        <h1 className="text-2xl sm:text-3xl mb-6 sm:mb-8 font-hud">Operations Dashboard</h1>
 
         {/* Status Banner */}
         <div className={`p-6 rounded-2xl border mb-8 glass-soft ${
@@ -183,7 +183,7 @@ export default async function DashboardPage() {
                   href={`/api/download?file=${deliverables![0].file_path}`}
                   className="btn-primary inline-block px-6 py-3 w-full sm:w-auto text-center"
                 >
-                  Download LAPLACE v{deliverables![0].version}
+                  Download BAFATHER v{deliverables![0].version}
                 </a>
                 {deliverableDate && (
                   <div className="text-xs text-text-muted">Updated: {deliverableDate}</div>

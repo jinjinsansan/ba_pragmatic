@@ -3,7 +3,7 @@ export default function Loading() {
     <div className="min-h-screen">
       <nav className="glass-panel border-b border-accent/20 rounded-none">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center">
-          <span className="text-sm font-hud tracking-[0.35em] text-accent">LAPLACE</span>
+          <span className="text-sm font-hud tracking-[0.35em] text-accent">BAFATHER</span>
         </div>
       </nav>
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-10">

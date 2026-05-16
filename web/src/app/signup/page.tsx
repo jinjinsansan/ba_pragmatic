@@ -48,9 +48,9 @@ function SignupForm() {
 
   return (
     <div className="w-full max-w-md glass-card p-6 sm:p-8">
-      <div className="hud-label text-center mb-2">LAPLACE ACCESS</div>
-      <h1 className="text-2xl sm:text-3xl font-black text-center mb-2 font-hud">Create Account</h1>
-      <p className="text-center text-sm sm:text-base text-text-muted mb-8">Join LAPLACE and start winning</p>
+      <div className="hud-label text-center mb-2">BAFATHER ACCESS</div>
+      <h1 className="text-2xl sm:text-3xl text-center mb-2 font-hud">Create Account</h1>
+      <p className="text-center text-sm sm:text-base text-text-muted mb-8">Join BAFATHER and start operating</p>
 
       {message && (
         <div className="mb-6 p-4 rounded-xl bg-player/10 border border-player/30 text-player text-sm text-center">
@@ -105,10 +105,23 @@ function SignupForm() {
 
 export default function SignupPage() {
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 sm:px-6">
-      <Suspense fallback={<div className="text-text-muted">Loading...</div>}>
-        <SignupForm />
-      </Suspense>
+    <div className="min-h-screen px-4 sm:px-6 py-10 sm:py-16 flex items-center">
+      <div className="max-w-6xl w-full mx-auto grid lg:grid-cols-2 gap-8 lg:gap-12 items-center">
+        <div className="hidden lg:block">
+          <div className="hud-label mb-3">I · Operator Onboarding</div>
+          <h1 className="text-5xl xl:text-6xl leading-tight font-hud mb-5">
+            BAFATHER
+            <br />
+            <span className="text-accent">ACCOUNT APPLY</span>
+          </h1>
+          <p className="text-text-muted leading-relaxed max-w-md">
+            Create your account, complete license purchase, and activate your session workflow.
+          </p>
+        </div>
+        <Suspense fallback={<div className="text-text-muted">Loading...</div>}>
+          <SignupForm />
+        </Suspense>
+      </div>
     </div>
   )
 }

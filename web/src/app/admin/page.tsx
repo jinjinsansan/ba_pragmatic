@@ -33,7 +33,7 @@ export default async function AdminPage() {
     <div className="min-h-screen">
       <nav className="glass-panel border-b border-accent/20 rounded-none">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <Link href="/" className="text-sm font-hud tracking-[0.35em] text-accent">LAPLACE</Link>
+          <Link href="/" className="text-sm font-hud tracking-[0.35em] text-accent">BAFATHER</Link>
           <div className="flex flex-wrap items-center gap-3 text-xs sm:text-sm">
             <Link href="/admin" className="text-text font-semibold">管理</Link>
             <Link href="/dashboard" className="text-text-muted hover:text-text">Dashboard</Link>
@@ -48,8 +48,8 @@ export default async function AdminPage() {
       </nav>
 
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-10">
-        <div className="hud-label mb-2">Admin Console</div>
-        <h1 className="text-2xl sm:text-3xl font-black mb-6 sm:mb-8 font-hud">管理パネル</h1>
+        <div className="hud-label mb-2">III · Admin Console</div>
+        <h1 className="text-2xl sm:text-3xl mb-6 sm:mb-8 font-hud">管理パネル</h1>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <Link href="/admin/users" className="p-6 rounded-2xl glass-card hover:border-accent/40 transition">
