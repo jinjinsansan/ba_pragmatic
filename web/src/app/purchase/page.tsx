@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase-browser'
+import { copyTextToClipboard } from '@/lib/clipboard'
 
 const PRICE = 2000
 const FEATURES = [
@@ -24,8 +25,10 @@ function PurchaseForm() {
   const [finalAmount, setFinalAmount] = useState(0)
   const [isFree, setIsFree] = useState(false)
   const [txHash, setTxHash] = useState('')
+  const [copyMessage, setCopyMessage] = useState('')
 
   const walletAddress = process.env.NEXT_PUBLIC_USDT_TRC20 || 'TRC20 wallet not configured'
+  const walletCopyDisabled = walletAddress === 'TRC20 wallet not configured'
 
   async function checkPromo() {
     if (!promoCode.trim()) return
@@ -75,10 +78,12 @@ function PurchaseForm() {
   }
 
   async function copyWallet() {
-    if (!walletAddress || walletAddress === 'TRC20 wallet not configured') return
-    try {
-      await navigator.clipboard.writeText(walletAddress)
-    } catch {}
+    if (walletCopyDisabled) {
+      setCopyMessage('Wallet address is not configured.')
+      return
+    }
+    const ok = await copyTextToClipboard(walletAddress)
+    setCopyMessage(ok ? 'Address copied to clipboard.' : 'Copy failed. Please copy manually.')
   }
 
   if (submitted) {
@@ -176,10 +181,12 @@ function PurchaseForm() {
               </div>
               <button
                 onClick={copyWallet}
-                className="mt-3 px-4 py-2 rounded-md border border-cyan-300/60 text-cyan-300 text-[11px] tracking-[0.18em] font-bold"
+                disabled={walletCopyDisabled}
+                className="mt-3 px-4 py-2 rounded-md border border-cyan-300/60 text-cyan-300 text-[11px] tracking-[0.18em] font-bold disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 COPY ADDRESS
               </button>
+              {copyMessage && <p className="text-xs text-cyan-100/70 mt-2">{copyMessage}</p>}
             </div>
 
             <div className="rounded-xl border border-cyan-400/30 bg-[#0c1220]/90 p-5">
