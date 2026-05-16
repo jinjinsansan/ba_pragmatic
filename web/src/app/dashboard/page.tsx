@@ -222,14 +222,14 @@ export default async function DashboardPage() {
               </div>
             </div>
             {status === 'no_purchase' && (
-              <Link href="/purchase" className="btn-primary px-6 py-3 w-full sm:w-auto text-center">
+              <a href="/purchase" className="btn-primary px-6 py-3 w-full sm:w-auto text-center">
                 Purchase License
-              </Link>
+              </a>
             )}
             {status === 'dry_run' && (
-              <Link href="/dashboard/charge" className="btn-primary px-6 py-3 w-full sm:w-auto text-center">
+              <a href="/dashboard/charge" className="btn-primary px-6 py-3 w-full sm:w-auto text-center">
                 Charge Balance
-              </Link>
+              </a>
             )}
           </div>
         </div>
@@ -288,14 +288,14 @@ export default async function DashboardPage() {
                 <div className="text-sm text-text">{pendingStep.title}</div>
                 <div className="text-xs text-text-muted">{pendingStep.desc}</div>
                 {pendingStep.href && (
-                  <Link
+                  <a
                     href={pendingStep.href}
                     className="btn-primary inline-block px-5 py-2.5 w-full text-center"
                     target={pendingStep.href.startsWith('http') ? '_blank' : undefined}
                     rel={pendingStep.href.startsWith('http') ? 'noreferrer' : undefined}
                   >
                     {pendingStep.actionText || '進む'}
-                  </Link>
+                  </a>
                 )}
               </div>
             ) : (
@@ -494,7 +494,7 @@ export default async function DashboardPage() {
         <div className="p-6 rounded-2xl glass-card mb-8">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold">Charge History</h2>
-            <Link href="/dashboard/charge" className="text-sm text-accent hover:underline">Add Charge</Link>
+            <a href="/dashboard/charge" className="text-sm text-accent hover:underline">Add Charge</a>
           </div>
           {charges?.length ? (
             <div className="overflow-x-auto">
