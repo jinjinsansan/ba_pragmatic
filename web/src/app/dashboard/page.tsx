@@ -471,28 +471,60 @@ export default async function DashboardPage() {
           ) : <p className="text-text-muted text-sm">No charges yet.</p>}
         </div>
 
-        {/* Daily Settlements */}
+        {/* Daily PnL History */}
         <div className="p-6 rounded-2xl glass-card">
-          <h2 className="text-lg font-bold mb-4">Daily Settlements</h2>
-          {deductions?.length ? (
+          <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+            <h2 className="text-lg font-bold">Daily PnL History（日次）</h2>
+            <span className="text-xs text-text-dim">JST日次確定ベース</span>
+          </div>
+          {(invoices?.length || deductions?.length) ? (
             <div className="overflow-x-auto">
-              <table className="min-w-[640px] w-full text-sm">
-                <thead><tr className="text-text-muted text-left"><th className="pb-2">Date</th><th className="pb-2">Profit</th><th className="pb-2">Fee</th><th className="pb-2">Note</th></tr></thead>
+              <table className="min-w-[760px] w-full text-sm">
+                <thead>
+                  <tr className="text-text-muted text-left">
+                    <th className="pb-2">Date</th>
+                    <th className="pb-2">Daily PnL</th>
+                    <th className="pb-2">Net</th>
+                    <th className="pb-2">Fee</th>
+                    <th className="pb-2">Outstanding</th>
+                    <th className="pb-2">Status</th>
+                  </tr>
+                </thead>
                 <tbody>
-                  {deductions.map(d => (
-                    <tr key={d.id} className="border-t border-accent/10">
-                      <td className="py-2">{d.date}</td>
-                      <td className={`py-2 font-bold ${Number(d.daily_profit) >= 0 ? 'text-green-400' : 'text-banker'}`}>
-                        {Number(d.daily_profit) >= 0 ? '+' : ''}${Number(d.daily_profit).toFixed(2)}
-                      </td>
-                      <td className="py-2 text-banker">${Number(d.fee_amount).toFixed(2)}</td>
-                      <td className="py-2 text-text-muted">{d.note || '—'}</td>
-                    </tr>
-                  ))}
+                  {(invoices?.length ? invoices : deductions || []).map((row: any, idx: number) => {
+                    const date = String(row.settle_date || row.date || '')
+                    const dailyProfit = Number(row.daily_profit || 0)
+                    const netProfit = Number(row.net_profit ?? row.daily_profit ?? 0)
+                    const fee = Number(row.operator_fee_amount ?? row.fee_amount ?? 0)
+                    const outstanding = Number(row.outstanding_amount ?? row.outstanding_fee_amount ?? 0)
+                    const statusLabel = String(row.status || (outstanding > 0 ? 'unpaid' : 'paid'))
+                    return (
+                      <tr key={`${row.id || idx}-${date}`} className="border-t border-accent/10">
+                        <td className="py-2">{date || '—'}</td>
+                        <td className={`py-2 font-bold ${dailyProfit >= 0 ? 'text-green-400' : 'text-banker'}`}>
+                          {dailyProfit >= 0 ? '+' : ''}${dailyProfit.toFixed(2)}
+                        </td>
+                        <td className={`py-2 ${netProfit >= 0 ? 'text-text' : 'text-banker'}`}>
+                          {netProfit >= 0 ? '+' : ''}${netProfit.toFixed(2)}
+                        </td>
+                        <td className="py-2 text-accent">${fee.toFixed(2)}</td>
+                        <td className={`py-2 ${outstanding > 0 ? 'text-yellow-400' : 'text-text-muted'}`}>${outstanding.toFixed(2)}</td>
+                        <td className="py-2">
+                          <span className={`px-2 py-0.5 rounded text-xs ${
+                            statusLabel === 'unpaid' ? 'bg-yellow-500/20 text-yellow-400' :
+                            statusLabel === 'paid' ? 'bg-green-500/20 text-green-400' :
+                            'bg-slate-500/20 text-slate-300'
+                          }`}>
+                            {statusLabel}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
-          ) : <p className="text-text-muted text-sm">No settlements yet.</p>}
+          ) : <p className="text-text-muted text-sm">No daily PnL history yet.</p>}
         </div>
 
         {/* Support */}
