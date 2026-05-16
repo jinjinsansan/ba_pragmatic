@@ -65,7 +65,7 @@ export default function ChargePage() {
 
   if (submitted) {
     return (
-      <div className="min-h-screen flex items-center justify-center px-4 sm:px-6">
+      <div className="min-h-screen relative z-10 flex items-center justify-center px-4 sm:px-6">
         <div className="max-w-lg text-center glass-card p-6 sm:p-10">
           <div className="text-5xl mb-6">{isFree ? '🎉' : '✅'}</div>
           <h1 className="text-2xl sm:text-3xl font-bold mb-4 font-hud">{isFree ? 'Activated' : 'Request Submitted'}</h1>
@@ -89,7 +89,7 @@ export default function ChargePage() {
   }
 
   return (
-    <div className="min-h-screen py-16 sm:py-24 px-4 sm:px-6">
+    <div className="min-h-screen relative z-10 py-16 sm:py-24 px-4 sm:px-6">
       <div className="max-w-lg mx-auto">
         <div className="hud-label text-center mb-2">Wallet</div>
         <h1 className="text-2xl sm:text-3xl font-black text-center mb-2 font-hud">Charge Balance</h1>
