@@ -113,6 +113,549 @@ def _notify_decision_waiters() -> None:
         _DECISION_WAIT_COND.notify_all()
 
 
+_AUTO_BET_LOCK = threading.RLock()
+_AUTO_BET_STATE: dict[str, Any] = {
+    "active": False,
+    "provider": "pragmatic",
+    "table_id": "",
+    "table_name": "",
+    "started_at": "",
+    "stopped_at": "",
+    "stop_reason": "",
+    "last_error": "",
+    "last_decision_id": "",
+    "last_tick_at": "",
+    "p_streak": 0,
+    "last_total_bets": None,
+    "last_wins": None,
+    "last_losses": None,
+    "last_ties": None,
+    "last_look_sent_at": None,   # unix sec
+    "last_sent_action": None,    # BET|LOOK
+    "last_bet_window_open": False,
+    "last_resolved_game_id": None,
+}
+
+_AUTO_BET_POLL_SEC = float(os.getenv("BACOPY_AUTO_BET_POLL_SEC", "0.25") or 0.25)
+_AUTO_BET_LOOK_TIMEOUT_SEC = float(os.getenv("BACOPY_AUTO_BET_LOOK_TIMEOUT_SEC", "40") or 40)
+_AUTO_BET_EXECUTOR_STALE_SEC = float(os.getenv("BACOPY_AUTO_BET_EXECUTOR_STALE_SEC", "60") or 60)
+_AUTO_BET_WINDOW_MAX_AGE_SEC = float(os.getenv("BACOPY_AUTO_BET_WINDOW_MAX_AGE_SEC", "12") or 12)
+_AUTO_BET_MAX_BET_USD = float(os.getenv("BACOPY_AUTO_BET_MAX_BET_USD", "200") or 200)
+_AUTO_BET_OUTSTANDING_MAX_SEC = float(os.getenv("BACOPY_AUTO_BET_OUTSTANDING_MAX_SEC", "90") or 90)
+_AUTO_BET_ENABLED = str(os.getenv("BACOPY_ENABLE_AUTO_BET", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+_ADMIN_TG_BOT_TOKEN = str(os.getenv("ADMIN_TELEGRAM_BOT_TOKEN") or os.getenv("BACOPY_ADMIN_TELEGRAM_BOT_TOKEN") or "").strip()
+_ADMIN_TG_CHAT_ID = str(os.getenv("ADMIN_TELEGRAM_CHAT_ID") or os.getenv("BACOPY_ADMIN_TELEGRAM_CHAT_ID") or "").strip()
+_EXECUTOR_IDLE_ALERT_ENABLED = str(os.getenv("BACOPY_ENABLE_EXECUTOR_IDLE_ALERT", "1") or "1").strip().lower() in ("1", "true", "yes", "on")
+_EXECUTOR_IDLE_ALERT_SEC = float(os.getenv("BACOPY_EXECUTOR_IDLE_ALERT_SEC", "900") or 900)
+_EXECUTOR_IDLE_ALERT_COOLDOWN_SEC = float(os.getenv("BACOPY_EXECUTOR_IDLE_ALERT_COOLDOWN_SEC", "900") or 900)
+_EXECUTOR_IDLE_ALERT_POLL_SEC = float(os.getenv("BACOPY_EXECUTOR_IDLE_ALERT_POLL_SEC", "20") or 20)
+_EXECUTOR_IDLE_ALERT_DECISION_WINDOW_SEC = float(os.getenv("BACOPY_EXECUTOR_IDLE_ALERT_DECISION_WINDOW_SEC", "900") or 900)
+_EXECUTOR_IDLE_ALERT_EXECUTOR_STALE_SEC = float(os.getenv("BACOPY_EXECUTOR_IDLE_ALERT_EXECUTOR_STALE_SEC", "75") or 75)
+_EXECUTOR_IDLE_ALERT_TRACK: dict[str, dict[str, float]] = {}
+_EXECUTOR_IDLE_ALERT_LOCK = threading.Lock()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _age_sec_from_iso(iso: str) -> float:
+    try:
+        s = str(iso or "").strip()
+        if not s:
+            return 9e9
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return max(0.0, time.time() - dt.timestamp())
+    except Exception:
+        return 9e9
+
+
+def _safe_float(v: Any) -> Optional[float]:
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
+def _extract_total_bets(exec_row: dict[str, Any]) -> Optional[float]:
+    if not isinstance(exec_row, dict):
+        return None
+    gui = exec_row.get("gui") if isinstance(exec_row.get("gui"), dict) else {}
+    val = _safe_float(gui.get("total_bets"))
+    if val is not None:
+        return val
+    wins = _safe_float(gui.get("wins")) or 0.0
+    losses = _safe_float(gui.get("losses")) or 0.0
+    ties = _safe_float(gui.get("ties")) or 0.0
+    if wins or losses or ties:
+        return wins + losses + ties
+    return None
+
+
+def _send_admin_telegram_alert(text: str) -> bool:
+    if not _ADMIN_TG_BOT_TOKEN or not _ADMIN_TG_CHAT_ID:
+        return False
+    url = f"https://api.telegram.org/bot{_ADMIN_TG_BOT_TOKEN}/sendMessage"
+    body = json.dumps(
+        {
+            "chat_id": _ADMIN_TG_CHAT_ID,
+            "text": str(text or "")[:3900],
+            "disable_web_page_preview": True,
+        }
+    ).encode("utf-8")
+    req = _UrlRequest(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with _urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        payload = json.loads(raw) if raw else {}
+        return bool(isinstance(payload, dict) and payload.get("ok"))
+    except Exception:
+        return False
+
+
+def _recent_bet_expectation(window_sec: float = 900.0) -> tuple[bool, set[str], bool]:
+    """Return (broadcast_seen, targeted_executor_ids, has_recent_bet_decisions)."""
+    statuses = ("pending", "processing", "done", "error")
+    targeted: set[str] = set()
+    broadcast_seen = False
+    has_recent = False
+    win_sec = max(30.0, float(window_sec or 0))
+    for st in statuses:
+        for d in (get_by_status(st, limit=300) or []):
+            if not isinstance(d, dict):
+                continue
+            if _age_sec_from_iso(str(d.get("received_at") or "")) > win_sec:
+                continue
+            fa = d.get("friend_action") if isinstance(d.get("friend_action"), dict) else {}
+            if str(fa.get("action") or "").upper() != "BET":
+                continue
+            has_recent = True
+            tgt = str(d.get("target_executor_id") or "").strip()
+            if tgt:
+                targeted.add(tgt)
+            else:
+                broadcast_seen = True
+    return broadcast_seen, targeted, has_recent
+
+
+def _executor_idle_alert_worker_loop() -> None:
+    while True:
+        try:
+            if not _EXECUTOR_IDLE_ALERT_ENABLED:
+                time.sleep(max(5.0, _EXECUTOR_IDLE_ALERT_POLL_SEC))
+                continue
+            rows = list_executors(limit=500) or []
+            now = time.time()
+            broadcast_seen, targeted_ids, has_recent_bet = _recent_bet_expectation(_EXECUTOR_IDLE_ALERT_DECISION_WINDOW_SEC)
+            if not has_recent_bet:
+                time.sleep(max(5.0, _EXECUTOR_IDLE_ALERT_POLL_SEC))
+                continue
+
+            active_eids: set[str] = set()
+            for e in rows:
+                if not isinstance(e, dict):
+                    continue
+                eid = str(e.get("executor_id") or "").strip()
+                if not eid:
+                    continue
+                if str(e.get("status") or "").lower() == "stopped":
+                    continue
+                hb_age = _age_sec_from_iso(str(e.get("updated_at") or ""))
+                if hb_age >= _EXECUTOR_IDLE_ALERT_EXECUTOR_STALE_SEC:
+                    continue
+                if bool(e.get("recovering")):
+                    continue
+                if bool(e.get("session_elsewhere_unresolved")):
+                    continue
+                if bool(e.get("inactivity_modal_unresolved")):
+                    continue
+                if not bool(e.get("bettable")):
+                    continue
+                expected = bool(broadcast_seen or (eid in targeted_ids))
+                if not expected:
+                    continue
+                total_bets = _extract_total_bets(e)
+                if total_bets is None:
+                    continue
+                active_eids.add(eid)
+                with _EXECUTOR_IDLE_ALERT_LOCK:
+                    st = _EXECUTOR_IDLE_ALERT_TRACK.get(eid)
+                    if st is None:
+                        st = {
+                            "last_total_bets": float(total_bets),
+                            "last_progress_at": now,
+                            "last_seen_at": now,
+                            "last_alert_at": 0.0,
+                        }
+                        _EXECUTOR_IDLE_ALERT_TRACK[eid] = st
+                        continue
+                    st["last_seen_at"] = now
+                    prev_total = float(st.get("last_total_bets") or 0.0)
+                    if float(total_bets) > prev_total:
+                        st["last_total_bets"] = float(total_bets)
+                        st["last_progress_at"] = now
+                        continue
+                    if float(total_bets) < prev_total:
+                        # Receiver restart/state reset: re-baseline and suppress alert.
+                        st["last_total_bets"] = float(total_bets)
+                        st["last_progress_at"] = now
+                        st["last_alert_at"] = 0.0
+                        continue
+                    idle_sec = now - float(st.get("last_progress_at") or now)
+                    cool_sec = now - float(st.get("last_alert_at") or 0.0)
+                    if idle_sec < _EXECUTOR_IDLE_ALERT_SEC or cool_sec < _EXECUTOR_IDLE_ALERT_COOLDOWN_SEC:
+                        continue
+                    ident = str(e.get("user_email") or e.get("label") or eid[:10])
+                    table = str(e.get("table_name") or e.get("table_id") or "-")
+                    msg = (
+                        "⚠️ Receiver BET stall detected\n"
+                        f"executor: {eid}\n"
+                        f"user: {ident}\n"
+                        f"table: {table}\n"
+                        f"total_bets: {int(total_bets)}\n"
+                        f"no_bet_progress_sec: {int(idle_sec)}\n"
+                        f"heartbeat_age_sec: {int(hb_age)}\n"
+                        "hint: Receiver is online but BET count is not increasing."
+                    )
+                    if _send_admin_telegram_alert(msg):
+                        st["last_alert_at"] = now
+
+            # Cleanup stale tracking rows.
+            with _EXECUTOR_IDLE_ALERT_LOCK:
+                drop_before = now - max(_EXECUTOR_IDLE_ALERT_SEC * 3.0, 1800.0)
+                for eid in list(_EXECUTOR_IDLE_ALERT_TRACK.keys()):
+                    st = _EXECUTOR_IDLE_ALERT_TRACK.get(eid) or {}
+                    if eid not in active_eids and float(st.get("last_seen_at") or 0.0) < drop_before:
+                        _EXECUTOR_IDLE_ALERT_TRACK.pop(eid, None)
+        except Exception:
+            pass
+        time.sleep(max(5.0, _EXECUTOR_IDLE_ALERT_POLL_SEC))
+
+
+def _norm_table_name(s: str) -> str:
+    out = "".join(ch for ch in str(s or "").lower() if ch.isalnum())
+    return out
+
+
+def _executor_on_selected_table(exec_row: dict[str, Any], table_id: str, table_name: str) -> bool:
+    if not isinstance(exec_row, dict):
+        return False
+    if table_id and str(exec_row.get("table_id") or "") == str(table_id):
+        return True
+    a = _norm_table_name(str(exec_row.get("table_name") or ""))
+    b = _norm_table_name(str(table_name or ""))
+    return bool(a and b and a == b)
+
+
+def _is_bet_window_open(exec_row: dict[str, Any]) -> bool:
+    if not isinstance(exec_row, dict):
+        return False
+    if exec_row.get("bet_window_open") is not None:
+        try:
+            age = float(exec_row.get("bet_window_open_age_sec") or 0)
+        except Exception:
+            age = 0.0
+        return bool(exec_row.get("bet_window_open")) and (age <= 0 or age < _AUTO_BET_WINDOW_MAX_AGE_SEC)
+    return bool(exec_row.get("bettable"))
+
+
+def _standby_executors(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for e in rows or []:
+        if not isinstance(e, dict):
+            continue
+        if str(e.get("status") or "").lower() == "stopped":
+            continue
+        if _age_sec_from_iso(str(e.get("updated_at") or "")) >= _AUTO_BET_EXECUTOR_STALE_SEC:
+            continue
+        if bool(e.get("session_elsewhere_unresolved")):
+            continue
+        if bool(e.get("inactivity_modal_unresolved")):
+            continue
+        if bool(e.get("recovering")):
+            continue
+        if not bool(e.get("bettable")):
+            continue
+        out.append(e)
+    return out
+
+
+def _current_snapshot(provider: str, table_id: str) -> Optional[dict[str, Any]]:
+    if not provider or not table_id:
+        return None
+    s = get_snapshot(provider, table_id)
+    if isinstance(s, dict) and s:
+        return s
+    return None
+
+
+def _auto_bet_has_outstanding_decision() -> bool:
+    def _is_auto(d: dict[str, Any]) -> bool:
+        note = str((((d or {}).get("friend_action") or {}).get("note") or "").lower())
+        return note in ("auto_bet", "auto_bet_server")
+
+    def _is_recent(d: dict[str, Any]) -> bool:
+        age = _age_sec_from_iso(str((d or {}).get("received_at") or ""))
+        return age <= _AUTO_BET_OUTSTANDING_MAX_SEC
+
+    pend = get_by_status("pending", limit=150) or []
+    proc = get_by_status("processing", limit=150) or []
+    return (
+        any(_is_auto(d) and _is_recent(d) for d in pend if isinstance(d, dict))
+        or any(_is_auto(d) and _is_recent(d) for d in proc if isinstance(d, dict))
+    )
+
+
+def _auto_bet_public_state() -> dict[str, Any]:
+    with _AUTO_BET_LOCK:
+        s = dict(_AUTO_BET_STATE)
+    return {
+        "enabled": bool(_AUTO_BET_ENABLED),
+        "active": bool(s.get("active")),
+        "provider": str(s.get("provider") or ""),
+        "table_id": str(s.get("table_id") or ""),
+        "table_name": str(s.get("table_name") or ""),
+        "started_at": str(s.get("started_at") or ""),
+        "stopped_at": str(s.get("stopped_at") or ""),
+        "stop_reason": str(s.get("stop_reason") or ""),
+        "last_error": str(s.get("last_error") or ""),
+        "last_decision_id": str(s.get("last_decision_id") or ""),
+        "last_tick_at": str(s.get("last_tick_at") or ""),
+        "p_streak": int(s.get("p_streak") or 0),
+    }
+
+
+def _auto_bet_reset_runtime_fields_unlocked() -> None:
+    _AUTO_BET_STATE["p_streak"] = 0
+    _AUTO_BET_STATE["last_total_bets"] = None
+    _AUTO_BET_STATE["last_wins"] = None
+    _AUTO_BET_STATE["last_losses"] = None
+    _AUTO_BET_STATE["last_ties"] = None
+    _AUTO_BET_STATE["last_look_sent_at"] = None
+    _AUTO_BET_STATE["last_sent_action"] = None
+    _AUTO_BET_STATE["last_bet_window_open"] = False
+    _AUTO_BET_STATE["last_resolved_game_id"] = None
+    _AUTO_BET_STATE["last_error"] = ""
+    _AUTO_BET_STATE["last_decision_id"] = ""
+    _AUTO_BET_STATE["last_tick_at"] = _now_iso()
+
+
+def _auto_bet_start(provider: str, table_id: str, table_name: str) -> dict[str, Any]:
+    if not _AUTO_BET_ENABLED:
+        with _AUTO_BET_LOCK:
+            _AUTO_BET_STATE["active"] = False
+            _AUTO_BET_STATE["last_error"] = "auto_bet_disabled"
+            _AUTO_BET_STATE["stopped_at"] = _now_iso()
+            _AUTO_BET_STATE["stop_reason"] = "auto_bet_disabled"
+        return _auto_bet_public_state()
+    with _AUTO_BET_LOCK:
+        _AUTO_BET_STATE["active"] = True
+        _AUTO_BET_STATE["provider"] = str(provider or "pragmatic")
+        _AUTO_BET_STATE["table_id"] = str(table_id or "")
+        _AUTO_BET_STATE["table_name"] = str(table_name or "")
+        _AUTO_BET_STATE["started_at"] = _now_iso()
+        _AUTO_BET_STATE["stopped_at"] = ""
+        _AUTO_BET_STATE["stop_reason"] = ""
+        _auto_bet_reset_runtime_fields_unlocked()
+    return _auto_bet_public_state()
+
+
+def _auto_bet_stop(reason: str = "") -> dict[str, Any]:
+    with _AUTO_BET_LOCK:
+        _AUTO_BET_STATE["active"] = False
+        _AUTO_BET_STATE["stopped_at"] = _now_iso()
+        _AUTO_BET_STATE["stop_reason"] = str(reason or "")
+    return _auto_bet_public_state()
+
+
+def _auto_bet_send_decision(action: str, side: str, provider: str, table_id: str, table_name: str, targets: list[dict[str, Any]]) -> str:
+    did = "dec_auto_" + secrets.token_hex(8)
+    seq_exec = next((e for e in targets if isinstance((e.get("seq") or {}), dict)), {}) if targets else {}
+    seq_state = (seq_exec or {}).get("seq") or {}
+    snap = _current_snapshot(provider, table_id) or {}
+    game_id = ""
+    try:
+        game_id = str((((snap.get("last_hand") or {}).get("gameId")) or ""))
+    except Exception:
+        game_id = ""
+    payload: dict[str, Any] = {
+        "decision_id": did,
+        "provider": provider,
+        "table_id": table_id,
+        "table_name": table_name,
+        "qpid_table_id": str((snap.get("qpid_table_id") or "")) if isinstance(snap, dict) else "",
+        "target_executor_id": "",
+        "friend_action": {
+            "action": action,
+            "side": side or "",
+            "amount": 0,
+            "note": "auto_bet_server",
+            "in_learning_session": False,
+            "overshoot": (float(seq_state.get("overshoot")) if seq_state.get("overshoot") is not None else None),
+            "unit_idx": (int(seq_state.get("unit_idx")) if seq_state.get("unit_idx") is not None else None),
+        },
+        "schema_version": 1,
+        "captured_at": _now_iso(),
+        "game_id": game_id,
+    }
+    _fill_snapshot(provider, table_id, payload)
+    append_decision_event(payload)
+    insert_decision(did, payload)
+    _notify_decision_waiters()
+    return did
+
+
+def _auto_bet_apply_snapshot_fallback(state: dict[str, Any], provider: str, table_id: str) -> None:
+    snap = _current_snapshot(provider, table_id)
+    if not isinstance(snap, dict):
+        return
+    lh = snap.get("last_hand") or {}
+    gid = str(lh.get("gameId") or "")
+    if gid and gid == str(state.get("last_resolved_game_id") or ""):
+        return
+    w = str(lh.get("winner") or "").upper()
+    if "PLAYER" in w:
+        state["p_streak"] = int(state.get("p_streak") or 0) + 1
+    elif "BANKER" in w:
+        state["p_streak"] = 0
+    if gid:
+        state["last_resolved_game_id"] = gid
+
+
+def _auto_bet_worker_loop() -> None:
+    while True:
+        try:
+            with _AUTO_BET_LOCK:
+                active = bool(_AUTO_BET_STATE.get("active"))
+                provider = str(_AUTO_BET_STATE.get("provider") or "pragmatic")
+                table_id = str(_AUTO_BET_STATE.get("table_id") or "")
+                table_name = str(_AUTO_BET_STATE.get("table_name") or "")
+            if not active:
+                time.sleep(max(0.1, _AUTO_BET_POLL_SEC))
+                continue
+            if not table_id and not table_name:
+                _auto_bet_stop("table_not_selected")
+                time.sleep(max(0.1, _AUTO_BET_POLL_SEC))
+                continue
+
+            rows = list_executors(limit=400) or []
+            standby = _standby_executors(rows)
+            targets = [e for e in standby if _executor_on_selected_table(e, table_id, table_name)]
+
+            with _AUTO_BET_LOCK:
+                state = dict(_AUTO_BET_STATE)
+                state["last_tick_at"] = _now_iso()
+                if not targets:
+                    state["last_error"] = "no_target_executor_on_selected_table"
+                    _AUTO_BET_STATE.update(state)
+                    time.sleep(max(0.1, _AUTO_BET_POLL_SEC))
+                    continue
+
+            agg_total = 0.0
+            agg_wins = 0.0
+            agg_losses = 0.0
+            agg_ties = 0.0
+            agg_max_bet = 0.0
+            for e in targets:
+                g = (e.get("gui") or {}) if isinstance(e.get("gui"), dict) else {}
+                s = (e.get("seq") or {}) if isinstance(e.get("seq"), dict) else {}
+                agg_total += float(g.get("total_bets") or 0)
+                agg_wins += float(g.get("wins") or 0)
+                agg_losses += float(g.get("losses") or 0)
+                agg_ties += float(g.get("ties") or 0)
+                b = float(s.get("bet_amount") or g.get("bet_amount") or 0)
+                if b > agg_max_bet:
+                    agg_max_bet = b
+
+            any_open = any(_is_bet_window_open(e) for e in targets)
+
+            with _AUTO_BET_LOCK:
+                state = dict(_AUTO_BET_STATE)
+                state["last_tick_at"] = _now_iso()
+                state["last_error"] = ""
+                edge = bool(any_open and not bool(state.get("last_bet_window_open")))
+                outstanding = _auto_bet_has_outstanding_decision()
+
+                if state.get("last_total_bets") is None:
+                    state["last_total_bets"] = agg_total
+                    state["last_wins"] = agg_wins
+                    state["last_losses"] = agg_losses
+                    state["last_ties"] = agg_ties
+
+                if state.get("last_sent_action") is None:
+                    if (not outstanding) and edge:
+                        action = "LOOK" if int(state.get("p_streak") or 0) >= 4 else "BET"
+                        side = "BANKER" if action == "BET" else ""
+                        did = _auto_bet_send_decision(action, side, provider, table_id, table_name, targets)
+                        state["last_decision_id"] = did
+                        state["last_sent_action"] = action
+                        state["last_look_sent_at"] = time.time() if action == "LOOK" else None
+                    state["last_bet_window_open"] = any_open
+                    _AUTO_BET_STATE.update(state)
+                    time.sleep(max(0.1, _AUTO_BET_POLL_SEC))
+                    continue
+
+                look_sent_at = state.get("last_look_sent_at")
+                look_timed_out = bool(look_sent_at is not None and (time.time() - float(look_sent_at)) > _AUTO_BET_LOOK_TIMEOUT_SEC)
+                bet_completed = float(agg_total) > float(state.get("last_total_bets") or 0)
+
+                if outstanding:
+                    state["last_bet_window_open"] = any_open
+                    _AUTO_BET_STATE.update(state)
+                    time.sleep(max(0.1, _AUTO_BET_POLL_SEC))
+                    continue
+
+                if (not bet_completed) and (not look_timed_out):
+                    if edge:
+                        state["last_sent_action"] = None
+                        state["last_look_sent_at"] = None
+                        action = "LOOK" if int(state.get("p_streak") or 0) >= 4 else "BET"
+                        side = "BANKER" if action == "BET" else ""
+                        did = _auto_bet_send_decision(action, side, provider, table_id, table_name, targets)
+                        state["last_decision_id"] = did
+                        state["last_sent_action"] = action
+                        state["last_look_sent_at"] = time.time() if action == "LOOK" else None
+                    state["last_bet_window_open"] = any_open
+                    _AUTO_BET_STATE.update(state)
+                    time.sleep(max(0.1, _AUTO_BET_POLL_SEC))
+                    continue
+
+                if bet_completed:
+                    if float(agg_losses) > float(state.get("last_losses") or 0):
+                        state["p_streak"] = int(state.get("p_streak") or 0) + 1
+                    elif float(agg_wins) > float(state.get("last_wins") or 0):
+                        state["p_streak"] = 0
+                    elif float(agg_ties) > float(state.get("last_ties") or 0):
+                        pass
+                    else:
+                        _auto_bet_apply_snapshot_fallback(state, provider, table_id)
+                else:
+                    _auto_bet_apply_snapshot_fallback(state, provider, table_id)
+
+                state["last_total_bets"] = agg_total
+                state["last_wins"] = agg_wins
+                state["last_losses"] = agg_losses
+                state["last_ties"] = agg_ties
+                state["last_look_sent_at"] = None
+                state["last_sent_action"] = None
+                state["last_bet_window_open"] = any_open
+
+                if agg_max_bet >= _AUTO_BET_MAX_BET_USD:
+                    state["active"] = False
+                    state["stop_reason"] = f"max_bet_reached_{agg_max_bet:.0f}"
+                    state["stopped_at"] = _now_iso()
+
+                _AUTO_BET_STATE.update(state)
+        except Exception as e:
+            with _AUTO_BET_LOCK:
+                _AUTO_BET_STATE["last_error"] = f"worker_exception:{e!r}"[:240]
+                _AUTO_BET_STATE["last_tick_at"] = _now_iso()
+        time.sleep(max(0.1, _AUTO_BET_POLL_SEC))
+
+
 def _resolve_table_id_from_snapshots(provider: str, table_name: str) -> str:
     if not provider or not table_name:
         return ""
@@ -426,8 +969,11 @@ class _Handler(BaseHTTPRequestHandler):
                     "db": get_stats(),
                     "snapshots_updated_at": (snaps.get("updated_at") if isinstance(snaps, dict) else None),
                     "snapshot_providers": providers,
+                    "auto_bet": _auto_bet_public_state(),
                 },
             )
+        if u.path == "/api/auto-bet/status":
+            return _send_json(self, 200, {"ok": True, "auto_bet": _auto_bet_public_state()})
         if u.path == "/api/executors":
             qs = parse_qs(u.query or "")
             try:
@@ -639,6 +1185,25 @@ class _Handler(BaseHTTPRequestHandler):
             cancelled = cancel_all_pending_decisions(reason=reason)
             return _send_json(self, 200, {"ok": True, "cancelled": cancelled})
 
+        if u.path == "/api/auto-bet/start":
+            if not _AUTO_BET_ENABLED:
+                state = _auto_bet_stop("auto_bet_disabled")
+                return _send_json(self, 409, {"ok": False, "error": "auto_bet_disabled", "auto_bet": state})
+            body = _read_json(self)
+            provider = str((body.get("provider") if isinstance(body, dict) else None) or "pragmatic")
+            table_id = str((body.get("table_id") if isinstance(body, dict) else None) or "")
+            table_name = str((body.get("table_name") if isinstance(body, dict) else None) or "")
+            if not table_id and not table_name:
+                return _send_json(self, 400, {"ok": False, "error": "table_id or table_name required"})
+            state = _auto_bet_start(provider, table_id, table_name)
+            return _send_json(self, 200, {"ok": True, "auto_bet": state})
+
+        if u.path == "/api/auto-bet/stop":
+            body = _read_json(self)
+            reason = str((body.get("reason") if isinstance(body, dict) else None) or "manual_stop")
+            state = _auto_bet_stop(reason)
+            return _send_json(self, 200, {"ok": True, "auto_bet": state})
+
         parts = [p for p in u.path.split("/") if p]
         if len(parts) == 4 and parts[:2] == ["api", "decisions"] and parts[3] in ("ack", "result"):
             decision_id = parts[2]
@@ -696,6 +1261,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("[bacopy-api] master UI: /master  (BACOPY_MASTER_PASSWORD is set)")
     else:
         print(f"[bacopy-api] master UI: /master  (generated BACOPY_MASTER_PASSWORD={pw})")
+    if _AUTO_BET_ENABLED:
+        t = threading.Thread(target=_auto_bet_worker_loop, name="auto-bet-worker", daemon=True)
+        t.start()
+        print("[bacopy-api] auto-bet worker started")
+    else:
+        print("[bacopy-api] auto-bet worker disabled (BACOPY_ENABLE_AUTO_BET=0)")
+    if _EXECUTOR_IDLE_ALERT_ENABLED and _ADMIN_TG_BOT_TOKEN and _ADMIN_TG_CHAT_ID:
+        t2 = threading.Thread(target=_executor_idle_alert_worker_loop, name="executor-idle-alert-worker", daemon=True)
+        t2.start()
+        print(
+            "[bacopy-api] executor idle alert worker started "
+            f"(idle_sec={int(_EXECUTOR_IDLE_ALERT_SEC)} cooldown_sec={int(_EXECUTOR_IDLE_ALERT_COOLDOWN_SEC)})"
+        )
+    elif _EXECUTOR_IDLE_ALERT_ENABLED:
+        print("[bacopy-api] executor idle alert worker disabled (admin telegram token/chat_id missing)")
+    else:
+        print("[bacopy-api] executor idle alert worker disabled (BACOPY_ENABLE_EXECUTOR_IDLE_ALERT=0)")
     srv = ThreadingHTTPServer((args.host, args.port), _Handler)
     srv.serve_forever()
     return 0

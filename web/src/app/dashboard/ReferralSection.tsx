@@ -107,7 +107,7 @@ export default function ReferralSection({
                   <th className="pb-2">Email</th>
                   <th className="pb-2">Joined</th>
                   <th className="pb-2">Total Charged</th>
-                  <th className="pb-2">Your Commission (5%)</th>
+                  <th className="pb-2">Your Commission</th>
                 </tr>
               </thead>
               <tbody>

@@ -33,12 +33,23 @@ def _load_json(path: str) -> dict[str, Any]:
     # On Windows, readers can observe transient errors while another process is
     # doing os.replace(). Retry briefly to avoid "missing provider" flicker in
     # /api/snapshots responses.
+    path_exists = os.path.exists(path)
+    if not path_exists:
+        return {}
     for attempt in range(30):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 v = json.load(f)
                 return v if isinstance(v, dict) else {}
-        except (PermissionError, FileNotFoundError, json.JSONDecodeError):
+        except FileNotFoundError:
+            # File truly absent: return immediately.
+            if not os.path.exists(path):
+                return {}
+            # If file existed a moment ago, treat as transient and retry.
+            if attempt >= 29:
+                return {}
+            time.sleep(0.03)
+        except (PermissionError, json.JSONDecodeError):
             if attempt >= 29:
                 return {}
             time.sleep(0.03)

@@ -50,6 +50,8 @@ BET_MODE_NEW_SEQ = "newseq"
 BET_MODE_NEW_SEQ_30 = "newseq30"
 BET_MODE_SMALL3 = "small3"    # SMALL SEQ $3スタート (3,5,7,...,1000)
 BET_MODE_SMALL02 = "small02"  # SMALL SEQ $0.20スタート (0.2,0.4,...,66.6)
+BET_MODE_SMALL1 = "small1"    # SMALL SEQ $1スタート (SMALL3派生, 四捨五入, 最大333)
+BET_MODE_SMALL6 = "small6"    # SMALL SEQ $6スタート (SMALL3派生, 最大2000)
 BET_MODE_COUNTER_SEQ7 = "counter_seq7"  # legacy
 
 SEQ_USER10 = [
@@ -69,7 +71,7 @@ SEQ_NEW = [
 # SMALL SEQ $3スタート (元祖ロジック準拠, 最大$1000)
 SEQ_SMALL3 = [
     3, 5, 7, 12, 17, 23, 30,
-    38, 47, 57, 68, 70, 83, 97,
+    38, 47, 57, 68, 83, 97,
     112, 128, 145, 165, 190, 220, 255, 300, 360,
     420, 500, 600, 700, 800, 900, 1000,
 ]
@@ -77,9 +79,21 @@ SEQ_SMALL3 = [
 # SMALL SEQ $0.20スタート (SEQ_SMALL3を比率0.2/3でスケール、$0.20刻み、重複修正済み、最大$66.6)
 SEQ_SMALL02 = [
     0.2, 0.4, 0.6, 0.8, 1.2, 1.6, 2.0,
-    2.6, 3.2, 3.8, 4.6, 4.8, 5.6, 6.4,
+    2.6, 3.2, 3.8, 4.6, 5.6, 6.4,
     7.4, 8.6, 9.6, 11.0, 12.6, 14.6, 17.0, 20.0, 24.0,
     28.0, 33.4, 40.0, 46.6, 53.4, 60.0, 66.6,
+]
+
+# SMALL SEQ $1スタート (SEQ_SMALL3を1/3倍し、四捨五入で$1刻み、重複除去、比例上限$333)
+SEQ_SMALL1 = [
+    1, 2, 4, 6, 8, 10, 13, 16, 19, 23, 28, 32, 37, 43,
+    48, 55, 63, 73, 85, 100, 120, 140, 167, 200, 233, 267, 300, 333,
+]
+
+# SMALL SEQ $6スタート (SEQ_SMALL3を2倍、比例上限$2000)
+SEQ_SMALL6 = [
+    6, 10, 14, 24, 34, 46, 60, 76, 94, 114, 136, 166, 194, 224, 256,
+    290, 330, 380, 440, 510, 600, 720, 840, 1000, 1200, 1400, 1600, 1800, 2000,
 ]
 
 
@@ -95,6 +109,10 @@ def _seq_for_bet_mode(mode: str) -> list:
         return list(SEQ_SMALL3)
     if m == BET_MODE_SMALL02:
         return list(SEQ_SMALL02)
+    if m == BET_MODE_SMALL1:
+        return list(SEQ_SMALL1)
+    if m == BET_MODE_SMALL6:
+        return list(SEQ_SMALL6)
     if m == BET_MODE_FLAT_1USD:
         return [1]
     return list(SEQ_COUNTER)  # legacy fallback
@@ -260,6 +278,11 @@ def _schedule_session_state_sync_bafather(seq7: "Seq7Session") -> None:
         "total_bets": seq7.total_bets,
         "total_wins": seq7.total_wins,
         "total_losses": seq7.total_losses,
+        # ── 出金汚染を受けないベット結果ベースのデイリーPnL ──────────────────
+        "daily_bet_pnl": round(seq7.daily_bet_pnl, 4),
+        "daily_bet_pnl_date": seq7.daily_bet_pnl_date,
+        "prev_daily_bet_pnl": round(seq7.prev_daily_bet_pnl, 4),
+        "prev_daily_bet_pnl_date": seq7.prev_daily_bet_pnl_date,
     }
     _sess_sync_last = now
     _sess_sync_inflight = True
@@ -344,6 +367,14 @@ class Seq7Session:
         self.daily_open_balance: float | None = None
         self.daily_open_date: str | None = None  # JST date
         self.current_balance: float | None = None
+
+        # ── 出金汚染を受けないベット結果ベースのデイリーPnL ──────────────────
+        # apply_round() で勝敗確定ごとに累積。残高差分は使わない。
+        # バンカーBET勝利時は 0.95 倍 (5%手数料) を適用済み。
+        self.daily_bet_pnl: float = 0.0        # 当日累積 (JST日付で管理)
+        self.daily_bet_pnl_date: str = ""      # daily_bet_pnl の対象JST日付
+        self.prev_daily_bet_pnl: float = 0.0   # 前日スナップショット (深夜0時またぎ用)
+        self.prev_daily_bet_pnl_date: str = "" # prev_daily_bet_pnl の対象JST日付
         self.state_path = state_path
         self.state_save_attempt_count = 0
         self.state_save_ok_count = 0
@@ -401,6 +432,10 @@ class Seq7Session:
             self.daily_open_balance = data.get("daily_open_balance")
             self.daily_open_date = data.get("daily_open_date")
             self.current_balance = data.get("current_balance")
+            self.daily_bet_pnl = float(data.get("daily_bet_pnl") or 0.0)
+            self.daily_bet_pnl_date = str(data.get("daily_bet_pnl_date") or "")
+            self.prev_daily_bet_pnl = float(data.get("prev_daily_bet_pnl") or 0.0)
+            self.prev_daily_bet_pnl_date = str(data.get("prev_daily_bet_pnl_date") or "")
 
             sets = data.get("sets") or []
             self.tracker.sets.clear()
@@ -448,6 +483,10 @@ class Seq7Session:
                 "daily_open_balance": self.daily_open_balance,
                 "daily_open_date": self.daily_open_date,
                 "current_balance": self.current_balance,
+                "daily_bet_pnl": round(self.daily_bet_pnl, 4),
+                "daily_bet_pnl_date": self.daily_bet_pnl_date,
+                "prev_daily_bet_pnl": round(self.prev_daily_bet_pnl, 4),
+                "prev_daily_bet_pnl_date": self.prev_daily_bet_pnl_date,
                 "sets": [s.__dict__ for s in self.tracker.sets[-200:]],
                 "current_turns": list(self.tracker.current_turns),
                 "total_o": self.tracker.total_o,
@@ -574,6 +613,30 @@ class Seq7Session:
         # outcome: player|banker|tie (winner)
         # bet_side: player|banker|tie (our bet)
         bs = str(bet_side or "").strip().lower()
+
+        # ── daily_bet_pnl: 日付ロールオーバー検出 ─────────────────────────────
+        _jst_today = _jst_date_str()
+        if self.daily_bet_pnl_date != _jst_today:
+            # 前日スナップショットを保持 (cron が 00:05 に参照できるように)
+            self.prev_daily_bet_pnl = self.daily_bet_pnl
+            self.prev_daily_bet_pnl_date = self.daily_bet_pnl_date
+            self.daily_bet_pnl = 0.0
+            self.daily_bet_pnl_date = _jst_today
+
+        # ── daily_bet_pnl: 勝敗額の累積 ───────────────────────────────────────
+        # プッシュ (player/banker BET 中にタイ結果) → 増減なし
+        # won is None → TIE BET 処理中など → 増減なし
+        _bet_amt = self.bet_amount()  # SEQリセット前に取得
+        if outcome != "tie" and won is True:
+            # バンカーBET勝利: Stake が 5% 手数料を引いた実受取額
+            if bs == "banker":
+                self.daily_bet_pnl += round(_bet_amt * 0.95, 4)
+            else:
+                self.daily_bet_pnl += round(_bet_amt, 4)
+        elif outcome != "tie" and won is False:
+            self.daily_bet_pnl -= round(_bet_amt, 4)
+        # outcome == "tie" with non-tie bet (push) or won is None → += 0
+
         if outcome == "tie" and bs != "tie":
             # PLAYER/BANKER bet push
             self.total_bets += 1
@@ -4148,7 +4211,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument(
         "--bet-mode",
         default=os.getenv("BACOPY_BET_MODE", BET_MODE_FLAT_1USD),
-        help="BET mode: flat_1usd | seq_user10 | newseq (legacy: counter_seq7)",
+        help="BET mode: flat_1usd | seq_user10 | newseq | newseq30 | small3 | small02 | small1 | small6 (legacy: counter_seq7)",
     )
     ap.add_argument("--flat-amount", type=float, default=1.0)
     ap.add_argument("--chip-base", type=float, default=0.0, help="Base bet ($) for SEQ7 (falls back to --flat-amount)")
@@ -4315,7 +4378,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     bet_mode = str(args.bet_mode or BET_MODE_FLAT_1USD).strip().lower()
     seq_for_mode = _seq_for_bet_mode(bet_mode)
     # flat_1usd / seq_user10 / newseq / small系 は「SEQの値=USD」として扱うため chip_base=1 固定
-    if bet_mode in (BET_MODE_FLAT_1USD, BET_MODE_SEQ_USER10, BET_MODE_NEW_SEQ, BET_MODE_NEW_SEQ_30, BET_MODE_SMALL3, BET_MODE_SMALL02):
+    if bet_mode in (BET_MODE_FLAT_1USD, BET_MODE_SEQ_USER10, BET_MODE_NEW_SEQ, BET_MODE_NEW_SEQ_30, BET_MODE_SMALL3, BET_MODE_SMALL02, BET_MODE_SMALL1, BET_MODE_SMALL6):
         chip_base = 1.0
     else:
         chip_base = float(args.chip_base) if float(args.chip_base or 0) > 0 else float(args.flat_amount or 1.0)

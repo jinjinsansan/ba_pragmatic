@@ -92,3 +92,5 @@ www/
 support_keys/
 **/support_key
 **/admin_key
+
+.vercel

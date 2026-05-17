@@ -17,6 +17,15 @@ def _db_path() -> str:
     return os.getenv("BACOPY_DB_PATH", "data/bacopy.sqlite3")
 
 
+def _learning_round() -> int:
+    raw = str(os.getenv("BACOPY_LEARNING_ROUND", "2") or "2").strip()
+    try:
+        n = int(raw)
+        return n if n >= 1 else 2
+    except Exception:
+        return 2
+
+
 def init_db() -> None:
     os.makedirs(os.path.dirname(_db_path()) or ".", exist_ok=True)
     conn = sqlite3.connect(_db_path())
@@ -208,7 +217,7 @@ def insert_decision(decision_id: str, payload: dict[str, Any]) -> None:
                 amount,
                 str(payload.get("game_id") or ""),
                 json.dumps(payload, ensure_ascii=False),
-                2,  # AI学習第2回目 (2026-05-09〜): overshoot/unit_idx 記録あり
+                _learning_round(),
             ),
         )
         conn.commit()
@@ -399,6 +408,7 @@ def cancel_all_pending_decisions(reason: str = "manual_cancel") -> int:
 def get_stats() -> dict[str, Any]:
     conn = sqlite3.connect(_db_path())
     try:
+        current_round = _learning_round()
         cur = conn.cursor()
         cur.execute("SELECT status, COUNT(*) FROM decisions GROUP BY status")
         counts = {s: int(c) for s, c in cur.fetchall()}
@@ -456,26 +466,47 @@ def get_stats() -> dict[str, Any]:
         except Exception:
             look_done_r2 = 0
         look_done = look_done_r1 + look_done_r2  # 合算 (後方互換)
-        # 公式進捗 = 第2回のみ (overshoot 記録あり)
+        try:
+            cur.execute("""SELECT COUNT(*) FROM decisions
+                WHERE action = 'BET' AND status = 'done'
+                AND learning_round = ?
+                AND json_extract(payload_json, '$.friend_action.in_learning_session') = 1
+            """, (current_round,))
+            bet_done_current = int(cur.fetchone()[0] or 0)
+        except Exception:
+            bet_done_current = 0
+        try:
+            cur.execute("""SELECT COUNT(*) FROM decisions
+                WHERE action = 'LOOK'
+                AND learning_round = ?
+            """, (current_round,))
+            look_done_current = int(cur.fetchone()[0] or 0)
+        except Exception:
+            look_done_current = 0
         samples_done_r2 = bet_done_r2 + look_done_r2
         samples_done_r1 = bet_done_r1 + look_done_r1  # 参考値
-        samples_done = samples_done_r2  # design doc §7 準拠: R2 のみ
+        samples_done_current = bet_done_current + look_done_current
+        samples_done = samples_done_current
         return {
             "counts": counts,
             "last_received_at": last_at,
             "training": {
+                "current_round": current_round,
                 "bet_goal": 5000,
                 "bets_total": bet_total,
                 "bets_done": bet_done,
                 "bets_done_r1": bet_done_r1,
                 "bets_done_r2": bet_done_r2,
+                "bets_done_current": bet_done_current,
                 "bets_error": bet_error,
                 "looks_done": look_done,
                 "looks_done_r1": look_done_r1,
                 "looks_done_r2": look_done_r2,
+                "looks_done_current": look_done_current,
                 "samples_done": samples_done,
                 "samples_done_r1": samples_done_r1,
                 "samples_done_r2": samples_done_r2,
+                "samples_done_current": samples_done_current,
             },
         }
     finally:

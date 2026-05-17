@@ -651,7 +651,7 @@ const DEFAULT_SETTINGS = {
   dry_run: false,
   bet_mode: 'flat_1usd',
 };
-const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02']);
+const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small1', 'small6']);
 
 function normalizeBetMode(mode) {
   return ALLOWED_BET_MODES.has(mode) ? mode : 'flat_1usd';

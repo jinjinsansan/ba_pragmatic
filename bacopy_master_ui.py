@@ -350,7 +350,7 @@ body.bet-open .big-btn.player::after,body.bet-open .big-btn.banker::after,body.b
 <div class="stats-bar">
   <div class="stat-tile accent"><div class="sl">稼働中 GUI</div><div class="sv" id="sbGuis">-</div></div>
   <div class="stat-tile"><div class="sl">本日 PnL 合計</div><div class="sv" id="sbPnl">-</div></div>
-  <div class="stat-tile"><div class="sl">AI 学習 R2</div><div class="sv" id="sbLearn">- / 5000</div></div>
+  <div class="stat-tile"><div class="sl" id="sbLearnLabel">AI 学習 R2</div><div class="sv" id="sbLearn">- / 5000</div></div>
   <div class="stat-tile"><div class="sl">勝率</div><div class="sv" id="sbWin">-</div></div>
   <div class="stat-tile"><div class="sl">最終操作</div><div class="sv" id="sbLast">-</div></div>
   <div class="stat-tile"><div class="sl">選択テーブル</div><div class="sv" id="sbTable">未選択</div></div>
@@ -390,19 +390,19 @@ body.bet-open .big-btn.player::after,body.bet-open .big-btn.banker::after,body.b
 
     <!-- ======= 折りたたみ: AI 学習進捗 ======= -->
     <details>
-      <summary>AI 学習データ進捗 — 第2回 / 目標 5000 サンプル</summary>
+      <summary id="learningSummary">AI 学習データ進捗 — 第2回 / 目標 5000 サンプル</summary>
       <div class="content">
         <div class="glass-card">
           <div class="progress-wrap">
             <div>
               <div style="display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:12px;color:var(--text-muted);margin-bottom:6px">
-                <span>第2回 サンプル数 (BET + LOOK)</span>
+                <span id="learningRoundLabel">第2回 サンプル数 (BET + LOOK)</span>
                 <span id="progressText">0 / 5000 (0.0%)</span>
               </div>
               <div class="progressbar"><div class="fill" id="progressFill" style="width:0%"></div></div>
             </div>
-            <div><div class="label">R2 BET</div><div id="r2BetCount" class="value small">-</div></div>
-            <div><div class="label">R2 LOOK</div><div id="r2LookCount" class="value small">-</div></div>
+            <div><div class="label" id="rBetLabel">R2 BET</div><div id="r2BetCount" class="value small">-</div></div>
+            <div><div class="label" id="rLookLabel">R2 LOOK</div><div id="r2LookCount" class="value small">-</div></div>
             <div><div class="label">結果未記録</div><div id="missingCount" class="value small">-</div></div>
             <div><div class="label">直近24h</div><div id="last24h" class="value small accent">-</div></div>
           </div>
@@ -463,7 +463,7 @@ body.bet-open .big-btn.player::after,body.bet-open .big-btn.banker::after,body.b
       <button id="btnLook" style="display:none"></button>
       <div id="lastActionBox" class="act-status">待機中</div>
       <!-- AUTO BET -->
-      <div id="autoBetPanel" style="margin-top:10px">
+      <div id="autoBetPanel" style="margin-top:10px;display:none">
         <button id="btnAutoBet" class="auto-btn" title="AUTO BET: BANKERに自動ベット。P連続5回以上でLOOK。最高BET $200で自動停止。">
           <span id="autoBetLabel">⚡ AUTO BET</span>
           <span class="auto-sub" id="autoBetSubLabel">OFF — タップで開始</span>
@@ -1117,8 +1117,11 @@ function renderStatsBar(){
     pnlEl.textContent = '-';
     pnlTile.className = 'stat-tile';
   }
-  // 学習進捗 — samples_done は第2回 (R2) のみの公式値
+  // 学習進捗
   const _training = (_state.stats && _state.stats.db && _state.stats.db.training) || {};
+  const _round = Number(_training.current_round || 2);
+  const _learnLabel = document.getElementById('sbLearnLabel');
+  if(_learnLabel) _learnLabel.textContent = `AI 学習 R${_round}`;
   const _samples = _training.samples_done != null ? _training.samples_done : '-';
   document.getElementById('sbLearn').textContent = `${_samples} / 5000`;
   // 勝率
@@ -1422,17 +1425,26 @@ function renderLearning(){
     if(!hasConfirmed && d.status==='done') missing++;
     if(recent.length < 40){ recent.push({d, fa, res}); }
   }
-  // DB 直接値を使用 — samples_done = 第2回のみ (公式)
+  // DB 直接値を使用
   const _tr = (_state.stats && _state.stats.db && _state.stats.db.training) || {};
+  const _round = Number(_tr.current_round || 2);
   const sampleCount = _tr.samples_done != null ? _tr.samples_done : 0;
   const target=5000;
   const pct = Math.min(100, sampleCount/target*100);
+  const summaryEl = document.getElementById('learningSummary');
+  if(summaryEl) summaryEl.textContent = `AI 学習データ進捗 — 第${_round}回 / 目標 5000 サンプル`;
+  const roundLabelEl = document.getElementById('learningRoundLabel');
+  if(roundLabelEl) roundLabelEl.textContent = `第${_round}回 サンプル数 (BET + LOOK)`;
+  const rbEl = document.getElementById('rBetLabel');
+  if(rbEl) rbEl.textContent = `R${_round} BET`;
+  const rlEl = document.getElementById('rLookLabel');
+  if(rlEl) rlEl.textContent = `R${_round} LOOK`;
   document.getElementById('progressText').textContent = `${sampleCount} / ${target} (${pct.toFixed(1)}%)`;
   document.getElementById('progressFill').style.width = pct.toFixed(1)+'%';
   const r2bEl = document.getElementById('r2BetCount');
-  if(r2bEl) r2bEl.textContent = String(_tr.bets_done_r2 != null ? _tr.bets_done_r2 : '-');
+  if(r2bEl) r2bEl.textContent = String(_tr.bets_done_current != null ? _tr.bets_done_current : (_tr.bets_done_r2 != null ? _tr.bets_done_r2 : '-'));
   const r2lEl = document.getElementById('r2LookCount');
-  if(r2lEl) r2lEl.textContent = String(_tr.looks_done_r2 != null ? _tr.looks_done_r2 : '-');
+  if(r2lEl) r2lEl.textContent = String(_tr.looks_done_current != null ? _tr.looks_done_current : (_tr.looks_done_r2 != null ? _tr.looks_done_r2 : '-'));
   const r1sEl = document.getElementById('r1Samples');
   if(r1sEl) r1sEl.textContent = String(_tr.samples_done_r1 != null ? _tr.samples_done_r1 : '-');
   const mEl = document.getElementById('missingCount');
@@ -1729,8 +1741,11 @@ function updateButtonsGating(){
   const onSelectedTargets = selected.table_id ? targets.filter(_executorOnSelectedTable) : targets;
   const nOnTarget = onSelectedTargets.length;
   const betOpenTargets = onSelectedTargets.filter(_isBetWindowOpen);
-  const betReady = nOnTarget > 0 && betOpenTargets.length === nOnTarget && !document.body.classList.contains('stopped');
   const switching = selected.table_id && nTargets > 0 && nOnTarget < nTargets;
+  // 到着済みのうち1台でも BET 窓 OPEN なら BET 許可。
+  // ただし selected table 到着チェック (nOnTarget>0) は維持して誤卓BETを防ぐ。
+  const betReadyCore = (nOnTarget > 0 && betOpenTargets.length >= 1);
+  const betReady = betReadyCore && !document.body.classList.contains('stopped');
   document.body.classList.toggle('switching', !!switching);
   document.body.classList.toggle('bet-open', !!betReady);
 
@@ -2064,7 +2079,7 @@ document.getElementById('btnT').onclick = ()=> sendDecision('BET','TIE');
 document.getElementById('btnSessionStart').onclick = _startSession;
 document.getElementById('btnSessionEnd').onclick   = _endSession;
 document.getElementById('btnAutoBet').onclick = () => {
-  if (_autoBet.active) { _autoBetStop(null); } else { _autoBetStart(); }
+  showToast('AUTO BET は無効化されています', 'err');
 };
 document.getElementById('modeToggle').onclick = toggleMode;
 document.getElementById('emergencyStop').onclick = toggleStop;

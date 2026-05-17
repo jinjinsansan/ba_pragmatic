@@ -2,7 +2,7 @@ import { createAdminClient } from '@/lib/supabase-admin'
 import { sendCustomerTelegramMessage } from '@/lib/customer-telegram'
 import { NextRequest, NextResponse } from 'next/server'
 
-type PnlSource = 'master_executor_daily_pnl' | 'session_state' | 'manual_api'
+type PnlSource = 'daily_bet_pnl' | 'master_executor_daily_pnl' | 'session_state' | 'manual_api'
 
 function getJstDateString(date = new Date()) {
   return date.toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' })
@@ -311,11 +311,11 @@ export async function GET(req: NextRequest) {
   const dateStr = yesterday.toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' })
 
   // session_state も含めて取得 (current_balance + daily_open を使う)
+  // balance=0 のユーザーも settle 対象に含める (carry_loss 更新・PnL記録のため)
   const { data: billings } = await admin
     .from('billing')
     .select('user_id, balance, profit_share_rate, carry_loss, is_free, suspended, session_state')
     .eq('suspended', false)
-    .gt('balance', 0)
 
   if (!billings?.length) {
     return NextResponse.json({ message: 'No active users', settled: 0, skipped: 0, date: dateStr })
@@ -345,41 +345,60 @@ export async function GET(req: NextRequest) {
     let dailyProfit: number | null = null
     let pnlSource: PnlSource = 'session_state'
 
-    if (userEmail && masterPnl.map.has(userEmail)) {
+    const ss = b.session_state as Record<string, unknown> | null
+
+    // ── 優先度1: daily_bet_pnl (出金汚染を受けないベット結果累積値) ──────────
+    if (dailyProfit === null && ss && typeof ss === 'object') {
+      const dbp     = typeof ss.daily_bet_pnl      === 'number' ? ss.daily_bet_pnl      : null
+      const dbpDate = typeof ss.daily_bet_pnl_date === 'string' ? ss.daily_bet_pnl_date : ''
+      const pdbp     = typeof ss.prev_daily_bet_pnl      === 'number' ? ss.prev_daily_bet_pnl      : null
+      const pdbpDate = typeof ss.prev_daily_bet_pnl_date === 'string' ? ss.prev_daily_bet_pnl_date : ''
+      // 当日分 (深夜0時またぎ前に cron が読む場合)
+      if (dbp !== null && dbpDate === dateStr) {
+        dailyProfit = roundMoney(dbp)
+        pnlSource = 'daily_bet_pnl'
+      }
+      // 前日スナップショット (深夜0時またぎ後に新しいBETが入り日付が進んだ場合)
+      if (dailyProfit === null && pdbp !== null && pdbpDate === dateStr) {
+        dailyProfit = roundMoney(pdbp)
+        pnlSource = 'daily_bet_pnl'
+      }
+    }
+
+    // ── 優先度2: master executor heartbeat の balance-diff (フォールバック) ──
+    if (dailyProfit === null && userEmail && masterPnl.map.has(userEmail)) {
       dailyProfit = Number(masterPnl.map.get(userEmail) || 0)
       pnlSource = 'master_executor_daily_pnl'
     }
 
+    // ── 優先度3: session_state の balance-diff (最終フォールバック) ──────────
     if (dailyProfit === null) {
-    const ss = b.session_state as Record<string, unknown> | null
-    if (!ss || typeof ss !== 'object') {
-      skipped++
-      skipReasons['no_session_state'] = (skipReasons['no_session_state'] || 0) + 1
-      continue
-    }
-    const daily_open = ss.daily_open as { date?: string; balance?: number } | undefined
-    const current_balance = typeof ss.current_balance === 'number' ? ss.current_balance : null
-    const last_balance_at = typeof ss.last_balance_at === 'string' ? ss.last_balance_at : null
-    const daily_open_balance = typeof daily_open?.balance === 'number' ? daily_open.balance : null
-    const daily_open_date = typeof daily_open?.date === 'string' ? daily_open.date : ''
-    if (daily_open_balance === null || current_balance === null || !last_balance_at) {
-      skipped++
-      skipReasons['incomplete_state'] = (skipReasons['incomplete_state'] || 0) + 1
-      continue
-    }
-    // daily_open.date がある場合は settle 対象日 (昨日) と一致しているかチェック
-    if (daily_open_date && daily_open_date !== dateStr) {
-      skipped++
-      skipReasons['stale_daily_open'] = (skipReasons['stale_daily_open'] || 0) + 1
-      continue
-    }
-    // last_balance_at は settle 対象日 (昨日/JST) であることを要求
-    const lastBalanceDateJst = new Date(last_balance_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' })
-    if (!lastBalanceDateJst || lastBalanceDateJst !== dateStr) {
-      skipped++
-      skipReasons['stale_balance'] = (skipReasons['stale_balance'] || 0) + 1
-      continue
-    }
+      if (!ss || typeof ss !== 'object') {
+        skipped++
+        skipReasons['no_session_state'] = (skipReasons['no_session_state'] || 0) + 1
+        continue
+      }
+      const daily_open = ss.daily_open as { date?: string; balance?: number } | undefined
+      const current_balance = typeof ss.current_balance === 'number' ? ss.current_balance : null
+      const last_balance_at = typeof ss.last_balance_at === 'string' ? ss.last_balance_at : null
+      const daily_open_balance = typeof daily_open?.balance === 'number' ? daily_open.balance : null
+      const daily_open_date = typeof daily_open?.date === 'string' ? daily_open.date : ''
+      if (daily_open_balance === null || current_balance === null || !last_balance_at) {
+        skipped++
+        skipReasons['incomplete_state'] = (skipReasons['incomplete_state'] || 0) + 1
+        continue
+      }
+      if (daily_open_date && daily_open_date !== dateStr) {
+        skipped++
+        skipReasons['stale_daily_open'] = (skipReasons['stale_daily_open'] || 0) + 1
+        continue
+      }
+      const lastBalanceDateJst = new Date(last_balance_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' })
+      if (!lastBalanceDateJst || lastBalanceDateJst !== dateStr) {
+        skipped++
+        skipReasons['stale_balance'] = (skipReasons['stale_balance'] || 0) + 1
+        continue
+      }
       dailyProfit = roundMoney(current_balance - daily_open_balance)
       pnlSource = 'session_state'
     }
