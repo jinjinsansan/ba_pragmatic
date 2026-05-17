@@ -1249,6 +1249,9 @@ function renderExecutors(){
     wrap.innerHTML='<div class="glass-card value small" style="color:var(--text-muted)">オンラインの受け子 GUI はありません。</div>';
     return;
   }
+  // ソート順を固定 — ポーリング毎にカード位置が入れ替わる問題を解消。
+  // executor_id の ABC 順で安定化 (= 同一 GUI は常に同じ位置に表示)。
+  _visible.sort((a, b) => String(a.executor_id||'').localeCompare(String(b.executor_id||'')));
   const selExecId = document.getElementById('execSel').value||'';
   for(const e of _visible){
     const ageSec = ageSecFromIso(e.updated_at);
