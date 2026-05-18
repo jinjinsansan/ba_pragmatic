@@ -12,6 +12,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     sub.add_parser("executor-pragmatic", help="Pragmatic live WS executor")
     sub.add_parser("watch-pragmatic", help="Pragmatic watcher (snapshot)")
     sub.add_parser("watch-evolution", help="Evolution watcher (snapshot)")
+    sub.add_parser("dual-line", help="Dual-line match prediction bot (DRY RUN / LIVE)")
 
     ns, rest = ap.parse_known_args(argv)
 
@@ -40,6 +41,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         from bacopy_watch_evolution import main as _m
 
         return int(_m(rest) or 0)
+
+    if ns.cmd == "dual-line":
+        from dual_line_pragmatic_bot import main as _m
+        try:
+            return int(_m(rest) or 0)
+        except Exception as e:
+            msg = str(e or "")
+            if "BrowserContext.close" in msg and "Connection closed while reading from the driver" in msg:
+                print(
+                    "[dual-line] swallowed shutdown exception from Camoufox driver disconnect: "
+                    + msg,
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 0
+            raise
 
     ap.print_help()
     return 2

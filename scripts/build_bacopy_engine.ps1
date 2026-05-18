@@ -29,6 +29,10 @@ try {
     --collect-all language_tags `
     --collect-submodules playwright `
     --hidden-import tzdata `
+    --hidden-import dual_line_pragmatic_bot `
+    --hidden-import dual_line_match `
+    --hidden-import dual_line_live_executor `
+    --hidden-import collector_pragmatic `
     --distpath (Join-Path $ROOT "copytrade_gui/build_staging/engine") `
     --workpath $build `
     --specpath $build `

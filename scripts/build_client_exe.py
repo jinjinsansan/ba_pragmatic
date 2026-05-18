@@ -63,6 +63,11 @@ HIDDEN_IMPORTS = [
     "config",
     "telegram_auth",
     "login_step1",
+    # dual-line modules (bacopy_engine dual-line subcommand)
+    "dual_line_pragmatic_bot",
+    "dual_line_match",
+    "dual_line_live_executor",
+    "collector_pragmatic",
     # Third-party runtime deps
     "numpy",
     "camoufox.sync_api",

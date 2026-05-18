@@ -421,7 +421,16 @@ async function startBotFlow({ auto = false } = {}) {
   }
   setManualStop(false);
 
-  const config = buildStartConfig();
+  const settings = loadSettings();
+  const isDL = settings.bet_mode === 'dual_line' || settings.mode === 'dual_line';
+  const config = {
+    ...buildStartConfig(),
+    mode: isDL ? 'dual_line' : 'executor',
+    live: settings.dual_live || false,
+    money_mode: settings.dual_money_mode || 'flat',
+    money_unit: settings.dual_unit || 100,
+    on_limit: settings.dual_on_limit || 'stop',
+  };
   const hasPrev = localStorage.getItem('valhalla_session_state');
   if (hasPrev && !auto) {
     const choice = await showContinueDialog();
@@ -650,12 +659,49 @@ const DEFAULT_SETTINGS = {
   headless: false,
   dry_run: false,
   bet_mode: 'flat_1usd',
+  mode: 'executor',
+  dual_money_mode: 'flat',
+  dual_unit: 100,
+  dual_live: false,
+  dual_on_limit: 'stop',
 };
-const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small1', 'small6']);
+const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small1', 'small6', 'dual_line']);
 
 function normalizeBetMode(mode) {
   return ALLOWED_BET_MODES.has(mode) ? mode : 'flat_1usd';
 }
+
+function _ensureDualLineOption() {
+  const sel = $('#inputBetMode');
+  if (!sel) return;
+  let hasDual = false;
+  for (const opt of sel.options) {
+    if (opt.value === 'dual_line') { hasDual = true; break; }
+  }
+  if (!hasDual) {
+    const opt = document.createElement('option');
+    opt.value = 'dual_line';
+    opt.textContent = 'DUAL-LINE — pattern match (v2)';
+    sel.appendChild(opt);
+  }
+}
+// SETTINGS モーダル開く前に dual_line option を追加
+document.addEventListener('DOMContentLoaded', _ensureDualLineOption);
+// betMode 変更時に dual-line 設定の表示切替
+setTimeout(() => {
+  $('#inputBetMode')?.addEventListener('change', function() {
+    const isDL = this.value === 'dual_line';
+    if ($('#dualLineMoneyGroup')) $('#dualLineMoneyGroup').style.display = isDL ? '' : 'none';
+    if ($('#chipBaseGroup')) $('#chipBaseGroup').style.display = isDL ? 'none' : '';
+    if ($('#inputDryRun')) {
+      // dual-line では dry_run → dual_live の逆
+      $('#inputDryRun').checked = !isDL || !($('#inputDualLive')?.checked);
+    }
+  });
+  $('#inputDualLive')?.addEventListener('change', function() {
+    if ($('#inputDryRun')) $('#inputDryRun').checked = !this.checked;
+  });
+}, 100);
 
 function normalizeProfitSessionLimit(value) {
   const n = Number.isFinite(Number(value)) ? Math.floor(Number(value)) : 0;
@@ -910,6 +956,18 @@ $('#btnSettings')?.addEventListener('click', async () => {
   const s = loadSettings();
   if ($('#inputBetMode')) $('#inputBetMode').value = normalizeBetMode(s.bet_mode);
   $('#inputChipBase').value = s.chip_base;
+
+  // dual-line 設定の表示切替
+  const isDL = normalizeBetMode($('#inputBetMode')?.value) === 'dual_line';
+  if ($('#dualLineMoneyGroup')) $('#dualLineMoneyGroup').style.display = isDL ? '' : 'none';
+  if ($('#inputDualMoneyMode')) $('#inputDualMoneyMode').value = s.dual_money_mode || 'flat';
+  if ($('#inputDualUnit')) $('#inputDualUnit').value = s.dual_unit || 100;
+  if ($('#inputDualLive')) $('#inputDualLive').checked = !!s.dual_live;
+  if ($('#inputOnLimitRestart')) $('#inputOnLimitRestart').checked = s.dual_on_limit === 'restart';
+  // dual-line 時 chip_base グループを非表示
+  if ($('#chipBaseGroup')) $('#chipBaseGroup').style.display = isDL ? 'none' : '';
+  // dual-line 時 BET MODE に dual_line を追加
+  _ensureDualLineOption();
   $('#inputProfitTarget').value = s.profit_target;
   if ($('#inputProfitSessionLimit')) $('#inputProfitSessionLimit').value = s.profit_session_limit ?? 0;
   $('#inputLossCut').value = s.loss_cut;
@@ -1017,9 +1075,10 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
   try { document.activeElement?.blur?.(); } catch {}
   await new Promise((r) => setTimeout(r, 0));
 
+  const isDualLine = normalizeBetMode($('#inputBetMode')?.value) === 'dual_line';
   const settings = {
     // bet_mode が金額を決めるため chip_base は固定 (UIも非表示)
-    chip_base: 1,
+    chip_base: isDualLine ? parseFloat($('#inputDualUnit')?.value || 100) : 1,
     profit_target: (v => Number.isFinite(v) ? v : 50)(parseFloat($('#inputProfitTarget').value)),
     profit_session_limit: normalizeProfitSessionLimit($('#inputProfitSessionLimit')?.value),
     loss_cut: (v => Number.isFinite(v) ? v : 200)(parseFloat($('#inputLossCut').value)),
@@ -1035,6 +1094,12 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     allow_tie: $('#inputAllowTie')?.checked,
     assume_bc_012: $('#inputAssumeBc012')?.checked,
     headless: $('#inputHeadless').checked,
+    // dual-line settings
+    mode: isDualLine ? 'dual_line' : 'executor',
+    dual_money_mode: $('#inputDualMoneyMode')?.value || 'flat',
+    dual_unit: parseFloat($('#inputDualUnit')?.value || 100),
+    dual_live: $('#inputDualLive')?.checked || false,
+    dual_on_limit: $('#inputOnLimitRestart')?.checked ? 'restart' : 'stop',
   };
 
   localStorage.setItem('bacopy_settings', JSON.stringify(settings));
@@ -1739,6 +1804,26 @@ window.valhalla.onAgentMessage((msg) => {
       if (!modalOpen && $('#inputBetMode')) $('#inputBetMode').value = nextMode;
       _streamSetSize = _setSizeForMode(nextMode);
       addLog(`BET mode → ${nextMode}`, 'info');
+      break;
+    }
+
+    case 'resolution': {
+      const r = msg;
+      const resultIcon = r.result === 'WIN' ? 'W' : (r.result === 'TIE' ? 'T' : 'L');
+      addResult(resultIcon);
+      if (r.result === 'WIN') flashScreen('win');
+      else if (r.result === 'LOSE') flashScreen('lose');
+      setAction(
+        '[DL] ' + r.result + ' ' + r.table_name + ': ' + r.prediction + '\u2192' + r.outcome + ' ' +
+        'pnl=' + ((r.pnl||0) >= 0 ? '+' : '') + '$' + (r.pnl||0).toFixed(2) + ' ' +
+        '(' + r.wins + 'W/' + r.losses + 'L/' + r.ties + 'T ' + r.win_rate + '%)'
+      );
+      if (typeof r.cumulative_pnl === 'number') {
+        const cp = r.cumulative_pnl;
+        $('#balance').textContent = (cp >= 0 ? '+' : '') + '$' + cp.toFixed(2);
+      }
+      $('#betCount').textContent = (r.wins || 0) + 'W / ' + (r.losses || 0) + 'L / ' + (r.ties || 0) + 'T';
+      updateSessionDisplay();
       break;
     }
 

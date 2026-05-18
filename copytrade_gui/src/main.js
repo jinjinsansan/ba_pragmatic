@@ -553,7 +553,12 @@ function buildSpawnSpec(config) {
   const envFile = loadDotEnv();
   const childEnv = { ...process.env, ...envFile, PYTHONIOENCODING: 'utf-8' };
 
+  const isDualLine = (config && config.mode === 'dual_line');
 
+  // dual-line モード: dev 時はスクリプトパスを上書き
+  if (isDualLine && engine.mode === 'dev') {
+    engine.baseArgs = ['-X', 'utf8', '-u', path.join(engine.cwd, 'dual_line_pragmatic_bot.py')];
+  }
 
   if (!childEnv.BACOPY_API_URL) childEnv.BACOPY_API_URL = 'https://master.bafather.uk';
   if (!childEnv.BACOPY_API_CONNECT_TIMEOUT_SEC) childEnv.BACOPY_API_CONNECT_TIMEOUT_SEC = '5';
@@ -597,17 +602,29 @@ function buildSpawnSpec(config) {
 
   const args = [];
   if (engine.mode === 'packaged') {
-    args.push('executor-pragmatic');
+    args.push(isDualLine ? 'dual-line' : 'executor-pragmatic');
   }
 
+  // chipBase は dual-line ブロックより前に宣言して TDZ を回避
+  const chipBase = (config && typeof config.chip_base === 'number') ? config.chip_base : 1;
 
+  // dual-line 専用 args
+  if (isDualLine) {
+    if (config && config.live) args.push('--live');
+    if (config && config.no_v2_filter) args.push('--no-v2-filter');
+    if (config && config.money_mode) args.push('--money-mode', String(config.money_mode));
+    // money_unit 未設定時は chip_base にフォールバック
+    args.push('--money-unit', String((config && config.money_unit) ? config.money_unit : chipBase));
+    if (config && config.profit_target) args.push('--profit-target', String(config.profit_target));
+    if (config && config.loss_cut) args.push('--loss-cut', String(config.loss_cut));
+    if (config && config.on_limit) args.push('--on-limit', String(config.on_limit));
+  }
 
   if (config && config.allow_switch_table) args.push('--allow-switch-table');
   if (config && config.allow_banker) args.push('--allow-banker');
   if (config && config.allow_tie) args.push('--allow-tie');
   if (config && config.assume_bc_012) args.push('--assume-bc-012');
   if (config && config.bet_mode) args.push('--bet-mode', String(config.bet_mode));
-  const chipBase = (config && typeof config.chip_base === 'number') ? config.chip_base : 1;
   args.push('--chip-base', String(chipBase));
 
   const profitTarget = (config && typeof config.profit_target === 'number') ? config.profit_target : 50;
