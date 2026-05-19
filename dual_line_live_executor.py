@@ -149,6 +149,14 @@ class LiveBetExecutor:
         self._lobby_page = lobby_page
         self._bet_page = bet_page or lobby_page
 
+        # ゲームWS生成より前にブリッジを確実に注入するため context.add_init_script を使う。
+        # page.evaluate() は「ページロード後」なのでWS生成に間に合わない場合がある。
+        try:
+            context.add_init_script(_WS_BRIDGE_INIT)
+            logger.info("[LIVE] WS bridge pre-installed via add_init_script")
+        except Exception as e:
+            logger.warning(f"[LIVE] add_init_script failed (will fallback to evaluate): {e}")
+
         # 既存ページすべてを監視対象にする（lobby + bet）
         try:
             for p in (context.pages or []):
@@ -473,6 +481,11 @@ class LiveBetExecutor:
             interrupt_check=None,
             qpid_table_id=(qpid or table_id),
         )
+        # _join_table 完了後に全フレームへブリッジを追加注入（add_init_script の補完）
+        try:
+            self._inject_all(page)
+        except Exception:
+            pass
 
     # ── BET API ──────────────────────────────────────────────────────
 
@@ -568,18 +581,9 @@ class LiveBetExecutor:
             self._consecutive_failures += 1
             self._notify(f"❌ BET FAILED\n{side_name} ${amount:.2f}\n{result}")
 
-        # 単一 bet_page 運用: 送信後は about:blank に戻して次シグナル待機
-        try:
-            page = self._bet_page
-            if page is not None:
-                page.goto("about:blank", wait_until="domcontentloaded", timeout=15000)
-        except Exception:
-            pass
-        self._phase = "waiting"
-        self._table_id = ""
-        self._game_ws_url = ""
-        self._game_id = ""
-        self._user_id = ""
+        # bet_page をテーブル内に留まらせる（about:blank に戻さない）
+        # → ゲームWSセッションを維持し、次シグナルでの再ナビゲートを不要にする
+        self._phase = "ready"
 
     def _ws_send(self, table_id: str, payload: str) -> dict:
         """game WS にメッセージを送信。"""
@@ -683,3 +687,9 @@ class LiveBetExecutor:
     @property
     def is_ready(self) -> bool:
         return self._phase in ("ready", "betting")
+
+    def can_switch(self) -> bool:
+        return not self._switch_in_progress and not bool(self._pending_bet)
+
+    def is_on_table(self, table_id: str) -> bool:
+        return bool(table_id) and str(table_id).strip() == str(self._table_id).strip()
