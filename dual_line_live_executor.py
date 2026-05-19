@@ -224,12 +224,12 @@ def _find_game_frame(page) -> Any:
 
 
 def _find_lobby_frames(page) -> list:
-    """Stake lobby iframe を探す。"""
+    """Stake lobby / game iframe を探す（pragmaticplaylive, qpidreoxcc 両対応）。"""
     out = []
     for fr in page.frames:
         try:
             u = str(fr.url or "")
-            if "pragmaticplaylive" in u and ("lobby" in u or "shell-app" in u):
+            if "pragmaticplaylive" in u or "qpidreoxcc.net" in u:
                 out.append(fr)
         except Exception:
             continue
@@ -657,19 +657,38 @@ class LiveBetExecutor:
         except Exception:
             pass
 
-        # WS bridge を再注入（ページ遷移で消えた場合に備える）
-        try:
-            self._table_page.evaluate(_WS_BRIDGE_INIT)
-        except Exception:
-            pass
+        # 全フレームを検査: WS bridge 再注入 + game WS 確認
+        # (game は qpidreoxcc.net や pragmaticplaylive.net の iframe 内で開く)
+        all_frames = [self._table_page] + list(self._table_page.frames)
+        for fr in all_frames:
+            try:
+                fr_url = str(fr.url or "")
+                # ゲームフレームの URL チェック
+                if GAME_WS_PATTERN in fr_url or "qpidreoxcc.net" in fr_url:
+                    if "qpidreoxcc.net" in fr_url:
+                        logger.info(f"[LIVE] game frame URL detected: {fr_url[-80:]}")
+                        self._game_ws_detected = True
+                        self._phase = "ready"
+                        self._notify(f"🔗 game WS 確立 (frame)\ntable: {self._table_id}\nBET待機中...")
+                        self._extract_user_id()
+                        return
+            except Exception:
+                pass
 
-        try:
-            has_game = self._table_page.evaluate(
-                "() => window.__bacopy_ws_has ? "
-                "window.__bacopy_ws_has('pragmaticplaylive.net/game') : false"
-            )
-        except Exception:
-            has_game = False
+        # WS bridge を全フレームに再注入してゲーム WS を探す
+        has_game = False
+        for fr in all_frames:
+            try:
+                fr.evaluate(_WS_BRIDGE_INIT)
+                result = fr.evaluate(
+                    "() => window.__bacopy_ws_has ? "
+                    "window.__bacopy_ws_has('pragmaticplaylive.net') : false"
+                )
+                if result:
+                    has_game = True
+                    break
+            except Exception:
+                pass
 
         if has_game and not self._game_ws_detected:
             self._game_ws_detected = True
