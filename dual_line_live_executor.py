@@ -137,14 +137,7 @@ class LiveBetExecutor:
         self._context = context
         self._lobby_page = lobby_page
 
-        # 全フレームにブリッジを事前注入（新しいフレームにも自動適用）
-        try:
-            context.add_init_script(_WS_BRIDGE_INIT)
-            logger.info("[LIVE] add_init_script OK")
-        except Exception as e:
-            logger.warning(f"[LIVE] add_init_script failed: {e}")
-
-        # 既存フレームに手動注入
+        # 既存フレームにブリッジを注入
         self._inject_all(lobby_page)
 
         # ロビーページの game WS を監視
@@ -308,8 +301,8 @@ class LiveBetExecutor:
     def tick(self) -> None:
         now = time.time()
 
-        # 10秒ごとにブリッジを再注入（フレーム遷移に備える）
-        if now - self._last_bridge_inject > 10.0:
+        # 5秒ごとにブリッジを再注入（フレーム遷移・新フレームに備える）
+        if now - self._last_bridge_inject > 5.0:
             self._last_bridge_inject = now
             if self._lobby_page:
                 self._inject_all(self._lobby_page)
