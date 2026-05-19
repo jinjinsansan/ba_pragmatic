@@ -346,7 +346,8 @@ class LiveBetExecutor:
 
         # bet 管理
         self._pending_bet: dict | None = None
-        self._pending_switch_to: str = ""  # 切替先 table_id
+        self._pending_switch_to: str = ""   # 切替先 table_id
+        self._pending_switch_name: str = ""  # 切替先 table_name
         self._bet_id_counter: int = 0
         self._bet_result: dict | None = None
 
@@ -405,13 +406,14 @@ class LiveBetExecutor:
         self._lobby_page = lobby_page
         logger.info("[LIVE] executor setup complete")
 
-    def _request_switch(self, table_id: str) -> None:
+    def _request_switch(self, table_id: str, table_name: str = "") -> None:
         """テーブル切替をリクエスト。"""
         if self._phase == "entering" and self._table_id == table_id:
             return  # すでに入場中
         self._pending_switch_to = table_id
+        self._pending_switch_name = table_name
         logger.info(
-            f"[LIVE] switch requested: {table_id} (current={self._table_id or 'none'})"
+            f"[LIVE] switch requested: {table_id} name={table_name!r} (current={self._table_id or 'none'})"
         )
 
     def tick(self) -> None:
@@ -481,7 +483,7 @@ class LiveBetExecutor:
         self._table_id = table_id
         self._phase = "entering"
         self._enter_started_at = time.time()
-        self._enter_deadline = self._enter_started_at + 30.0
+        self._enter_deadline = self._enter_started_at + 90.0
         self._game_ws_detected = False
         self._bets_open_game_id = ""
         self._bets_closed_game_id = ""
@@ -516,8 +518,8 @@ class LiveBetExecutor:
             if not lobby_ok:
                 logger.warning(f"[LIVE] lobby iframe not found for table {table_id}")
 
-            # table id を click
-            self._click_table(page, table_id)
+            # table id / table name を click
+            self._click_table(page, table_id, self._pending_switch_name)
 
             # ブラウザ②を右側・大きめに固定配置（ユーザーが見やすいよう）
             try:
@@ -532,14 +534,15 @@ class LiveBetExecutor:
             self._phase = "idle"
             self._table_id = ""
 
-    def _click_table(self, page: Any, table_id: str) -> None:
-        """lobby DOM から table を探して click。"""
+    def _click_table(self, page: Any, table_id: str, table_name: str = "") -> None:
+        """lobby DOM から table を探して click。テーブル名も候補に含める。"""
+        candidates = [c for c in [table_id, table_name] if c]
         for fr in _find_lobby_frames(page):
             try:
                 res = fr.evaluate(_LOBBY_CLICK_JS, {
                     "qpid": "",
                     "tableId": table_id,
-                    "candidates": [table_id],
+                    "candidates": candidates,
                     "maxScroll": 10,
                 })
                 if isinstance(res, dict) and res.get("clicked"):
@@ -557,7 +560,7 @@ class LiveBetExecutor:
             page.evaluate(_LOBBY_CLICK_JS, {
                 "qpid": "",
                 "tableId": table_id,
-                "candidates": [table_id],
+                "candidates": candidates,
                 "maxScroll": 5,
             })
             page.wait_for_timeout(2000)

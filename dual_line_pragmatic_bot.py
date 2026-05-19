@@ -562,7 +562,7 @@ class DualLinePragmaticBot(cp.Collector):
             _send_telegram(
                 f"🔀 テーブル切替\n{tname}\nスコア: {score_label}\n→ game WS 入場開始"
             )
-            self.bet_executor._request_switch(best)
+            self.bet_executor._request_switch(best, tname)
 
     def _resolve_prediction(
         self, table_id: str, buf, pending: dict, outcome: str, new_hand: dict
