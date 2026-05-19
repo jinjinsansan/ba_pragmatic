@@ -435,7 +435,17 @@ class DualLinePragmaticBot(cp.Collector):
         if self.use_v2_filter and pattern_key not in V2_PATTERNS:
             return
 
-        # 4) ベット発行 (金額は BetManager から取得)
+        # 4) ベット発行
+        # LIVE モード: ユーザーが今いるテーブルのシグナルのみ BET
+        if self.bet_executor.is_live:
+            current_tid = getattr(self.bet_executor, "current_table_id", "")
+            if current_tid and current_tid != table_id:
+                # 別のテーブルのシグナルは無視 (ユーザーはそのテーブルにいない)
+                return
+            if not getattr(self.bet_executor, "is_ready", False):
+                # game WS 未確立 → スキップ
+                return
+
         bet_amount = self.money.next_bet(side=bet_side)
         if bet_amount <= 0:
             reason = self.money.limit_reason
@@ -445,7 +455,7 @@ class DualLinePragmaticBot(cp.Collector):
                 f"session PnL: ${self.money.session_pnl:+.2f}\n"
                 f"on_limit: {self.money.on_limit}"
             )
-            return  # limit reached, stop
+            return
         bet_metadata = {
             "pattern_key": pattern_key,
             "china_pattern": d.china_pattern,
@@ -840,13 +850,18 @@ class DualLinePragmaticBot(cp.Collector):
                     ):
                         self._game_ws_url = self.bet_executor._game_ws_url
 
-                    # 2 秒間隔でテーブルリバランス
-                    if now - last_rebalance_at >= 2.0:
-                        try:
-                            self._rebalance_tables()
-                        except Exception as e:
-                            logger.debug(f"[BOT] rebalance error: {e}")
-                        last_rebalance_at = now
+                    # 新設計: テーブル選択はユーザーが手動で行うのでリバランスなし
+                    # executor の現在テーブル名を補完（通知用）
+                    if self.bet_executor.is_live:
+                        ctid = getattr(self.bet_executor, "current_table_id", "")
+                        if ctid:
+                            buf = self.buffers.get(ctid)
+                            tname = (buf.table_name if buf else None) or ""
+                            if tname:
+                                try:
+                                    self.bet_executor.set_table_name(ctid, tname)
+                                except Exception:
+                                    pass
 
                 if now - last_report >= report_interval:
                     elapsed = int(now - start_ts)
