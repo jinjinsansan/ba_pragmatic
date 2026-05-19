@@ -735,9 +735,14 @@ function _doStartBot(config) {
     try {
       const profileDir = path.join(app.getPath('userData'), 'profiles', 'executor_pragmatic');
       const stateFile = path.join(profileDir, 'seq7_state.json');
+      const lastTableFile = path.join(profileDir, 'last_table.json');
       if (fs.existsSync(stateFile)) {
         fs.unlinkSync(stateFile);
         console.log('[Main] NEW SESSION — removed seq7_state.json');
+      }
+      if (fs.existsSync(lastTableFile)) {
+        fs.unlinkSync(lastTableFile);
+        console.log('[Main] NEW SESSION — removed last_table.json');
       }
     } catch (e) {
       console.warn('[Main] seq7 state reset failed:', e.message);
