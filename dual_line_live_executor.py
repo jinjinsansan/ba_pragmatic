@@ -329,7 +329,8 @@ class LiveBetExecutor:
       - _phase: "idle" | "entering" | "ready" | "betting"
     """
 
-    def __init__(self):
+    def __init__(self, notify_fn=None):
+        self._notify = notify_fn or (lambda text: None)
         self._context: Any = None
         self._lobby_page: Any = None
         self._table_page: Any = None
@@ -446,10 +447,12 @@ class LiveBetExecutor:
 
         # ── タイムアウト検知 ──
         if self._phase == "entering" and time.time() > self._enter_deadline:
+            elapsed = time.time() - self._enter_started_at
             logger.error(
                 f"[LIVE] table entry timeout for {self._table_id} "
-                f"({time.time() - self._enter_started_at:.0f}s)"
+                f"({elapsed:.0f}s)"
             )
+            self._notify(f"⏱ 入場タイムアウト\ntable: {self._table_id}\n{elapsed:.0f}秒で game WS 未確立\n→ 次の WARM/HOT テーブルで再試行")
             self._phase = "idle"
             self._table_id = ""
 
@@ -486,6 +489,7 @@ class LiveBetExecutor:
         self._game_id = ""
 
         logger.info(f"[LIVE] entering table {table_id}")
+        self._notify(f"🚪 テーブル入場開始\ntable_id: {table_id}")
 
         try:
             page = self._context.new_page()
@@ -576,6 +580,7 @@ class LiveBetExecutor:
             self._game_ws_detected = True
             logger.info(f"[LIVE] game WS detected for table {self._table_id}")
             self._phase = "ready"
+            self._notify(f"🔗 game WS 確立\ntable: {self._table_id}\nBET待機中...")
             # user_id を chat WS から抽出試行
             self._extract_user_id()
 
@@ -666,6 +671,7 @@ class LiveBetExecutor:
                         f"[LIVE] betsopen game_id={gid} "
                         f"table={self._table_id}"
                     )
+                    self._notify(f"🟢 BET WINDOW OPEN\ntable: {self._table_id}\ngame: {gid}\nBET受付中 (~17秒)")
             return
 
         # betsclosed
@@ -733,6 +739,8 @@ class LiveBetExecutor:
             f"[LIVE] executing bet: {bet['bet_id']} "
             f"table={table_id} side={side} amount=${amount} game_id={game_id}"
         )
+        side_name = "BANKER" if side in ("B", "BANKER") else "PLAYER"
+        self._notify(f"💰 BET 送信中\ntable: {table_id}\n{side_name} ${amount}\ngame: {game_id}")
 
         xml = _build_lpbet_xml(
             table_id=table_id,
@@ -758,8 +766,10 @@ class LiveBetExecutor:
         if ok:
             logger.info(f"[LIVE] bet sent OK: {bet['bet_id']} ck={ck}")
             self._consecutive_failures = 0
+            self._notify(f"✅ BET 送信 OK\n{side_name} ${amount} ck={ck}")
         else:
             logger.error(f"[LIVE] bet send failed: {result}")
+            self._notify(f"❌ BET 送信 失敗\n{side_name} ${amount}\nerror: {result}")
 
         self._bet_result = {
             "bet_id": bet["bet_id"],

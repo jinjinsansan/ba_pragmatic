@@ -148,8 +148,17 @@ def _winner_to_char(w) -> str:
 
 
 def _send_telegram(text: str) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    # 優先順位: DUAL_LINE_* → TELEGRAM_* → ADMIN_TELEGRAM_*
+    token = (
+        os.getenv("DUAL_LINE_BOT_TOKEN", "").strip()
+        or os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        or os.getenv("ADMIN_TELEGRAM_BOT_TOKEN", "").strip()
+    )
+    chat_id = (
+        os.getenv("DUAL_LINE_CHAT_ID", "").strip()
+        or os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        or os.getenv("ADMIN_TELEGRAM_CHAT_ID", "").strip()
+    )
     if not token or not chat_id:
         return
     try:
@@ -354,8 +363,13 @@ class DualLinePragmaticBot(cp.Collector):
             shoe_changed = True
 
         if shoe_changed:
+            was_active = self.shoe_active.get(table_id, False)
             self._on_shoe_change(table_id, buf)
             self.shoe_active[table_id] = True
+            if not was_active:
+                _send_telegram(
+                    f"👁 観測開始\n{buf.table_name or table_id}\n初回シュー検知 → パターン監視中"
+                )
             prev_count = 0
         self.last_fresh_start[table_id] = is_fresh
 
@@ -378,14 +392,17 @@ class DualLinePragmaticBot(cp.Collector):
         self._update_table_score(table_id, buf)
 
     def _on_shoe_change(self, table_id: str, buf):
+        table_name = buf.table_name or table_id
         if table_id in self.pending:
             pending_pkey = self.pending[table_id].get("pattern_key", "?")
             logger.info(
-                f"シュー変化 ({buf.table_name or table_id}): "
-                f"pending {pending_pkey} クリア"
+                f"シュー変化 ({table_name}): pending {pending_pkey} クリア"
             )
-            send_log(f"シュー変化: pending {pending_pkey} クリア ({buf.table_name or table_id})")
+            send_log(f"シュー変化: pending {pending_pkey} クリア ({table_name})")
+            _send_telegram(f"🔄 シュー変化 (pending クリア)\n{table_name}\npending pattern: {pending_pkey}\n→ 観測リセット")
             del self.pending[table_id]
+        else:
+            _send_telegram(f"🔄 シュー変化\n{table_name}\n→ 新シュー観測開始")
         self.shoe_changes[table_id] += 1
         self.last_hand_count[table_id] = 0
         send_phase("observing", "shoe changed")
@@ -424,6 +441,13 @@ class DualLinePragmaticBot(cp.Collector):
         # 4) ベット発行 (金額は BetManager から取得)
         bet_amount = self.money.next_bet(side=bet_side)
         if bet_amount <= 0:
+            reason = self.money.limit_reason
+            _send_telegram(
+                f"🛑 LIMIT 到達 — BET 停止\n"
+                f"理由: {'利確' if reason == 'profit' else '損切'}\n"
+                f"session PnL: ${self.money.session_pnl:+.2f}\n"
+                f"on_limit: {self.money.on_limit}"
+            )
             return  # limit reached, stop
         bet_metadata = {
             "pattern_key": pattern_key,
@@ -530,11 +554,17 @@ class DualLinePragmaticBot(cp.Collector):
 
         # 切替可能なら切替
         if self.bet_executor.can_switch():
+            score = self.table_scores.get(best, 0)
+            score_label = {0: "COLD", 1: "WARM🟡", 2: "HOT🔴"}.get(score, str(score))
+            buf = self.buffers.get(best)
+            tname = (buf.table_name if buf else None) or best
             logger.info(
-                f"[rebalance] switching game WS to table {best} "
-                f"(score={self.table_scores.get(best, 0)})"
+                f"[rebalance] switching game WS to table {best} (score={score})"
             )
-            send_log(f"switch → table {best} (score={self.table_scores.get(best, 0)})")
+            send_log(f"switch → {tname} (score={score_label})")
+            _send_telegram(
+                f"🔀 テーブル切替\n{tname}\nスコア: {score_label}\n→ game WS 入場開始"
+            )
             self.bet_executor._request_switch(best)
 
     def _resolve_prediction(
@@ -827,6 +857,22 @@ class DualLinePragmaticBot(cp.Collector):
                         f"shuffles={self.stats_shuffle}  saved={self.stats_save}  "
                         f"tables={len(self.buffers)}"
                     )
+                    # 5分ごとにTelegram通知
+                    if now - getattr(self, "_last_tg_status", 0) >= 300:
+                        n_nt = self.wins + self.losses
+                        wr = self.wins / n_nt * 100 if n_nt else 0
+                        ms = self.money.status_dict()
+                        mode_label = "LIVE" if self.bet_executor.is_live else "DRY"
+                        _send_telegram(
+                            f"📊 定期ステータス [{mode_label}]\n"
+                            f"稼働: {elapsed//60}分\n"
+                            f"signals: {self.total_signals} / resolved: {self.total_resolved}\n"
+                            f"W/L/T: {self.wins}/{self.losses}/{self.ties} ({wr:.1f}%)\n"
+                            f"cumPnL: ${self.virtual_pnl:+.2f}\n"
+                            f"session: ${ms['session_pnl']:+.2f} next: ${ms['next_bet']}\n"
+                            f"tables: {len(self.buffers)} active: {sum(self.shoe_active.values())}"
+                        )
+                        self._last_tg_status = now
                     last_report = now
 
                 if now - last_msg_check_at >= 30.0:
@@ -839,6 +885,12 @@ class DualLinePragmaticBot(cp.Collector):
                         logger.error(
                             f"[ws-watchdog] no new msgs for {int(silence)}s "
                             f"(stats_msg={self.stats_msg}). Triggering self-restart via exit(1)."
+                        )
+                        _send_telegram(
+                            f"🔴 WS watchdog 発火 → 自動再起動\n"
+                            f"{int(silence)}秒間メッセージなし\n"
+                            f"total_msgs={self.stats_msg}\n"
+                            f"signals={self.total_signals} PnL=${self.virtual_pnl:+.2f}"
                         )
                         os._exit(1)
                 if now - last_db_stats >= 300:
@@ -947,7 +999,7 @@ def main(argv: list[str] | None = None) -> int:
         # LIVE 用 BetExecutor の読み込みを試みる
         try:
             from dual_line_live_executor import LiveBetExecutor
-            bet_executor = LiveBetExecutor()
+            bet_executor = LiveBetExecutor(notify_fn=_send_telegram)
             logger.info("LIVE mode: LiveBetExecutor loaded")
         except ImportError:
             logger.error(
