@@ -581,9 +581,26 @@ class LiveBetExecutor:
             self._consecutive_failures += 1
             self._notify(f"❌ BET FAILED\n{side_name} ${amount:.2f}\n{result}")
 
-        # bet_page をテーブル内に留まらせる（about:blank に戻さない）
-        # → ゲームWSセッションを維持し、次シグナルでの再ナビゲートを不要にする
-        self._phase = "ready"
+        # BET完了後: bet_page をPragmaticロビーに戻す
+        # → blank(遅い)でもゲーム内(別テーブル切替が遅い)でもなく、
+        #    ロビーからならテーブルクリックが5〜15秒で完了する
+        try:
+            page = self._bet_page
+            if page is not None:
+                page.goto(
+                    "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat",
+                    wait_until="domcontentloaded",
+                    timeout=20000,
+                )
+        except Exception:
+            pass
+        self._phase = "waiting"
+        self._table_id = ""
+        self._game_ws_url = ""
+        self._game_id = ""
+        self._user_id = ""
+        self._bets_open_game_id = ""
+        self._bets_closed_game_id = ""
 
     def _ws_send(self, table_id: str, payload: str) -> dict:
         """game WS にメッセージを送信。"""
