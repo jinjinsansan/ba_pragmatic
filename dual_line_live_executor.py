@@ -706,7 +706,13 @@ class LiveBetExecutor:
         return self._phase in ("ready", "betting")
 
     def can_switch(self) -> bool:
-        return not self._switch_in_progress and not bool(self._pending_bet)
+        """テーブル切替を受け付けるか。
+        waiting フェーズ（ロビー待機中）のみ切替可。
+        ready/betting（テーブル入場済み）では切替しない。
+        """
+        if self._switch_in_progress or self._pending_bet:
+            return False
+        return self._phase == "waiting"
 
     def is_on_table(self, table_id: str) -> bool:
         return bool(table_id) and str(table_id).strip() == str(self._table_id).strip()
