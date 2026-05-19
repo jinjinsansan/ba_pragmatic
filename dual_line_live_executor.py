@@ -706,6 +706,11 @@ class LiveBetExecutor:
         return bool(self._pending_bet) or self._switch_in_progress or bool(self._switch_request)
 
     @property
+    def is_bet_in_flight(self) -> bool:
+        """BET送信済み・結果待ち中かどうか。True の間は新 decision を受け付けない。"""
+        return bool(self._sent_bet_ids)
+
+    @property
     def is_ready(self) -> bool:
         return self._phase in ("ready", "betting")
 

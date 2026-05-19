@@ -885,6 +885,11 @@ class DualLinePragmaticBot(cp.Collector):
         table_id = str(decision.get("table_id") or "")
         table_name = str(decision.get("table_name") or "")
 
+        # BET 送信済み・結果待ち中は新 decision を受け付けない（進行中 BET の混乱防止）
+        if getattr(self.bet_executor, "is_bet_in_flight", False):
+            logger.info(f"[BOT] decision skipped (bet in flight, waiting result): {did}")
+            return
+
         # テーブル不一致の場合も移動してBET（90s stale limitで時間内に間に合う）
         current_table = str(getattr(self.bet_executor, "current_table_id", "") or "")
         if current_table and table_id and current_table != table_id:
