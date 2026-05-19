@@ -439,9 +439,12 @@ class DualLinePragmaticBot(cp.Collector):
         # LIVE モード: ユーザーが今いるテーブルのシグナルのみ BET
         if self.bet_executor.is_live:
             current_tid = getattr(self.bet_executor, "current_table_id", "")
-            if current_tid and current_tid != table_id:
-                # 別のテーブルのシグナルは無視 (ユーザーはそのテーブルにいない)
-                return
+            if current_tid:
+                # current_tid は qpid の場合があるため両方で照合
+                cur_qpid = str(getattr(buf, "qpid_table_id", "") or "")
+                if current_tid != table_id and (not cur_qpid or current_tid != cur_qpid):
+                    # 別のテーブルのシグナルは無視 (ユーザーはそのテーブルにいない)
+                    return
             if not getattr(self.bet_executor, "is_ready", False):
                 # game WS 未確立 → スキップ
                 return
@@ -856,6 +859,11 @@ class DualLinePragmaticBot(cp.Collector):
                         ctid = getattr(self.bet_executor, "current_table_id", "")
                         if ctid:
                             buf = self.buffers.get(ctid)
+                            if not buf:
+                                for _b in self.buffers.values():
+                                    if str(getattr(_b, "qpid_table_id", "") or "") == str(ctid):
+                                        buf = _b
+                                        break
                             tname = (buf.table_name if buf else None) or ""
                             if tname:
                                 try:

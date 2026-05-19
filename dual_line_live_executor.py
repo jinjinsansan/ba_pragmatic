@@ -183,13 +183,22 @@ class LiveBetExecutor:
         if "/dga" in url or "dga." in url:
             return
 
-        logger.info(f"[LIVE] game WS detected: {url[-100:]}")
-        self._game_ws_url = url
-
-        # URL から tableId を抽出
+        ws_table_id = ""
         m = re.search(r'[?&]tableId=([^&]+)', url)
         if m:
-            self._table_id = m.group(1)
+            ws_table_id = m.group(1)
+
+        # 単一テーブル運用: 最初に確立した tableId にロックする
+        if self._table_id and ws_table_id and ws_table_id != self._table_id:
+            logger.info(
+                f"[LIVE] ignore secondary game WS: {ws_table_id} (active={self._table_id})"
+            )
+            return
+
+        logger.info(f"[LIVE] game WS detected: {url[-100:]}")
+        self._game_ws_url = url
+        if ws_table_id and not self._table_id:
+            self._table_id = ws_table_id
             logger.info(f"[LIVE] tableId from URL: {self._table_id}")
 
         # WS メッセージを受動的に取得
@@ -202,8 +211,8 @@ class LiveBetExecutor:
             except Exception:
                 return str(f) if f else ""
 
-        ws.on("framereceived", lambda f: self._on_ws_message(_to_data(f)))
-        ws.on("framesent",     lambda f: self._on_ws_sent(_to_data(f)))
+        ws.on("framereceived", lambda f, tid=ws_table_id: self._on_ws_message(_to_data(f), tid))
+        ws.on("framesent",     lambda f, tid=ws_table_id: self._on_ws_sent(_to_data(f), tid))
 
         # phase = ready
         if self._phase == "waiting":
@@ -215,9 +224,11 @@ class LiveBetExecutor:
                 f"BET待機中 (betsopen を待っています)"
             )
 
-    def _on_ws_message(self, data: str) -> None:
+    def _on_ws_message(self, data: str, ws_table_id: str = "") -> None:
         """ゲームWSからの受信メッセージを解析。"""
         if not data:
+            return
+        if self._table_id and ws_table_id and ws_table_id != self._table_id:
             return
 
         # JSON
@@ -276,9 +287,11 @@ class LiveBetExecutor:
                 self._user_id = m.group(1)
                 logger.info(f"[LIVE] user_id from XML: ...{self._user_id[-8:]}")
 
-    def _on_ws_sent(self, data: str) -> None:
+    def _on_ws_sent(self, data: str, ws_table_id: str = "") -> None:
         """送信メッセージから tableId / userId を補完。"""
         if not data:
+            return
+        if self._table_id and ws_table_id and ws_table_id != self._table_id:
             return
         # JSON SUBSCRIBE
         try:
@@ -335,12 +348,6 @@ class LiveBetExecutor:
         """BET を予約する。次の betsopen で送信。"""
         if self._phase == "waiting":
             logger.info(f"[LIVE] send_bet ignored: no table connected yet")
-            return False
-        if table_id and table_id != self._table_id:
-            logger.info(
-                f"[LIVE] send_bet ignored: table mismatch "
-                f"signal={table_id} current={self._table_id}"
-            )
             return False
 
         with self._lock:
