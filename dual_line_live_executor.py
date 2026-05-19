@@ -534,7 +534,7 @@ class LiveBetExecutor:
 
         queued_at = float(bet.get("queued_at") or 0.0)
         if queued_at:
-            max_age = float(os.getenv("BACOPY_MAX_BET_SIGNAL_AGE_SEC", "45") or 45)
+            max_age = float(os.getenv("BACOPY_MAX_BET_SIGNAL_AGE_SEC", "90") or 90)
             if (time.time() - queued_at) > max_age:
                 logger.warning("[LIVE] drop stale pending bet (signal too old)")
                 self._notify("⚠️ BET SKIP\nsignal too old")
