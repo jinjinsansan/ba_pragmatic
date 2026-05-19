@@ -722,6 +722,8 @@ function _doStartBot(config) {
 
 
   try { cleanupOrphanCamoufox(); } catch (_) {}
+  // Prevent orphan engine duplication (can happen after crash/restart races).
+  try { killAllByImage('bacopy_engine.exe'); } catch (_) {}
 
 
 
