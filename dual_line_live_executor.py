@@ -496,7 +496,7 @@ class LiveBetExecutor:
             logger.info("[LIVE] send_bet ignored: empty target table")
             return False
 
-        # 別テーブルへのBET要求なら switch を予約
+        # 別テーブルへのBET要求 or 未入場 → switch を予約
         if self._phase == "waiting" or (self._table_id and target_table != self._table_id):
             self._request_switch(target_table, self._table_name, target_table)
 
