@@ -990,17 +990,28 @@ class DualLinePragmaticBot(cp.Collector):
                     last_msg_check_at = now
                     silence = now - last_msg_change_at
                     if silence >= ws_watchdog_stale_sec:
-                        logger.error(
-                            f"[ws-watchdog] no new msgs for {int(silence)}s "
-                            f"(stats_msg={self.stats_msg}). Triggering self-restart via exit(1)."
+                        # テーブル入場中はロビーWSが無音になるのは正常。watchdog を抑制。
+                        in_table = (
+                            self.bet_executor.is_live
+                            and getattr(self.bet_executor, "is_ready", False)
                         )
-                        _send_telegram(
-                            f"🔴 WS watchdog 発火 → 自動再起動\n"
-                            f"{int(silence)}秒間メッセージなし\n"
-                            f"total_msgs={self.stats_msg}\n"
-                            f"signals={self.total_signals} PnL=${self.virtual_pnl:+.2f}"
-                        )
-                        os._exit(1)
+                        if in_table:
+                            last_msg_change_at = now  # watchdog リセット
+                            logger.debug(
+                                f"[ws-watchdog] suppressed (in table): silence={int(silence)}s"
+                            )
+                        else:
+                            logger.error(
+                                f"[ws-watchdog] no new msgs for {int(silence)}s "
+                                f"(stats_msg={self.stats_msg}). Triggering self-restart via exit(1)."
+                            )
+                            _send_telegram(
+                                f"🔴 WS watchdog 発火 → 自動再起動\n"
+                                f"{int(silence)}秒間メッセージなし\n"
+                                f"total_msgs={self.stats_msg}\n"
+                                f"signals={self.total_signals} PnL=${self.virtual_pnl:+.2f}"
+                            )
+                            os._exit(1)
                 if now - last_db_stats >= 300:
                     s = cp.stats()
                     logger.info(f"[DB] {s}")
