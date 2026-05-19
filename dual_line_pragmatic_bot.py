@@ -576,9 +576,38 @@ class DualLinePragmaticBot(cp.Collector):
     def _resolve_prediction(
         self, table_id: str, buf, pending: dict, outcome: str, new_hand: dict
     ):
-        self.total_resolved += 1
         side = pending["side"]
         pkey = pending["pattern_key"]
+        bet_id = str(pending.get("bet_id") or "").strip()
+
+        # LIVE: 実BET送信が確認できないシグナルは資金管理/勝敗に反映しない
+        if self.bet_executor.is_live and bet_id:
+            consume_sent = getattr(self.bet_executor, "consume_sent_bet", None)
+            if callable(consume_sent):
+                try:
+                    sent = bool(consume_sent(bet_id))
+                except Exception:
+                    sent = False
+                if not sent:
+                    logger.info(
+                        f"resolve skip(no-sent-bet) {buf.table_name or table_id}: "
+                        f"pred={side} outcome={outcome} pattern={pkey} bet_id={bet_id}"
+                    )
+                    send_action(
+                        f"⚪ SKIP {buf.table_name or table_id}: "
+                        f"{side}→{outcome} (live bet not sent)"
+                    )
+                    if self.notify_resolution:
+                        _send_telegram(
+                            f"⚪ SKIP {buf.table_name or table_id} [LIVE]\n"
+                            f"Pattern: `{pkey}`\n"
+                            f"Pred: {side} → Got: {outcome}\n"
+                            f"Reason: live bet was not sent"
+                        )
+                    self._save_state()
+                    return
+
+        self.total_resolved += 1
         pstats = self.per_pattern[pkey]
         pstats["pred"] += 1
 

@@ -133,6 +133,7 @@ class LiveBetExecutor:
         self._pending_bet: dict | None = None
         self._switch_request: dict | None = None
         self._switch_in_progress: bool = False
+        self._sent_bet_ids: set[str] = set()
         self._lock = threading.Lock()
 
         # 統計
@@ -475,7 +476,7 @@ class LiveBetExecutor:
 
     # ── BET API ──────────────────────────────────────────────────────
 
-    def send_bet(self, side: str, amount: float, table_id: str = "") -> bool:
+    def send_bet(self, side: str, amount: float, table_id: str = "", bet_id: str = "") -> bool:
         """BET を予約する。次の betsopen で送信。"""
         target_table = str(table_id or self._table_id or "").strip()
         if not target_table:
@@ -491,6 +492,7 @@ class LiveBetExecutor:
                 "side": side,
                 "amount": amount,
                 "table_id": target_table,
+                "bet_id": str(bet_id or "").strip(),
                 "queued_at": time.time(),
             }
         logger.info(f"[LIVE] bet queued: {side} ${amount:.2f} table={target_table}")
@@ -517,9 +519,18 @@ class LiveBetExecutor:
                 return
             self._pending_bet = None
 
+        queued_at = float(bet.get("queued_at") or 0.0)
+        if queued_at:
+            max_age = float(os.getenv("BACOPY_MAX_BET_SIGNAL_AGE_SEC", "25") or 25)
+            if (time.time() - queued_at) > max_age:
+                logger.warning("[LIVE] drop stale pending bet (signal too old)")
+                self._notify("⚠️ BET SKIP\nsignal too old")
+                return
+
         side = bet["side"]
         amount = bet["amount"]
         table_id = bet.get("table_id") or self._table_id
+        bet_id = str(bet.get("bet_id") or "").strip()
         user_id = self._user_id or os.getenv("BACOPY_USER_ID", "").strip()
 
         if not user_id:
@@ -549,6 +560,8 @@ class LiveBetExecutor:
         if ok:
             logger.info(f"[LIVE] bet sent OK ck={ck}")
             self._consecutive_failures = 0
+            if bet_id:
+                self._sent_bet_ids.add(bet_id)
             self._notify(f"✅ BET OK\n{side_name} ${amount:.2f} ck={ck}")
         else:
             logger.error(f"[LIVE] bet send FAILED: {result}")
@@ -612,8 +625,17 @@ class LiveBetExecutor:
             self._table_name = table_name
         self._request_switch(str(table_id or ""), table_name, qpid)
         bet_id = f"dl_{uuid.uuid4().hex[:12]}"
-        self.send_bet(side=side, amount=amount, table_id=(qpid or table_id))
+        self.send_bet(side=side, amount=amount, table_id=(qpid or table_id), bet_id=bet_id)
         return bet_id
+
+    def consume_sent_bet(self, bet_id: str) -> bool:
+        bid = str(bet_id or "").strip()
+        if not bid:
+            return False
+        if bid in self._sent_bet_ids:
+            self._sent_bet_ids.remove(bid)
+            return True
+        return False
 
     def _request_switch(self, table_id: str = "", table_name: str = "", qpid: str = "") -> None:
         """対象卓への switch 要求をキューに積む。"""
