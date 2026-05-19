@@ -230,9 +230,11 @@ class DualLinePragmaticBot(cp.Collector):
         notify_resolution: bool = True,
         notify_tie: bool = False,
         bet_executor: BetExecutor | None = None,
+        no_vps_poll: bool = False,
     ):
         super().__init__(headless=headless, raw_log=raw_log)
         self.use_v2_filter = use_v2_filter
+        self.no_vps_poll = no_vps_poll
         self.notify_signal = notify_signal
         self.notify_resolution = notify_resolution
         self.notify_tie = notify_tie
@@ -889,6 +891,10 @@ class DualLinePragmaticBot(cp.Collector):
         if getattr(self.bet_executor, "is_bet_in_flight", False):
             logger.info(f"[BOT] decision skipped (bet in flight, waiting result): {did}")
             return
+        # ナビゲーション中 / BET キュー済みの場合もスキップ（ローカル検出との二重BET防止）
+        if getattr(self.bet_executor, "has_pending_bet", False):
+            logger.info(f"[BOT] decision skipped (bet navigation in progress): {did}")
+            return
 
         # テーブル不一致の場合も移動してBET（90s stale limitで時間内に間に合う）
         current_table = str(getattr(self.bet_executor, "current_table_id", "") or "")
@@ -1064,13 +1070,16 @@ class DualLinePragmaticBot(cp.Collector):
             except Exception as e:
                 logger.warning(f"[BOT] lobby nav failed: {e}")
 
-            # BET decision polling thread (background)
+            # BET decision polling thread (background) - スキップ可 (--no-vps-poll)
             import threading as _threading
-            poll_thread = _threading.Thread(
-                target=self._decisions_poll_loop, daemon=True, name="decision-poll"
-            )
-            poll_thread.start()
-            logger.info("[BOT] VPS API polling started (decisions + preposition)")
+            if not self.no_vps_poll:
+                poll_thread = _threading.Thread(
+                    target=self._decisions_poll_loop, daemon=True, name="decision-poll"
+                )
+                poll_thread.start()
+                logger.info("[BOT] VPS API polling started (decisions + preposition)")
+            else:
+                logger.info("[BOT] VPS API polling DISABLED (--no-vps-poll / direct local mode)")
             _send_telegram(
                 f"📡 ロビー監視中\n"
                 f"VPS監視: hakudasama@gmail.com\n"
@@ -1218,6 +1227,10 @@ def main(argv: list[str] | None = None) -> int:
         "--live", action="store_true",
         help="LIVE モード: 実 BET を発行 (未指定時は DRY RUN)",
     )
+    ap.add_argument(
+        "--no-vps-poll", action="store_true",
+        help="VPS API polling を無効化（ローカル直接検出モード / bafather 直接実行用）",
+    )
     # GUI が送るが dual-line では使わない args（parse_known_args で吸収）
     ap.add_argument("--table-name-substr", type=str, default="")
     ap.add_argument("--allow-banker", action="store_true")
@@ -1272,6 +1285,7 @@ def main(argv: list[str] | None = None) -> int:
         notify_resolution=(not args.no_resolution_notify),
         notify_tie=False,
         bet_executor=bet_executor,
+        no_vps_poll=getattr(args, "no_vps_poll", False),
     )
 
     mode_label = "LIVE" if bot.bet_executor.is_live else "DRY RUN"
