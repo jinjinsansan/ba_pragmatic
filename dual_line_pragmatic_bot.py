@@ -766,55 +766,54 @@ class DualLinePragmaticBot(cp.Collector):
         logger.info(f"[rejoin] 前回テーブル: {table_id} ({table_name}) — 自動クリック試行")
         _send_telegram(f"🔄 再起動: 前回テーブル {table_name or table_id} へ自動再入場試行中...")
 
+        # 各フレームで直接評価 (クロスオリジンiframeはcontentDocument不可なので
+        # Playwright の page.frames API を使う)
         _CLICK_JS = r"""
         (tableId) => {
-          function tryClick(root) {
-            const els = root.querySelectorAll(
-              'img, a, [style*="background-image"], [data-table-id], [data-tableid]'
-            );
-            for (const el of els) {
-              const vals = [
-                el.src || '', el.href || '',
-                el.getAttribute('style') || '',
-                el.getAttribute('data-table-id') || '',
-                el.getAttribute('data-tableid') || '',
-              ];
-              if (vals.some(v => v.includes(tableId))) {
-                let target = el;
-                for (let d = 0; d < 6 && target; d++) {
-                  if (target.tagName === 'A' || target.tagName === 'BUTTON' ||
-                      target.getAttribute('role') === 'button' ||
-                      target.onclick != null) break;
-                  target = target.parentElement;
-                }
-                (target || el).click();
-                return true;
+          const els = document.querySelectorAll(
+            'img, a, [style*="background-image"], [data-table-id], [data-tableid], [class*="table"], [class*="Table"]'
+          );
+          for (const el of els) {
+            const vals = [
+              el.src || '', el.href || '',
+              el.getAttribute('style') || '',
+              el.getAttribute('data-table-id') || '',
+              el.getAttribute('data-tableid') || '',
+            ];
+            if (vals.some(v => v.includes(tableId))) {
+              let target = el;
+              for (let d = 0; d < 6 && target; d++) {
+                if (target.tagName === 'A' || target.tagName === 'BUTTON' ||
+                    target.getAttribute('role') === 'button' ||
+                    target.onclick != null) break;
+                target = target.parentElement;
               }
+              (target || el).click();
+              return {ok: true, tag: (target || el).tagName};
             }
-            return false;
           }
-          // ロビーフレーム内を優先して探す
-          const frames = Array.from(document.querySelectorAll('iframe'));
-          for (const iframe of frames) {
-            try {
-              if (tryClick(iframe.contentDocument)) return {ok: true, src: 'iframe'};
-            } catch(_) {}
-          }
-          if (tryClick(document)) return {ok: true, src: 'main'};
           return {ok: false};
         }
         """
 
-        # ロビーが完全に描画されるまで最大20秒待って再試行
         for attempt in range(4):
+            # Playwright の frames API で全フレームを直接評価 (クロスオリジン対応)
+            all_frames = [page]
             try:
-                res = page.evaluate(_CLICK_JS, table_id)
-                if isinstance(res, dict) and res.get("ok"):
-                    logger.info(f"[rejoin] クリック成功 ({res.get('src')}) attempt={attempt+1}")
-                    _send_telegram(f"✅ テーブル再入場クリック成功: {table_name or table_id}")
-                    return
-            except Exception as e:
-                logger.debug(f"[rejoin] evaluate エラー: {e}")
+                all_frames += [f for f in page.frames if f != page]
+            except Exception:
+                pass
+
+            for frame in all_frames:
+                try:
+                    res = frame.evaluate(_CLICK_JS, table_id)
+                    if isinstance(res, dict) and res.get("ok"):
+                        fname = getattr(frame, "name", "?") or getattr(frame, "url", "?")[:40]
+                        logger.info(f"[rejoin] クリック成功 frame={fname} attempt={attempt+1}")
+                        _send_telegram(f"✅ テーブル再入場クリック成功: {table_name or table_id}")
+                        return
+                except Exception as e:
+                    logger.debug(f"[rejoin] frame evaluate エラー: {e}")
             if attempt < 3:
                 page.wait_for_timeout(5000)
 
