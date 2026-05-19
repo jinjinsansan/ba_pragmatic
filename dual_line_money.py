@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional
 
+from marubatsu_strategy import MaruBatsuTracker, SetData
+
 logger = logging.getLogger("dual_line.money")
 
 # ── SEQ 定義 ─────────────────────────────────────────────────────────
@@ -112,6 +114,13 @@ class BetManager:
         # SEQ モード状態
         self.seq_level: int = 0  # SEQ 配列の index
         self.current_seq = self._resolve_seq()
+        self._seq7_tracker: MaruBatsuTracker | None = None
+        if self.mode in ("small02", "small1", "small3", "small6"):
+            self._seq7_tracker = MaruBatsuTracker(
+                chip_base=1.0,
+                seq=list(self.current_seq),
+                set_size=7,
+            )
 
         # Martingale 状態
         self.loss_count: int = 0
@@ -158,7 +167,11 @@ class BetManager:
             return max(amount, 0.0)
         else:
             seq = self.current_seq
-            level = min(self.seq_level, len(seq) - 1)
+            if self._seq7_tracker is not None:
+                level = min(self._seq7_tracker.current_unit_idx, len(seq) - 1)
+                self.seq_level = level
+            else:
+                level = min(self.seq_level, len(seq) - 1)
             return seq[level]
 
     def next_bet(self, side: str = "P") -> float:
@@ -190,15 +203,24 @@ class BetManager:
             commission = BANKER_COMMISSION if str(side).upper() in ("B", "BANKER") else 1.0
             self.total_wins += 1
             self.session_pnl += amount * commission
-            # SEQ: レベルリセット（勝ったら先頭に戻る）
-            self.seq_level = 0
+            # SMALL系は受け子GUIと同じ7ターン管理で進行
+            if self._seq7_tracker is not None:
+                self._seq7_tracker.add_result("player")
+                self.seq_level = self._seq7_tracker.current_unit_idx
+            # 従来SEQ: 勝ったら先頭に戻る
+            elif self.mode not in ("flat", "martingale"):
+                self.seq_level = 0
             # Martingale: リセット
             self.loss_count = 0
         else:
             self.total_losses += 1
             self.session_pnl -= amount
-            # SEQ: レベル進行
-            if self.mode != "flat":
+            # SMALL系は受け子GUIと同じ7ターン管理で進行
+            if self._seq7_tracker is not None:
+                self._seq7_tracker.add_result("banker")
+                self.seq_level = self._seq7_tracker.current_unit_idx
+            # 従来SEQ: レベル進行
+            elif self.mode != "flat":
                 self.seq_level = min(self.seq_level + 1, len(self.current_seq) - 1)
             # Martingale: 進行
             if self.mode == "martingale":
@@ -249,6 +271,8 @@ class BetManager:
         return self.total_wins / nt * 100 if nt else 0.0
 
     def status_dict(self) -> dict:
+        seq_turn = (len(self._seq7_tracker.current_turns) + 1) if self._seq7_tracker else None
+        seq_overshoot = self._seq7_tracker.prev_overshoot if self._seq7_tracker else None
         return {
             "mode": self.mode,
             "unit": self.unit,
@@ -262,6 +286,8 @@ class BetManager:
             "total_ties": self.total_ties,
             "win_rate": round(self.win_rate, 1),
             "seq_level": self.seq_level,
+            "seq_turn": seq_turn,
+            "seq_overshoot": seq_overshoot,
             "loss_count": self.loss_count,
             "martingale_max_bet": self.martingale_max_bet,
             "limit_reached": self.limit_reached,
@@ -289,6 +315,8 @@ class BetManager:
                         "total_losses": self.total_losses,
                         "total_ties": self.total_ties,
                         "seq_level": self.seq_level,
+                        "seq7_sets": [s.__dict__ for s in (self._seq7_tracker.sets if self._seq7_tracker else [])],
+                        "seq7_current_turns": list(self._seq7_tracker.current_turns) if self._seq7_tracker else [],
                         "loss_count": self.loss_count,
                         "limit_reached": self.limit_reached,
                         "limit_reason": self.limit_reason,
@@ -312,6 +340,21 @@ class BetManager:
             self.total_losses = int(s.get("total_losses", 0))
             self.total_ties = int(s.get("total_ties", 0))
             self.seq_level = int(s.get("seq_level", 0))
+            if self._seq7_tracker is not None:
+                raw_sets = s.get("seq7_sets", []) or []
+                parsed_sets: list[SetData] = []
+                if isinstance(raw_sets, list):
+                    for item in raw_sets:
+                        if isinstance(item, dict):
+                            try:
+                                parsed_sets.append(SetData(**item))
+                            except Exception:
+                                continue
+                self._seq7_tracker.sets = parsed_sets
+                raw_turns = s.get("seq7_current_turns", []) or []
+                if isinstance(raw_turns, list):
+                    self._seq7_tracker.current_turns = [t for t in raw_turns if t in ("O", "X")]
+                self.seq_level = self._seq7_tracker.current_unit_idx
             self.loss_count = int(s.get("loss_count", 0))
             self.limit_reached = bool(s.get("limit_reached", False))
             self.limit_reason = str(s.get("limit_reason", ""))
