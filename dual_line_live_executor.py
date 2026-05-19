@@ -515,6 +515,14 @@ class LiveBetExecutor:
             # table id を click
             self._click_table(page, table_id)
 
+            # ブラウザ②を右側・大きめに固定配置（ユーザーが見やすいよう）
+            try:
+                page.evaluate(
+                    "() => { window.moveTo(640, 0); window.resizeTo(1280, 960); }"
+                )
+            except Exception:
+                pass
+
         except Exception as e:
             logger.error(f"[LIVE] begin_enter failed: {e}")
             self._phase = "idle"

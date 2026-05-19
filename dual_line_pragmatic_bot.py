@@ -93,7 +93,7 @@ STATE_TMP = HERE / "dual_line_pragmatic_state.tmp"
 COMMISSION_BANKER = 0.95
 
 # bot の WS 切断 watchdog (collector の 180s より短く)
-BOT_WS_STALE_SEC = "15"
+BOT_WS_STALE_SEC = "60"
 
 # ── stdout JSON IPC (bacopy_executor_pragmatic_ws_live.py 互換) ────
 # Electron GUI との通信プロトコル。各メッセージは stdout に JSONL で出力。
@@ -482,30 +482,34 @@ class DualLinePragmaticBot(cp.Collector):
 
     def _select_best_table(self) -> str | None:
         """全アクティブテーブル中、最もスコアの高い table_id を返す。
+        score=0 (COLD) のテーブルは選択しない。
         同スコアなら hands が多い方を優先（より観測の進んだテーブル）。
         """
         best_id: str | None = None
-        best_score = -1
+        best_score = 0  # 0 以下は選ばない (COLD テーブルへの無駄なスイッチを防止)
         best_hands = 0
         for tid, buf in self.buffers.items():
             if not self.shoe_active.get(tid, False):
                 continue
             score = self.table_scores.get(tid, 0)
             n_hands = len(buf.hands or [])
-            if score > best_score or (score == best_score and n_hands > best_hands):
+            if score > best_score or (score == best_score and score > 0 and n_hands > best_hands):
                 best_score = score
                 best_hands = n_hands
                 best_id = tid
         return best_id
 
     def _rebalance_tables(self) -> None:
-        """LIVE モード時: 最適テーブルに game WS を切り替える。"""
+        """LIVE モード時: 最適テーブルに game WS を切り替える。
+        score >= 1 (WARM/HOT) のテーブルが見つかった場合のみスイッチ。
+        同一テーブルへの連続リトライには 60 秒のクールダウンを設ける。
+        """
         if not self.bet_executor.is_live:
             return
 
         best = self._select_best_table()
         if not best:
-            return
+            return  # score >= 1 のテーブルなし → スイッチしない
 
         # pending があるテーブルは変えない（bet が終わるまで）
         if self.pending:
@@ -514,6 +518,15 @@ class DualLinePragmaticBot(cp.Collector):
         # すでにそのテーブルならスキップ
         if self.bet_executor.is_on_table(best):
             return
+
+        # 同一テーブルへの連続リトライ: 60 秒クールダウン
+        last_try = getattr(self, "_last_switch_attempt", {})
+        now = time.time()
+        if last_try.get(best, 0) > now - 60:
+            return
+        if not hasattr(self, "_last_switch_attempt"):
+            self._last_switch_attempt = {}
+        self._last_switch_attempt[best] = now
 
         # 切替可能なら切替
         if self.bet_executor.can_switch():
