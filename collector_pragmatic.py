@@ -50,26 +50,21 @@ PRAGMATIC_LOBBY_PATTERN = "pragmaticplaylive"
 # 最小有効シュー長 (これ未満ならゴミとみなしスキップ)
 MIN_SHOE_HANDS = 30
 
+# Windows cp932 環境での UnicodeEncodeError を防ぐ
 import sys as _sys
-import io as _io
-
-# Windows cp932 環境での UnicodeEncodeError を防ぐため stderr を UTF-8 にラップ
-def _utf8_stream(stream):
-    try:
-        if hasattr(stream, 'buffer'):
-            return _io.TextIOWrapper(stream.buffer, encoding='utf-8', errors='replace')
-    except Exception:
-        pass
-    return stream
-
-_stream_handler = logging.StreamHandler(_utf8_stream(_sys.stderr))
+for _s in (_sys.stdout, _sys.stderr):
+    if _s and hasattr(_s, 'reconfigure'):
+        try:
+            _s.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.FileHandler(Path(__file__).parent / "collector_pragmatic.log", encoding="utf-8"),
-        _stream_handler,
+        logging.StreamHandler(),
     ],
 )
 logger = logging.getLogger("pragmatic.collector")
