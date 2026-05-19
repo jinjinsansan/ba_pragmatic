@@ -101,6 +101,8 @@ class LiveBetExecutor:
       betting  → BET 送信中
     """
 
+    is_live: bool = True  # BetExecutor Protocol 互換
+
     def __init__(self, notify_fn=None):
         self._notify = notify_fn or (lambda text: None)
         self._context: Any = None
@@ -438,7 +440,15 @@ class LiveBetExecutor:
                     pass
         return {"ok": False, "reason": "not_sent"}
 
-    # ── 互換 API (bot 側から呼ばれる) ────────────────────────────────
+    # ── BetExecutor Protocol 互換 API ────────────────────────────────
+
+    def place_bet(self, table_id: str, side: str, amount: float,
+                  metadata: dict | None = None) -> str:
+        """bot から呼ばれる BetExecutor 互換メソッド。send_bet() に委譲。"""
+        import uuid
+        bet_id = f"dl_{uuid.uuid4().hex[:12]}"
+        self.send_bet(side=side, amount=amount, table_id=table_id)
+        return bet_id
 
     def _request_switch(self, *args, **kwargs) -> None:
         """旧設計の互換。新設計では何もしない。"""
