@@ -107,7 +107,9 @@ class LiveBetExecutor:
         self._notify = notify_fn or (lambda text: None)
         self._context: Any = None
         self._lobby_page: Any = None
+        self._bet_page: Any = None
         self._profile_dir: str = ""          # set by bot.run() for persistence
+        self._attached_page_ids: set[int] = set()
 
         # game WS 状態
         self._game_ws_url: str = ""          # 検出した game WS URL
@@ -129,6 +131,8 @@ class LiveBetExecutor:
 
         # BET 予約
         self._pending_bet: dict | None = None
+        self._switch_request: dict | None = None
+        self._switch_in_progress: bool = False
         self._lock = threading.Lock()
 
         # 統計
@@ -139,21 +143,22 @@ class LiveBetExecutor:
 
     # ── setup ────────────────────────────────────────────────────────
 
-    def setup(self, context: Any, lobby_page: Any) -> None:
+    def setup(self, context: Any, lobby_page: Any, bet_page: Any | None = None) -> None:
         self._context = context
         self._lobby_page = lobby_page
+        self._bet_page = bet_page or lobby_page
 
-        # 既存フレームにブリッジを注入
-        self._inject_all(lobby_page)
-
-        # ロビーページの game WS を監視
-        lobby_page.on("websocket", self._on_ws_event)
+        # 既存ページすべてを監視対象にする（lobby + bet）
+        try:
+            for p in (context.pages or []):
+                self._attach_page(p)
+        except Exception:
+            self._attach_page(lobby_page)
 
         # 新しいポップアップページも監視
         def _on_new_page(page: Any) -> None:
             logger.info(f"[LIVE] new page detected: {page.url[:60]}")
-            self._inject_all(page)
-            page.on("websocket", self._on_ws_event)
+            self._attach_page(page)
         context.on("page", _on_new_page)
 
         logger.info("[LIVE] executor ready — waiting for user to enter table")
@@ -162,6 +167,21 @@ class LiveBetExecutor:
             "Pragmaticロビーで好きなテーブルを\n"
             "クリックして入場してください"
         )
+
+    def _attach_page(self, page: Any) -> None:
+        """既存/新規ページへ bridge + websocket hook を1回だけ設定。"""
+        try:
+            pid = id(page)
+            if pid in self._attached_page_ids:
+                return
+            self._attached_page_ids.add(pid)
+        except Exception:
+            pass
+        self._inject_all(page)
+        try:
+            page.on("websocket", self._on_ws_event)
+        except Exception:
+            pass
 
     def _inject_all(self, page: Any) -> None:
         """ページと全フレームにブリッジを注入。"""
@@ -194,8 +214,13 @@ class LiveBetExecutor:
         if m:
             ws_table_id = m.group(1)
 
-        # 単一テーブル運用: 最初に確立した tableId にロックする
-        if self._table_id and ws_table_id and ws_table_id != self._table_id:
+        # ready/betting 中は現在テーブルにロック（switch 中は waiting に戻して解除）
+        if (
+            self._phase in ("ready", "betting")
+            and self._table_id
+            and ws_table_id
+            and ws_table_id != self._table_id
+        ):
             logger.info(
                 f"[LIVE] ignore secondary game WS: {ws_table_id} (active={self._table_id})"
             )
@@ -207,6 +232,7 @@ class LiveBetExecutor:
             self._table_id = ws_table_id
             logger.info(f"[LIVE] tableId from URL: {self._table_id}")
             self._save_last_table()
+        self._last_game_ws_recv_at = time.time()
 
         # WS メッセージを受動的に取得
         # Playwright のバージョンにより f が str の場合と FrameData の場合がある
@@ -334,6 +360,18 @@ class LiveBetExecutor:
         now = time.time()
         page = self._lobby_page
 
+        # switch 要求があれば先に処理（テーブル入場）
+        if self._switch_request and not self._switch_in_progress:
+            req = self._switch_request
+            self._switch_request = None
+            self._switch_in_progress = True
+            try:
+                self._perform_switch(req)
+            except Exception as e:
+                logger.warning(f"[LIVE] switch failed: {e}")
+            finally:
+                self._switch_in_progress = False
+
         # 5秒ごとにブリッジを再注入（フレーム遷移・新フレームに備える）
         if now - self._last_bridge_inject > 5.0:
             self._last_bridge_inject = now
@@ -392,25 +430,73 @@ class LiveBetExecutor:
             except Exception as e:
                 logger.debug(f"[LIVE] video click error: {e}")
 
+    def _perform_switch(self, req: dict) -> None:
+        """受け子モードの _join_table を使って bet_page を対象卓へ入場させる。"""
+        try:
+            from bacopy_executor_pragmatic_ws_live import _join_table
+        except Exception as e:
+            logger.warning(f"[LIVE] switch import failed: {e}")
+            return
+
+        table_id = str(req.get("table_id") or "").strip()
+        table_name = str(req.get("table_name") or "").strip()
+        qpid = str(req.get("qpid") or "").strip()
+        if not table_id and not qpid:
+            return
+
+        # 新卓へ切り替える前に現在セッション情報をクリア
+        self._phase = "waiting"
+        self._table_id = ""
+        self._game_ws_url = ""
+        self._game_id = ""
+        self._user_id = ""
+        self._bets_open_game_id = ""
+        self._bets_closed_game_id = ""
+        self._last_bets_open_at = 0.0
+        if table_name:
+            self._table_name = table_name
+
+        page = self._bet_page or self._lobby_page
+        if page is None:
+            return
+
+        wait_sec = int(os.getenv("BACOPY_AUTO_CLICK_WAIT_SEC", "90") or "90")
+        logger.info(f"[LIVE] switching to table={table_name or table_id} qpid={qpid or '-'}")
+        _join_table(
+            page,
+            table_substr=(table_name or table_id),
+            auto_click_wait_sec=wait_sec,
+            state=None,
+            on_tick=None,
+            is_initial=False,
+            interrupt_check=None,
+            qpid_table_id=(qpid or table_id),
+        )
+
     # ── BET API ──────────────────────────────────────────────────────
 
     def send_bet(self, side: str, amount: float, table_id: str = "") -> bool:
         """BET を予約する。次の betsopen で送信。"""
-        if self._phase == "waiting":
-            logger.info(f"[LIVE] send_bet ignored: no table connected yet")
+        target_table = str(table_id or self._table_id or "").strip()
+        if not target_table:
+            logger.info("[LIVE] send_bet ignored: empty target table")
             return False
+
+        # 別テーブルへのBET要求なら switch を予約
+        if self._phase == "waiting" or (self._table_id and target_table != self._table_id):
+            self._request_switch(target_table, self._table_name, target_table)
 
         with self._lock:
             self._pending_bet = {
                 "side": side,
                 "amount": amount,
-                "table_id": self._table_id,
+                "table_id": target_table,
                 "queued_at": time.time(),
             }
-        logger.info(f"[LIVE] bet queued: {side} ${amount:.2f} table={self._table_id}")
+        logger.info(f"[LIVE] bet queued: {side} ${amount:.2f} table={target_table}")
 
         # すでに betsopen 中なら即送信
-        if self._is_bet_window_open():
+        if self._phase != "waiting" and self._is_bet_window_open():
             self._try_execute_bet(self._bets_open_game_id)
 
         return True
@@ -454,6 +540,7 @@ class LiveBetExecutor:
         side_name = "BANKER" if bc == "B" else "PLAYER"
 
         logger.info(f"[LIVE] executing bet: {side_name} ${amount:.2f} game={game_id}")
+        self._phase = "betting"
         self._notify(f"💰 BET 送信\n{side_name} ${amount:.2f}\ntable: {table_id}\ngame: {game_id}")
 
         result = self._ws_send(table_id, xml)
@@ -467,6 +554,19 @@ class LiveBetExecutor:
             logger.error(f"[LIVE] bet send FAILED: {result}")
             self._consecutive_failures += 1
             self._notify(f"❌ BET FAILED\n{side_name} ${amount:.2f}\n{result}")
+
+        # 単一 bet_page 運用: 送信後は about:blank に戻して次シグナル待機
+        try:
+            page = self._bet_page
+            if page is not None:
+                page.goto("about:blank", wait_until="domcontentloaded", timeout=15000)
+        except Exception:
+            pass
+        self._phase = "waiting"
+        self._table_id = ""
+        self._game_ws_url = ""
+        self._game_id = ""
+        self._user_id = ""
 
     def _ws_send(self, table_id: str, payload: str) -> dict:
         """game WS にメッセージを送信。"""
@@ -505,13 +605,26 @@ class LiveBetExecutor:
                   metadata: dict | None = None) -> str:
         """bot から呼ばれる BetExecutor 互換メソッド。send_bet() に委譲。"""
         import uuid
+        md = metadata or {}
+        table_name = str(md.get("table_name") or "").strip()
+        qpid = str(md.get("qpid_table_id") or "").strip()
+        if table_name:
+            self._table_name = table_name
+        self._request_switch(str(table_id or ""), table_name, qpid)
         bet_id = f"dl_{uuid.uuid4().hex[:12]}"
-        self.send_bet(side=side, amount=amount, table_id=table_id)
+        self.send_bet(side=side, amount=amount, table_id=(qpid or table_id))
         return bet_id
 
-    def _request_switch(self, *args, **kwargs) -> None:
-        """旧設計の互換。新設計では何もしない。"""
-        pass
+    def _request_switch(self, table_id: str = "", table_name: str = "", qpid: str = "") -> None:
+        """対象卓への switch 要求をキューに積む。"""
+        tid = str(table_id or "").strip()
+        if not tid and not qpid:
+            return
+        self._switch_request = {
+            "table_id": tid or str(qpid or "").strip(),
+            "table_name": str(table_name or "").strip(),
+            "qpid": str(qpid or "").strip(),
+        }
 
     def set_table_name(self, table_id: str, table_name: str) -> None:
         """bot から table_name を補完する。"""
@@ -540,6 +653,10 @@ class LiveBetExecutor:
     @property
     def current_table_id(self) -> str:
         return self._table_id
+
+    @property
+    def has_pending_bet(self) -> bool:
+        return bool(self._pending_bet) or self._switch_in_progress or bool(self._switch_request)
 
     @property
     def is_ready(self) -> bool:

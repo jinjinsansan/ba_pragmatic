@@ -436,17 +436,11 @@ class DualLinePragmaticBot(cp.Collector):
             return
 
         # 4) ベット発行
-        # LIVE モード: ユーザーが今いるテーブルのシグナルのみ BET
+        # LIVE モード: 同時BETはしない（1件ずつ処理）
         if self.bet_executor.is_live:
-            current_tid = getattr(self.bet_executor, "current_table_id", "")
-            if current_tid:
-                # current_tid は qpid の場合があるため両方で照合
-                cur_qpid = str(getattr(buf, "qpid_table_id", "") or "")
-                if current_tid != table_id and (not cur_qpid or current_tid != cur_qpid):
-                    # 別のテーブルのシグナルは無視 (ユーザーはそのテーブルにいない)
-                    return
-            if not getattr(self.bet_executor, "is_ready", False):
-                # game WS 未確立 → スキップ
+            if self.pending:
+                return
+            if getattr(self.bet_executor, "has_pending_bet", False):
                 return
 
         bet_amount = self.money.next_bet(side=bet_side)
@@ -464,6 +458,7 @@ class DualLinePragmaticBot(cp.Collector):
             "china_pattern": d.china_pattern,
             "big_pattern": d.big_pattern,
             "table_name": buf.table_name or "",
+            "qpid_table_id": str(getattr(buf, "qpid_table_id", "") or ""),
             "seq_at_predict": observed_sequence,
         }
         bet_id = self.bet_executor.place_bet(
@@ -839,15 +834,17 @@ class DualLinePragmaticBot(cp.Collector):
         report_interval = 60
 
         with cp.Camoufox(**launch_opts) as ctx:
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.on("websocket", self._on_ws)
+            lobby_page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            bet_page = ctx.new_page()
+            lobby_page.on("websocket", self._on_ws)
+            bet_page.on("websocket", self._on_ws)
 
             # executor setup: _on_ws 経由で context を渡せなかった場合の fallback
             if self.bet_executor.is_live and not getattr(
                 self.bet_executor, "_context", None
             ):
                 try:
-                    self.bet_executor.setup(ctx, page)
+                    self.bet_executor.setup(ctx, lobby_page, bet_page)
                     logger.info("[BOT] executor context injected (fallback in run)")
                 except Exception as e:
                     logger.warning(f"[BOT] executor setup fallback failed: {e}")
@@ -868,25 +865,23 @@ class DualLinePragmaticBot(cp.Collector):
                 except Exception as e:
                     logger.warning(f"Cookie restore failed: {e}")
 
-            did_auto_rejoin = False
-            # 再起動後に前回テーブルへ自動再入場
+            logger.info(f"Navigating lobby to {cp.LOBBY_URL}")
+            lobby_page.goto(
+                cp.LOBBY_URL, wait_until="domcontentloaded", timeout=60000
+            )
+            lobby_page.wait_for_timeout(8000)
+            try:
+                self._scan_lobby_qpid(lobby_page)
+                self.last_qpid_scan_at = time.time()
+            except Exception as e:
+                logger.warning(f"[qpid-scan] initial scan failed: {e}")
+
+            # 再起動後の自動再入場は bet_page で行う（lobby_pageは常駐監視を維持）
             if self.bet_executor.is_live and profile_dir:
                 try:
-                    did_auto_rejoin = self._auto_rejoin_last_table(page, profile_dir)
+                    self._auto_rejoin_last_table(bet_page, profile_dir)
                 except Exception as e:
                     logger.warning(f"[rejoin] unexpected error: {e}")
-
-            if not did_auto_rejoin:
-                logger.info(f"Navigating to {cp.LOBBY_URL}")
-                page.goto(
-                    cp.LOBBY_URL, wait_until="domcontentloaded", timeout=60000
-                )
-                page.wait_for_timeout(8000)
-                try:
-                    self._scan_lobby_qpid(page)
-                    self.last_qpid_scan_at = time.time()
-                except Exception as e:
-                    logger.warning(f"[qpid-scan] initial scan failed: {e}")
 
             last_report = time.time()
             last_db_stats = time.time()
@@ -899,7 +894,7 @@ class DualLinePragmaticBot(cp.Collector):
             last_msg_count = self.stats_msg
             last_msg_change_at = time.time()
             while not self.stop_flag:
-                page.wait_for_timeout(1000)
+                lobby_page.wait_for_timeout(1000)
                 now = time.time()
 
                 # ── executor tick ──
@@ -1002,7 +997,7 @@ class DualLinePragmaticBot(cp.Collector):
                     >= self.qpid_scan_interval_sec
                 ):
                     try:
-                        self._scan_lobby_qpid(page)
+                        self._scan_lobby_qpid(lobby_page)
                     except Exception as e:
                         logger.warning(f"[qpid-scan] scan failed: {e}")
                     self.last_qpid_scan_at = now
