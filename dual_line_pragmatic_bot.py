@@ -818,7 +818,153 @@ class DualLinePragmaticBot(cp.Collector):
             _send_telegram(f"⚠️ 自動再入場失敗\n手動でテーブルをクリックしてください:\n{table_name or table_id}")
             return True
 
-    # ── run() override: executor ライフサイクル統合 ───────────────
+    # ── VPS API ポーリング ────────────────────────────────────────────
+
+    def _api_get(self, path: str, params: str = "") -> dict:
+        """GET https://master.bafather.uk/api/<path>"""
+        import urllib.request as _ur
+        url = (os.getenv("BACOPY_API_URL", "").rstrip("/") or "https://master.bafather.uk") + path
+        if params:
+            url += "?" + params
+        key = os.getenv("BACOPY_API_KEY", "").strip()
+        try:
+            req = _ur.Request(url, headers={"Authorization": f"Bearer {key}"})
+            with _ur.urlopen(req, timeout=10) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except Exception as e:
+            logger.debug(f"[API] GET {path} failed: {e}")
+            return {}
+
+    def _api_post(self, path: str, data: dict) -> dict:
+        """POST https://master.bafather.uk/api/<path>"""
+        import urllib.request as _ur
+        url = (os.getenv("BACOPY_API_URL", "").rstrip("/") or "https://master.bafather.uk") + path
+        key = os.getenv("BACOPY_API_KEY", "").strip()
+        try:
+            body = json.dumps(data).encode("utf-8")
+            req = _ur.Request(url, data=body, headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+            }, method="POST")
+            with _ur.urlopen(req, timeout=10) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except Exception as e:
+            logger.debug(f"[API] POST {path} failed: {e}")
+            return {}
+
+    def _check_preposition(self) -> None:
+        """VPS の事前入場指示をポーリング。WARM テーブルへ事前入場。"""
+        if not self.bet_executor.is_live:
+            return
+        data = self._api_get("/api/preposition")
+        table_id = str(data.get("table_id") or "").strip()
+        if not table_id:
+            return
+        # 同じテーブルへの重複リクエストはスキップ
+        if table_id == getattr(self, "_last_preposition_id", ""):
+            return
+        self._last_preposition_id = table_id
+        table_name = str(data.get("table_name") or "")
+        score = int(data.get("score") or 1)
+        if self.bet_executor.can_switch():
+            logger.info(f"[BOT] pre-positioning → {table_name} (score={score})")
+            try:
+                self.bet_executor._request_switch(table_id, table_name, table_id)
+            except Exception as e:
+                logger.warning(f"[BOT] pre-position switch failed: {e}")
+
+    def _handle_decision(self, decision: dict) -> None:
+        """VPS からの BET decision を受け取り、executor 経由で BET 実行。"""
+        did = str(decision.get("decision_id") or "")
+        fa = decision.get("friend_action") or {}
+        if not isinstance(fa, dict):
+            return
+        side = str(fa.get("side") or "").upper()
+        if side not in ("P", "B"):
+            return
+        table_id = str(decision.get("table_id") or "")
+        table_name = str(decision.get("table_name") or "")
+
+        bet_amount = self.money.next_bet()
+        logger.info(f"[BOT] decision received: {did} side={side} table={table_name} amount=${bet_amount}")
+
+        metadata = {"table_name": table_name, "qpid_table_id": table_id}
+        bet_id = self.bet_executor.place_bet(table_id, side, bet_amount, metadata)
+
+        self._pending_decisions[did] = {
+            "side": side, "amount": bet_amount,
+            "table_id": table_id, "table_name": table_name,
+            "bet_id": str(bet_id or ""), "placed_at": time.time(),
+        }
+        self.total_signals += 1
+
+        # ACK
+        self._api_post(f"/api/decisions/{did}/ack", {
+            "ack": {"executor_id": "gui-1", "placed_at": _utc_now_iso()},
+            "status": "processing",
+        })
+        _send_telegram(
+            f"🎯 BET 実行\n{table_name}\nSide: {side} ${bet_amount:.2f}\ndecision: {did[:12]}"
+        )
+
+    def _check_decision_results(self) -> None:
+        """status=done の decision を取得して BetManager を更新。"""
+        if not self._pending_decisions:
+            return
+        data = self._api_get("/api/decisions/pending", "status=done&limit=50")
+        for d in (data.get("decisions") or []):
+            did = str(d.get("decision_id") or "")
+            if did not in self._pending_decisions:
+                continue
+            pending = self._pending_decisions.pop(did)
+            result = d.get("result") or {}
+            won = bool(result.get("won"))
+            tie = bool(result.get("tie"))
+            outcome = str(result.get("outcome") or "?")
+            self.money.apply_result(won)
+            if tie:
+                self.ties += 1
+            elif won:
+                self.wins += 1
+            else:
+                self.losses += 1
+            self.total_resolved += 1
+            pnl_delta = (pending["amount"] * COMMISSION_BANKER if won and pending["side"] == "B"
+                         else pending["amount"] if won else -pending["amount"]) if not tie else 0.0
+            self.virtual_pnl += pnl_delta
+            self._save_state()
+            icon = "✅" if won else ("🔵" if tie else "❌")
+            ms = self.money.status_dict()
+            _send_telegram(
+                f"{icon} {'WIN' if won else ('TIE' if tie else 'LOSE')}\n"
+                f"outcome: {outcome}\n"
+                f"pnl: ${pnl_delta:+.2f} | cum: ${self.virtual_pnl:+.2f}\n"
+                f"W/L/T: {self.wins}/{self.losses}/{self.ties}\n"
+                f"next: ${ms['next_bet']}"
+            )
+
+    def _decisions_poll_loop(self) -> None:
+        """background thread: VPS API を long-poll して BET decision を受信。"""
+        api_url = (os.getenv("BACOPY_API_URL", "").rstrip("/") or "https://master.bafather.uk")
+        key = os.getenv("BACOPY_API_KEY", "").strip()
+        import urllib.request as _ur
+        while not getattr(self, "_stop_decision_poll", False):
+            try:
+                url = f"{api_url}/api/decisions/wait?provider=pragmatic&wait_sec=20"
+                req = _ur.Request(url, headers={"Authorization": f"Bearer {key}"})
+                with _ur.urlopen(req, timeout=30) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+                for d in (data.get("decisions") or []):
+                    if not getattr(self, "_stop_decision_poll", False):
+                        try:
+                            self._handle_decision(d)
+                        except Exception as e:
+                            logger.warning(f"[BOT] handle_decision error: {e}")
+            except Exception as e:
+                logger.debug(f"[BOT] decision poll error: {e}")
+                time.sleep(3)
+
+    # ── run() override: VPS API ポーリング方式 ─────────────────────
 
     def run(
         self,
@@ -826,8 +972,16 @@ class DualLinePragmaticBot(cp.Collector):
         profile_dir: Path | None = None,
         cookies_file: Path | None = None,
     ):
-        """Collector.run() を override し、LiveBetExecutor の tick を追加。"""
+        """VPS が lobby WS を監視する新アーキテクチャ。
+        GUI は bet_page のみ使用し、VPS API から BET 指示を受け取る。
+        """
         import json as _json  # noqa: F811
+
+        # 新アーキテクチャ: VPS が lobby WS 監視、GUI は bet_page のみ使用
+        # 決定事項トラッキング初期化
+        self._pending_decisions: dict[str, dict] = {}
+        self._last_preposition_id: str = ""
+        self._stop_decision_poll = False
 
         cp.init_db()
         profile = profile_dir or cp.DEFAULT_PROFILE
@@ -861,22 +1015,20 @@ class DualLinePragmaticBot(cp.Collector):
         report_interval = 60
 
         with cp.Camoufox(**launch_opts) as ctx:
-            lobby_page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            bet_page = ctx.new_page()
-            lobby_page.on("websocket", self._on_ws)
+            # bet_page のみ作成（lobby monitoring は VPS が担当）
+            bet_page = ctx.pages[0] if ctx.pages else ctx.new_page()
             bet_page.on("websocket", self._on_ws)
 
-            # executor setup: _on_ws 経由で context を渡せなかった場合の fallback
+            # executor setup
             if self.bet_executor.is_live and not getattr(
                 self.bet_executor, "_context", None
             ):
                 try:
-                    self.bet_executor.setup(ctx, lobby_page, bet_page)
-                    logger.info("[BOT] executor context injected (fallback in run)")
+                    self.bet_executor.setup(ctx, bet_page, bet_page)
+                    logger.info("[BOT] executor context injected (run)")
                 except Exception as e:
-                    logger.warning(f"[BOT] executor setup fallback failed: {e}")
+                    logger.warning(f"[BOT] executor setup failed: {e}")
 
-            # プロファイルディレクトリを executor に伝える (last_table.json 保存用)
             if self.bet_executor.is_live and profile_dir:
                 try:
                     self.bet_executor.set_profile_dir(str(profile_dir))
@@ -892,39 +1044,38 @@ class DualLinePragmaticBot(cp.Collector):
                 except Exception as e:
                     logger.warning(f"Cookie restore failed: {e}")
 
-            logger.info(f"Navigating lobby to {cp.LOBBY_URL}")
-            lobby_page.goto(
-                cp.LOBBY_URL, wait_until="domcontentloaded", timeout=60000
-            )
-            lobby_page.wait_for_timeout(8000)
+            # bet_page をロビーに配置（最初の preposition/switch の準備）
+            logger.info(f"Navigating bet_page to {cp.LOBBY_URL}")
             try:
-                self._scan_lobby_qpid(lobby_page)
-                self.last_qpid_scan_at = time.time()
+                bet_page.goto(cp.LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
+                bet_page.wait_for_timeout(3000)
             except Exception as e:
-                logger.warning(f"[qpid-scan] initial scan failed: {e}")
+                logger.warning(f"[BOT] lobby nav failed: {e}")
 
-            # 再起動後の自動再入場は bet_page で行う（lobby_pageは常駐監視を維持）
-            if self.bet_executor.is_live and profile_dir:
-                try:
-                    self._auto_rejoin_last_table(bet_page, profile_dir)
-                except Exception as e:
-                    logger.warning(f"[rejoin] unexpected error: {e}")
+            # BET decision polling thread (background)
+            import threading as _threading
+            poll_thread = _threading.Thread(
+                target=self._decisions_poll_loop, daemon=True, name="decision-poll"
+            )
+            poll_thread.start()
+            logger.info("[BOT] VPS API polling started (decisions + preposition)")
+            _send_telegram(
+                f"📡 ロビー監視中\n"
+                f"VPS監視: hakudasama@gmail.com\n"
+                f"シグナル発生時に自動テーブル入場・BETします\n"
+                f"手動操作は不要です"
+            )
 
             last_report = time.time()
-            last_db_stats = time.time()
             last_executor_tick = time.time()
-            last_rebalance_at = time.time() - 5  # 初回は即実行
-            ws_watchdog_stale_sec = int(
-                os.getenv("BACOPY_COLLECTOR_WS_STALE_SEC", "180")
-            )
-            last_msg_check_at = time.time()
-            last_msg_count = self.stats_msg
-            last_msg_change_at = time.time()
+            last_prepos_check = time.time() - 10  # 初回即チェック
+            last_result_check = time.time()
+
             while not self.stop_flag:
-                lobby_page.wait_for_timeout(1000)
+                bet_page.wait_for_timeout(1000)
                 now = time.time()
 
-                # ── executor tick ──
+                # executor tick (bet_page の WS 処理)
                 if self.bet_executor.is_live:
                     if now - last_executor_tick >= 0.5:
                         try:
@@ -933,121 +1084,52 @@ class DualLinePragmaticBot(cp.Collector):
                             logger.debug(f"[BOT] executor tick error: {e}")
                         last_executor_tick = now
 
-                    # executor が table page を開いた → game WS フレームを
-                    # Collector の _on_ws で捕捉できるよう再ブロードキャスト
-                    if (
-                        not self._game_ws_url
-                        and hasattr(self.bet_executor, "_game_ws_url")
-                        and self.bet_executor._game_ws_url
-                    ):
-                        self._game_ws_url = self.bet_executor._game_ws_url
+                # VPS preposition ポーリング (10秒ごと)
+                if now - last_prepos_check >= 10.0:
+                    last_prepos_check = now
+                    try:
+                        self._check_preposition()
+                    except Exception as e:
+                        logger.debug(f"[BOT] preposition poll error: {e}")
 
-                    # 事前ポジショニング: WARM(score>=1)テーブルに事前入場
-                    # シグナル発生の1〜2手前にbet_pageを対象テーブルに入れておく。
-                    # シグナル発生時はすでにテーブル内なので即BETできる。
-                    if (
-                        self.bet_executor.is_live
-                        and now - last_rebalance_at >= 15.0
-                        and self.bet_executor.can_switch()
-                        and not self.pending
-                    ):
-                        last_rebalance_at = now
-                        try:
-                            self._rebalance_tables()
-                        except Exception as e:
-                            logger.debug(f"[rebalance] error: {e}")
+                # decision result ポーリング (10秒ごと)
+                if now - last_result_check >= 10.0:
+                    last_result_check = now
+                    try:
+                        self._check_decision_results()
+                    except Exception as e:
+                        logger.debug(f"[BOT] result poll error: {e}")
 
-                    # executor の現在テーブル名を補完（通知用）
-                    if self.bet_executor.is_live:
-                        ctid = getattr(self.bet_executor, "current_table_id", "")
-                        if ctid:
-                            buf = self.buffers.get(ctid)
-                            if not buf:
-                                for _b in self.buffers.values():
-                                    if str(getattr(_b, "qpid_table_id", "") or "") == str(ctid):
-                                        buf = _b
-                                        break
-                            tname = (buf.table_name if buf else None) or ""
-                            if tname:
-                                try:
-                                    self.bet_executor.set_table_name(ctid, tname)
-                                except Exception:
-                                    pass
-
+                # 定期ステータスレポート
                 if now - last_report >= report_interval:
                     elapsed = int(now - start_ts)
+                    n_nt = self.wins + self.losses
+                    wr = self.wins / n_nt * 100 if n_nt else 0
+                    ms = self.money.status_dict()
+                    mode_label = "LIVE" if self.bet_executor.is_live else "DRY"
                     logger.info(
-                        f"[STATUS] elapsed={elapsed}s  msgs={self.stats_msg}  "
-                        f"shuffles={self.stats_shuffle}  saved={self.stats_save}  "
-                        f"tables={len(self.buffers)}"
+                        f"[STATUS] elapsed={elapsed}s  signals={self.total_signals}  "
+                        f"resolved={self.total_resolved}  W/L={self.wins}/{self.losses}  "
+                        f"pnl=${self.virtual_pnl:+.2f}  next=${ms['next_bet']}"
                     )
-                    # 5分ごとにTelegram通知
                     if now - getattr(self, "_last_tg_status", 0) >= 300:
-                        n_nt = self.wins + self.losses
-                        wr = self.wins / n_nt * 100 if n_nt else 0
-                        ms = self.money.status_dict()
-                        mode_label = "LIVE" if self.bet_executor.is_live else "DRY"
                         _send_telegram(
                             f"📊 定期ステータス [{mode_label}]\n"
                             f"稼働: {elapsed//60}分\n"
                             f"signals: {self.total_signals} / resolved: {self.total_resolved}\n"
                             f"W/L/T: {self.wins}/{self.losses}/{self.ties} ({wr:.1f}%)\n"
                             f"cumPnL: ${self.virtual_pnl:+.2f}\n"
-                            f"session: ${ms['session_pnl']:+.2f} next: ${ms['next_bet']}\n"
-                            f"tables: {len(self.buffers)} active: {sum(self.shoe_active.values())}"
+                            f"session: ${ms['session_pnl']:+.2f} next: ${ms['next_bet']}"
                         )
                         self._last_tg_status = now
                     last_report = now
 
-                if now - last_msg_check_at >= 30.0:
-                    if self.stats_msg > last_msg_count:
-                        last_msg_count = self.stats_msg
-                        last_msg_change_at = now
-                    last_msg_check_at = now
-                    silence = now - last_msg_change_at
-                    if silence >= ws_watchdog_stale_sec:
-                        # テーブル入場中はロビーWSが無音になるのは正常。watchdog を抑制。
-                        in_table = (
-                            self.bet_executor.is_live
-                            and getattr(self.bet_executor, "is_ready", False)
-                        )
-                        if in_table:
-                            last_msg_change_at = now  # watchdog リセット
-                            logger.debug(
-                                f"[ws-watchdog] suppressed (in table): silence={int(silence)}s"
-                            )
-                        else:
-                            logger.error(
-                                f"[ws-watchdog] no new msgs for {int(silence)}s "
-                                f"(stats_msg={self.stats_msg}). Triggering self-restart via exit(1)."
-                            )
-                            _send_telegram(
-                                f"🔴 WS watchdog 発火 → 自動再起動\n"
-                                f"{int(silence)}秒間メッセージなし\n"
-                                f"total_msgs={self.stats_msg}\n"
-                                f"signals={self.total_signals} PnL=${self.virtual_pnl:+.2f}"
-                            )
-                            os._exit(1)
-                if now - last_db_stats >= 300:
-                    s = cp.stats()
-                    logger.info(f"[DB] {s}")
-                    last_db_stats = now
-                if (
-                    self.qpid_scan_interval_sec > 0
-                    and now - self.last_qpid_scan_at
-                    >= self.qpid_scan_interval_sec
-                ):
-                    try:
-                        self._scan_lobby_qpid(lobby_page)
-                    except Exception as e:
-                        logger.warning(f"[qpid-scan] scan failed: {e}")
-                    self.last_qpid_scan_at = now
                 if duration and (now - start_ts) >= duration:
                     logger.info(f"Duration {duration}s reached, stopping.")
                     break
 
-        logger.info(f"Final: msgs={self.stats_msg}  saved={self.stats_save}")
-        logger.info(f"DB stats: {cp.stats()}")
+        self._stop_decision_poll = True
+        logger.info(f"Final: signals={self.total_signals} resolved={self.total_resolved} pnl=${self.virtual_pnl:+.2f}")
         return 0
 
 
