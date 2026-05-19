@@ -240,23 +240,54 @@ def _find_lobby_frames(page) -> list:
 
 _LOBBY_CLICK_JS = r"""
 (args) => {
-  const qpid = String(args.qpid || '');
-  const tableId = String(args.tableId || '');
+  const qpid = String(args.qpid || '').trim();
+  const tableId = String(args.tableId || '').trim();
   const candidates = (Array.isArray(args.candidates) ? args.candidates : [])
     .map(s => String(s || '').trim()).filter(Boolean);
 
   const tryClick = (el) => {
     try {
-      if (el.click) el.click();
-      else {
-        const ev = new MouseEvent('click', {bubbles: true, cancelable: true});
-        el.dispatchEvent(ev);
+      // 最上位の clickable 祖先を探す
+      let target = el;
+      let depth = 0;
+      while (target && depth < 5) {
+        const tag = (target.tagName || '').toLowerCase();
+        const role = (target.getAttribute ? target.getAttribute('role') : '') || '';
+        if (tag === 'a' || tag === 'button' || role === 'button') break;
+        target = target.parentElement;
+        depth++;
       }
+      (target || el).click();
       return true;
-    } catch (e) { return false; }
+    } catch (e) {
+      try { el.click(); return true; } catch(e2) { return false; }
+    }
   };
 
-  const matches = (el) => {
+  // qpid が /snaps/<qpid>/ パスを含むか（最も確実な方法）
+  const hasQpidSnap = (el) => {
+    if (!qpid) return false;
+    const snapPath = '/snaps/' + qpid + '/';
+    // outerHTML に background-image URL が含まれる
+    try {
+      const html = el.outerHTML || '';
+      if (html.includes(snapPath)) return true;
+    } catch(e) {}
+    // style の background-image
+    try {
+      const style = window.getComputedStyle(el);
+      if ((style.backgroundImage || '').includes(snapPath)) return true;
+    } catch(e) {}
+    // data 属性・href・src
+    try {
+      const ds = el.dataset || {};
+      const attrs = [el.href||'', el.src||'',
+        ds.qpid||'', ds.tableQpid||'', ds.tableId||'', ds.tableid||''];
+      return attrs.some(a => a.includes(snapPath) || a === qpid);
+    } catch(e) { return false; }
+  };
+
+  const matchesText = (el) => {
     const ds = (el && el.dataset) || {};
     const attrs = [];
     try {
@@ -270,42 +301,66 @@ _LOBBY_CLICK_JS = r"""
       ds.tableId || '', ds.tableid || '', ds.table || '',
       ...attrs
     ].join(' ');
-
-    if (qpid && text.includes(qpid)) return true;
     if (tableId && text.includes(tableId)) return true;
     for (const c of candidates) {
-      if (c && text.includes(c)) return true;
+      if (c && text.toLowerCase().includes(c.toLowerCase())) return true;
     }
     return false;
   };
 
-  // Strategy 1: data attributes
+  // Strategy 1: qpid による /snaps/<qpid>/ マッチ（最優先・最確実）
+  if (qpid) {
+    // CSS セレクタで直接狙う
+    const snapSelectors = [
+      'a[href*="/snaps/' + qpid + '/"]',
+      'img[src*="/snaps/' + qpid + '/"]',
+      '[data-qpid="' + qpid + '"]',
+      '[data-table-qpid="' + qpid + '"]',
+      '[data-tableid="' + qpid + '"]',
+    ];
+    for (const sel of snapSelectors) {
+      try {
+        const el = document.querySelector(sel);
+        if (el) {
+          tryClick(el);
+          return { clicked: true, strategy: 'qpid-selector', sel, qpid };
+        }
+      } catch(e) {}
+    }
+    // outerHTML スキャン（background-image 対応）
+    const allEls = document.querySelectorAll('a, button, [role="button"], div, img');
+    for (const el of allEls) {
+      if (hasQpidSnap(el)) {
+        tryClick(el);
+        return { clicked: true, strategy: 'qpid-html', qpid };
+      }
+    }
+  }
+
+  // Strategy 2: テキスト・属性マッチ
   const all = document.querySelectorAll(
     'a, button, [role="button"], [data-table-id], [data-tableid], [data-table-name], img'
   );
   for (const el of all) {
-    if (matches(el)) {
+    if (matchesText(el)) {
       tryClick(el);
-      return { clicked: true, strategy: 'attr', text: (el.innerText || '').slice(0, 60) };
+      return { clicked: true, strategy: 'text', text: (el.innerText || '').slice(0, 60) };
     }
   }
 
-  // Strategy 2: broader search with scrolling
+  // Strategy 3: スクロールして再検索
   const maxScroll = Number(args.maxScroll || 0) || 0;
-  for (let s = 0; s <= maxScroll; s++) {
-    if (s > 0) {
-      window.scrollBy(0, 300);
-      // yield to render
-      const start = Date.now();
-      while (Date.now() - start < 500) { /* busy-wait for rendering */ }
-    }
+  for (let s = 1; s <= maxScroll; s++) {
+    window.scrollBy(0, 300);
+    const start = Date.now();
+    while (Date.now() - start < 300) {}
     const all2 = document.querySelectorAll(
       'a, button, [role="button"], img, [class*="table"], [class*="Table"], [class*="game"]'
     );
     for (const el of all2) {
-      if (matches(el)) {
+      if (hasQpidSnap(el) || matchesText(el)) {
         tryClick(el);
-        return { clicked: true, strategy: 'scroll', scroll: s, text: (el.innerText || '').slice(0, 60) };
+        return { clicked: true, strategy: 'scroll', scroll: s };
       }
     }
   }
@@ -346,8 +401,9 @@ class LiveBetExecutor:
 
         # bet 管理
         self._pending_bet: dict | None = None
-        self._pending_switch_to: str = ""   # 切替先 table_id
+        self._pending_switch_to: str = ""    # 切替先 table_id
         self._pending_switch_name: str = ""  # 切替先 table_name
+        self._pending_switch_qpid: str = ""  # 切替先 qpid (最重要)
         self._bet_id_counter: int = 0
         self._bet_result: dict | None = None
 
@@ -406,14 +462,15 @@ class LiveBetExecutor:
         self._lobby_page = lobby_page
         logger.info("[LIVE] executor setup complete")
 
-    def _request_switch(self, table_id: str, table_name: str = "") -> None:
+    def _request_switch(self, table_id: str, table_name: str = "", qpid: str = "") -> None:
         """テーブル切替をリクエスト。"""
         if self._phase == "entering" and self._table_id == table_id:
             return  # すでに入場中
         self._pending_switch_to = table_id
         self._pending_switch_name = table_name
+        self._pending_switch_qpid = qpid
         logger.info(
-            f"[LIVE] switch requested: {table_id} name={table_name!r} (current={self._table_id or 'none'})"
+            f"[LIVE] switch requested: {table_id} name={table_name!r} qpid={qpid!r} (current={self._table_id or 'none'})"
         )
 
     def tick(self) -> None:
@@ -532,8 +589,8 @@ class LiveBetExecutor:
             if not lobby_ok:
                 logger.warning(f"[LIVE] lobby iframe not found for table {table_id}")
 
-            # table id / table name を click
-            self._click_table(page, table_id, self._pending_switch_name)
+            # qpid を最優先でクリック（/snaps/<qpid>/ パターンで確実ヒット）
+            self._click_table(page, table_id, self._pending_switch_name, self._pending_switch_qpid)
 
             # ブラウザ②を右側・大きめに固定配置（ユーザーが見やすいよう）
             try:
@@ -548,13 +605,14 @@ class LiveBetExecutor:
             self._phase = "idle"
             self._table_id = ""
 
-    def _click_table(self, page: Any, table_id: str, table_name: str = "") -> None:
-        """lobby DOM から table を探して click。テーブル名も候補に含める。"""
+    def _click_table(self, page: Any, table_id: str, table_name: str = "", qpid: str = "") -> None:
+        """lobby DOM から table を探して click。qpid が最優先。"""
         candidates = [c for c in [table_id, table_name] if c]
+        logger.info(f"[LIVE] click_table: tableId={table_id} name={table_name!r} qpid={qpid!r}")
         for fr in _find_lobby_frames(page):
             try:
                 res = fr.evaluate(_LOBBY_CLICK_JS, {
-                    "qpid": "",
+                    "qpid": qpid,
                     "tableId": table_id,
                     "candidates": candidates,
                     "maxScroll": 10,
@@ -569,10 +627,10 @@ class LiveBetExecutor:
             except Exception as e:
                 logger.debug(f"[LIVE] click attempt on frame failed: {e}")
 
-        # fallback: page 直接
+        # fallback: page 直接（iframe が見つからない場合）
         try:
             page.evaluate(_LOBBY_CLICK_JS, {
-                "qpid": "",
+                "qpid": qpid,
                 "tableId": table_id,
                 "candidates": candidates,
                 "maxScroll": 5,

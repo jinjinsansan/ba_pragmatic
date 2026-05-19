@@ -555,14 +555,15 @@ class DualLinePragmaticBot(cp.Collector):
             score_label = {0: "COLD", 1: "WARM🟡", 2: "HOT🔴"}.get(score, str(score))
             buf = self.buffers.get(best)
             tname = (buf.table_name if buf else None) or best
+            qpid = (buf.qpid_table_id if buf else None) or ""
             logger.info(
-                f"[rebalance] switching game WS to table {best} (score={score})"
+                f"[rebalance] switching game WS to table {best} name={tname!r} qpid={qpid!r} (score={score})"
             )
-            send_log(f"switch → {tname} (score={score_label})")
+            send_log(f"switch → {tname} qpid={qpid or '?'} (score={score_label})")
             _send_telegram(
                 f"🔀 テーブル切替\n{tname}\nスコア: {score_label}\n→ game WS 入場開始"
             )
-            self.bet_executor._request_switch(best, tname)
+            self.bet_executor._request_switch(best, tname, qpid)
 
     def _resolve_prediction(
         self, table_id: str, buf, pending: dict, outcome: str, new_hand: dict
