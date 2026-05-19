@@ -113,6 +113,11 @@ class LiveBetExecutor:
         self._game_ws_url: str = ""          # 検出した game WS URL
         self._table_id: str = ""             # tableId (operator numeric)
         self._table_name: str = ""           # テーブル名
+
+        # keep-alive / inactivity / WS silence 対策
+        self._last_keep_alive_at: float = 0.0
+        self._last_game_ws_recv_at: float = 0.0
+        self._last_inactivity_check_at: float = 0.0
         self._user_id: str = ""              # userId (for lpbet)
         self._game_id: str = ""              # current game id
         self._phase: str = "waiting"         # waiting | ready | betting
@@ -280,6 +285,7 @@ class LiveBetExecutor:
             if uid and not self._user_id:
                 self._user_id = uid
                 logger.info(f"[LIVE] user_id: ...{uid[-8:]}")
+            self._last_game_ws_recv_at = time.time()
             return
 
         # XML
@@ -324,16 +330,17 @@ class LiveBetExecutor:
 
     def tick(self) -> None:
         now = time.time()
+        page = self._lobby_page
 
         # 5秒ごとにブリッジを再注入（フレーム遷移・新フレームに備える）
         if now - self._last_bridge_inject > 5.0:
             self._last_bridge_inject = now
-            if self._lobby_page:
-                self._inject_all(self._lobby_page)
+            if page:
+                self._inject_all(page)
             try:
-                for page in (self._context.pages or []):
-                    if page != self._lobby_page:
-                        self._inject_all(page)
+                for p in (self._context.pages or []):
+                    if p != page:
+                        self._inject_all(p)
             except Exception:
                 pass
 
@@ -343,6 +350,45 @@ class LiveBetExecutor:
             if now - self._last_bets_open_at > max_age + 2:
                 if self._bets_open_game_id != self._bets_closed_game_id:
                     self._bets_closed_game_id = self._bets_open_game_id
+
+        if page is None:
+            return
+
+        # ── 受け子モードから移植: keep-alive / inactivity / WS silence ──
+
+        # keep-alive: 90秒ごとにマウス微動 (Stake 非アクティブモーダル予防)
+        if now - self._last_keep_alive_at >= 90.0:
+            self._last_keep_alive_at = now
+            try:
+                from bacopy_executor_pragmatic_ws_live import _send_keep_alive
+                _send_keep_alive(page, None)
+            except Exception as e:
+                logger.debug(f"[LIVE] keep_alive error: {e}")
+
+        # inactivity モーダル検出・解除 (10秒ごと)
+        if now - self._last_inactivity_check_at >= 10.0:
+            self._last_inactivity_check_at = now
+            try:
+                from bacopy_executor_pragmatic_ws_live import _dismiss_inactivity_modal
+                _dismiss_inactivity_modal(page, None)
+            except Exception as e:
+                logger.debug(f"[LIVE] inactivity check error: {e}")
+
+        # game WS 沈黙 150s → 動画クリックで強制復活
+        if (
+            self._phase == "ready"
+            and self._last_game_ws_recv_at > 0
+            and now - self._last_game_ws_recv_at >= 150.0
+        ):
+            logger.warning(
+                f"[LIVE] game WS silent {int(now - self._last_game_ws_recv_at)}s — video click"
+            )
+            self._last_game_ws_recv_at = now  # 連打防止
+            try:
+                from bacopy_executor_pragmatic_ws_live import _click_live_video_center
+                _click_live_video_center(page)
+            except Exception as e:
+                logger.debug(f"[LIVE] video click error: {e}")
 
     # ── BET API ──────────────────────────────────────────────────────
 

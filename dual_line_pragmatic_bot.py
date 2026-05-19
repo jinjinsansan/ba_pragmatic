@@ -766,59 +766,45 @@ class DualLinePragmaticBot(cp.Collector):
         logger.info(f"[rejoin] 前回テーブル: {table_id} ({table_name}) — 自動クリック試行")
         _send_telegram(f"🔄 再起動: 前回テーブル {table_name or table_id} へ自動再入場試行中...")
 
-        # 各フレームで直接評価 (クロスオリジンiframeはcontentDocument不可なので
-        # Playwright の page.frames API を使う)
-        _CLICK_JS = r"""
-        (tableId) => {
-          const els = document.querySelectorAll(
-            'img, a, [style*="background-image"], [data-table-id], [data-tableid], [class*="table"], [class*="Table"]'
-          );
-          for (const el of els) {
-            const vals = [
-              el.src || '', el.href || '',
-              el.getAttribute('style') || '',
-              el.getAttribute('data-table-id') || '',
-              el.getAttribute('data-tableid') || '',
-            ];
-            if (vals.some(v => v.includes(tableId))) {
-              let target = el;
-              for (let d = 0; d < 6 && target; d++) {
-                if (target.tagName === 'A' || target.tagName === 'BUTTON' ||
-                    target.getAttribute('role') === 'button' ||
-                    target.onclick != null) break;
-                target = target.parentElement;
-              }
-              (target || el).click();
-              return {ok: true, tag: (target || el).tagName};
-            }
-          }
-          return {ok: false};
-        }
-        """
+        # 受け子モードの実績ある _join_table ロジックを再利用
+        try:
+            from bacopy_executor_pragmatic_ws_live import (
+                find_lobby_frames,
+                _LOBBY_TRY_CLICK_JS,
+            )
+        except Exception as e:
+            logger.warning(f"[rejoin] import 失敗: {e} — フォールバック: 手動入場")
+            _send_telegram(f"⚠️ 自動再入場不可\n手動でテーブルをクリックしてください:\n{table_name or table_id}")
+            return
 
-        for attempt in range(4):
-            # Playwright の frames API で全フレームを直接評価 (クロスオリジン対応)
-            all_frames = [page]
-            try:
-                all_frames += [f for f in page.frames if f != page]
-            except Exception:
-                pass
-
-            for frame in all_frames:
+        deadline = time.time() + 60.0  # 最大60秒試行
+        clicked = False
+        while time.time() < deadline and not clicked:
+            lobby_frames = find_lobby_frames(page)
+            for fr in lobby_frames:
                 try:
-                    res = frame.evaluate(_CLICK_JS, table_id)
-                    if isinstance(res, dict) and res.get("ok"):
-                        fname = getattr(frame, "name", "?") or getattr(frame, "url", "?")[:40]
-                        logger.info(f"[rejoin] クリック成功 frame={fname} attempt={attempt+1}")
-                        _send_telegram(f"✅ テーブル再入場クリック成功: {table_name or table_id}")
-                        return
+                    res = fr.evaluate(_LOBBY_TRY_CLICK_JS, {
+                        "qpid": table_id,
+                        "candidates": [table_name] if table_name else [],
+                        "maxScroll": 30,
+                    })
                 except Exception as e:
                     logger.debug(f"[rejoin] frame evaluate エラー: {e}")
-            if attempt < 3:
-                page.wait_for_timeout(5000)
+                    continue
+                if isinstance(res, dict) and res.get("clicked"):
+                    logger.info(
+                        f"[rejoin] クリック成功 type={res.get('matchType')} "
+                        f"via={res.get('via')} frame={getattr(fr,'url','')[:60]}"
+                    )
+                    _send_telegram(f"✅ テーブル再入場クリック成功: {table_name or table_id}")
+                    clicked = True
+                    break
+            if not clicked:
+                page.wait_for_timeout(3000)
 
-        logger.warning(f"[rejoin] 自動クリック失敗 — 手動入場してください: {table_name or table_id}")
-        _send_telegram(f"⚠️ 自動再入場失敗\n手動でテーブルをクリックしてください:\n{table_name or table_id}")
+        if not clicked:
+            logger.warning(f"[rejoin] 自動クリック失敗 — 手動入場してください: {table_name or table_id}")
+            _send_telegram(f"⚠️ 自動再入場失敗\n手動でテーブルをクリックしてください:\n{table_name or table_id}")
 
     # ── run() override: executor ライフサイクル統合 ───────────────
 
