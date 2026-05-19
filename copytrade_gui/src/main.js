@@ -640,7 +640,8 @@ function buildSpawnSpec(config) {
   const waitSec = (config && Number.isFinite(Number(config.auto_click_wait_sec))) ? Number(config.auto_click_wait_sec) : 90;
   args.push('--auto-click-wait-sec', String(waitSec));
 
-  if (config && config.headless) args.push('--headless');
+  // dual-line は手動でテーブルを選ぶため headless を禁止
+  if (config && config.headless && !isDualLine) args.push('--headless');
 
 
 

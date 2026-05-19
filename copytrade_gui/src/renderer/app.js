@@ -426,6 +426,7 @@ async function startBotFlow({ auto = false } = {}) {
   const config = {
     ...buildStartConfig(),
     mode: isDL ? 'dual_line' : 'executor',
+    headless: isDL ? false : !!settings.headless,
     live: settings.dual_live || false,
     money_mode: settings.dual_money_mode || 'flat',
     money_unit: settings.dual_unit || 100,
@@ -1093,7 +1094,7 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     allow_banker: $('#inputAllowBanker')?.checked,
     allow_tie: $('#inputAllowTie')?.checked,
     assume_bc_012: $('#inputAssumeBc012')?.checked,
-    headless: $('#inputHeadless').checked,
+    headless: isDualLine ? false : $('#inputHeadless').checked,
     // dual-line settings
     mode: isDualLine ? 'dual_line' : 'executor',
     dual_money_mode: $('#inputDualMoneyMode')?.value || 'flat',

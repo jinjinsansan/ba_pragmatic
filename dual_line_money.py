@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional
@@ -114,6 +115,9 @@ class BetManager:
 
         # Martingale 状態
         self.loss_count: int = 0
+        self.martingale_max_bet: float = float(
+            os.getenv("BACOPY_MARTINGALE_MAX_BET", "0") or 0
+        )
 
         # 前回のベット額（結果反映まで保持）
         self._last_bet_amount: float = 0.0
@@ -142,7 +146,16 @@ class BetManager:
         if self.mode == "flat":
             return self.unit
         elif self.mode == "martingale":
-            return self.unit * (2 ** self.loss_count)
+            amount = self.unit * (2 ** self.loss_count)
+            if self.martingale_max_bet > 0:
+                amount = min(amount, self.martingale_max_bet)
+            if self.loss_cut > 0:
+                # 損切り残額を超えるベットは行わない
+                remaining_loss = self.loss_cut + self.session_pnl
+                if remaining_loss <= 0:
+                    return 0.0
+                amount = min(amount, remaining_loss)
+            return max(amount, 0.0)
         else:
             seq = self.current_seq
             level = min(self.seq_level, len(seq) - 1)
@@ -250,6 +263,7 @@ class BetManager:
             "win_rate": round(self.win_rate, 1),
             "seq_level": self.seq_level,
             "loss_count": self.loss_count,
+            "martingale_max_bet": self.martingale_max_bet,
             "limit_reached": self.limit_reached,
             "limit_reason": self.limit_reason,
             "next_bet": round(self._compute_next_bet(), 2),

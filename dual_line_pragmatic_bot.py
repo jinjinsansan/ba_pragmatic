@@ -419,7 +419,7 @@ class DualLinePragmaticBot(cp.Collector):
         seq_chars = []
         for h in (buf.hands or []):
             c = _winner_to_char(h.get("winner"))
-            if c:
+            if c and c != "T":
                 seq_chars.append(c)
         observed_sequence = "".join(seq_chars)
 
@@ -507,7 +507,7 @@ class DualLinePragmaticBot(cp.Collector):
         seq_chars = []
         for h in (buf.hands or []):
             c = _winner_to_char(h.get("winner"))
-            if c:
+            if c and c != "T":
                 seq_chars.append(c)
         seq = "".join(seq_chars)
         next_n = len(seq) + 1
