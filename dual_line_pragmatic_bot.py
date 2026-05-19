@@ -885,6 +885,20 @@ class DualLinePragmaticBot(cp.Collector):
         table_id = str(decision.get("table_id") or "")
         table_name = str(decision.get("table_name") or "")
 
+        # テーブル不一致チェック: 既にテーブル内(ready)なら同一テーブルのみ受け付ける
+        current_table = str(getattr(self.bet_executor, "current_table_id", "") or "")
+        executor_ready = getattr(self.bet_executor, "is_ready", False)
+        if executor_ready and current_table and table_id and current_table != table_id:
+            logger.info(
+                f"[BOT] decision skipped (table mismatch): in={current_table} signal={table_id}"
+            )
+            # ACK して二重処理を防ぐ（betせずに処理済みにする）
+            self._api_post(f"/api/decisions/{did}/ack", {
+                "ack": {"executor_id": "gui-1", "skipped": True, "reason": "table_mismatch"},
+                "status": "skipped",
+            })
+            return
+
         bet_amount = self.money.next_bet()
         logger.info(f"[BOT] decision received: {did} side={side} table={table_name} amount=${bet_amount}")
 
