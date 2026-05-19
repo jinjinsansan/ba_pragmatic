@@ -193,8 +193,17 @@ class LiveBetExecutor:
             logger.info(f"[LIVE] tableId from URL: {self._table_id}")
 
         # WS メッセージを受動的に取得
-        ws.on("framereceived", lambda f: self._on_ws_message(f.body or ""))
-        ws.on("framesent",     lambda f: self._on_ws_sent(f.body or ""))
+        # Playwright のバージョンにより f が str の場合と FrameData の場合がある
+        def _to_data(f) -> str:
+            if isinstance(f, str):
+                return f
+            try:
+                return f.body or ""
+            except Exception:
+                return str(f) if f else ""
+
+        ws.on("framereceived", lambda f: self._on_ws_message(_to_data(f)))
+        ws.on("framesent",     lambda f: self._on_ws_sent(_to_data(f)))
 
         # phase = ready
         if self._phase == "waiting":
