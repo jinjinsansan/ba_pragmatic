@@ -50,15 +50,6 @@ PRAGMATIC_LOBBY_PATTERN = "pragmaticplaylive"
 # 最小有効シュー長 (これ未満ならゴミとみなしスキップ)
 MIN_SHOE_HANDS = 30
 
-# Windows cp932 環境での UnicodeEncodeError を防ぐ
-import sys as _sys
-for _s in (_sys.stdout, _sys.stderr):
-    if _s and hasattr(_s, 'reconfigure'):
-        try:
-            _s.reconfigure(encoding='utf-8', errors='replace')
-        except Exception:
-            pass
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
