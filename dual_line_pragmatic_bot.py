@@ -1084,6 +1084,8 @@ class DualLinePragmaticBot(cp.Collector):
             last_executor_tick = time.time()
             last_prepos_check = time.time() - 10  # 初回即チェック
             last_result_check = time.time()
+            _table_enter_at: dict[str, float] = {}  # table_id -> entered timestamp
+            _TABLE_TIMEOUT = 240.0  # 4分シグナルなし → テーブル離脱
 
             while not self.stop_flag:
                 bet_page.wait_for_timeout(1000)
@@ -1097,6 +1099,17 @@ class DualLinePragmaticBot(cp.Collector):
                         except Exception as e:
                             logger.debug(f"[BOT] executor tick error: {e}")
                         last_executor_tick = now
+
+                # テーブル入場時刻トラッキング + タイムアウト
+                curr_table = str(getattr(self.bet_executor, "current_table_id", "") or "")
+                if curr_table and curr_table not in _table_enter_at:
+                    _table_enter_at[curr_table] = now
+                if (curr_table and self.bet_executor.is_ready
+                        and now - _table_enter_at.get(curr_table, now) > _TABLE_TIMEOUT):
+                    logger.info(f"[BOT] table timeout (4min): {curr_table} → ロビーへ戻る")
+                    self.bet_executor._phase = "waiting"  # type: ignore[attr-defined]
+                    self.bet_executor._table_id = ""       # type: ignore[attr-defined]
+                    _table_enter_at.clear()
 
                 # VPS preposition ポーリング (10秒ごと)
                 if now - last_prepos_check >= 10.0:
