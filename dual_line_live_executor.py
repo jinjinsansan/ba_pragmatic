@@ -497,6 +497,20 @@ class LiveBetExecutor:
             page = self._context.new_page()
             self._table_page = page
 
+            # WebSocket イベントで game WS を直接検出（最も確実）
+            def _on_ws(ws):
+                try:
+                    if GAME_WS_PATTERN in (ws.url or ""):
+                        logger.info(f"[LIVE] game WS detected via event: {ws.url[-80:]}")
+                        if not self._game_ws_detected:
+                            self._game_ws_detected = True
+                            self._phase = "ready"
+                            self._notify(f"🔗 game WS 確立\ntable: {self._table_id}\nBET待機中...")
+                            self._extract_user_id()
+                except Exception:
+                    pass
+            page.on("websocket", _on_ws)
+
             page.goto(PRAGMATIC_LOBBY_URL, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(5000)
 
@@ -569,8 +583,28 @@ class LiveBetExecutor:
 
     def _poll_enter(self) -> None:
         """入場中: game WS が開いたか確認。"""
-        if not self._table_page:
+        if not self._table_page or self._game_ws_detected:
             return
+
+        # URL チェック: game ページに遷移済みか（WS bridge 不要）
+        try:
+            current_url = str(self._table_page.url or "")
+            if GAME_WS_PATTERN in current_url:
+                logger.info(f"[LIVE] game page URL detected: {current_url[-80:]}")
+                self._game_ws_detected = True
+                self._phase = "ready"
+                self._notify(f"🔗 game WS 確立 (URL)\ntable: {self._table_id}\nBET待機中...")
+                self._extract_user_id()
+                return
+        except Exception:
+            pass
+
+        # WS bridge を再注入（ページ遷移で消えた場合に備える）
+        try:
+            self._table_page.evaluate(_WS_BRIDGE_INIT)
+        except Exception:
+            pass
+
         try:
             has_game = self._table_page.evaluate(
                 "() => window.__bacopy_ws_has ? "
@@ -584,7 +618,6 @@ class LiveBetExecutor:
             logger.info(f"[LIVE] game WS detected for table {self._table_id}")
             self._phase = "ready"
             self._notify(f"🔗 game WS 確立\ntable: {self._table_id}\nBET待機中...")
-            # user_id を chat WS から抽出試行
             self._extract_user_id()
 
     def _extract_user_id(self) -> None:
