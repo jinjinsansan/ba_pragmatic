@@ -745,6 +745,82 @@ class DualLinePragmaticBot(cp.Collector):
         except Exception as e:
             logger.warning(f"state load failed: {e}")
 
+    # ── 自動再入場 ────────────────────────────────────────────────
+
+    def _auto_rejoin_last_table(self, page, profile_dir) -> None:
+        """再起動後、前回テーブルへ自動クリックで再入場を試みる。"""
+        last_table_path = Path(profile_dir) / "last_table.json"
+        if not last_table_path.exists():
+            logger.info("[rejoin] last_table.json なし — 手動入場待ち")
+            return
+        try:
+            data = json.loads(last_table_path.read_text(encoding="utf-8"))
+            table_id = str(data.get("table_id") or "").strip()
+            table_name = str(data.get("table_name") or "").strip()
+        except Exception as e:
+            logger.warning(f"[rejoin] last_table.json 読み込み失敗: {e}")
+            return
+        if not table_id:
+            return
+
+        logger.info(f"[rejoin] 前回テーブル: {table_id} ({table_name}) — 自動クリック試行")
+        _send_telegram(f"🔄 再起動: 前回テーブル {table_name or table_id} へ自動再入場試行中...")
+
+        _CLICK_JS = r"""
+        (tableId) => {
+          function tryClick(root) {
+            const els = root.querySelectorAll(
+              'img, a, [style*="background-image"], [data-table-id], [data-tableid]'
+            );
+            for (const el of els) {
+              const vals = [
+                el.src || '', el.href || '',
+                el.getAttribute('style') || '',
+                el.getAttribute('data-table-id') || '',
+                el.getAttribute('data-tableid') || '',
+              ];
+              if (vals.some(v => v.includes(tableId))) {
+                let target = el;
+                for (let d = 0; d < 6 && target; d++) {
+                  if (target.tagName === 'A' || target.tagName === 'BUTTON' ||
+                      target.getAttribute('role') === 'button' ||
+                      target.onclick != null) break;
+                  target = target.parentElement;
+                }
+                (target || el).click();
+                return true;
+              }
+            }
+            return false;
+          }
+          // ロビーフレーム内を優先して探す
+          const frames = Array.from(document.querySelectorAll('iframe'));
+          for (const iframe of frames) {
+            try {
+              if (tryClick(iframe.contentDocument)) return {ok: true, src: 'iframe'};
+            } catch(_) {}
+          }
+          if (tryClick(document)) return {ok: true, src: 'main'};
+          return {ok: false};
+        }
+        """
+
+        # ロビーが完全に描画されるまで最大20秒待って再試行
+        for attempt in range(4):
+            try:
+                res = page.evaluate(_CLICK_JS, table_id)
+                if isinstance(res, dict) and res.get("ok"):
+                    logger.info(f"[rejoin] クリック成功 ({res.get('src')}) attempt={attempt+1}")
+                    _send_telegram(f"✅ テーブル再入場クリック成功: {table_name or table_id}")
+                    return
+            except Exception as e:
+                logger.debug(f"[rejoin] evaluate エラー: {e}")
+            if attempt < 3:
+                page.wait_for_timeout(5000)
+
+        logger.warning(f"[rejoin] 自動クリック失敗 — 手動入場してください: {table_name or table_id}")
+        _send_telegram(f"⚠️ 自動再入場失敗\n手動でテーブルをクリックしてください:\n{table_name or table_id}")
+
     # ── run() override: executor ライフサイクル統合 ───────────────
 
     def run(
@@ -801,6 +877,13 @@ class DualLinePragmaticBot(cp.Collector):
                 except Exception as e:
                     logger.warning(f"[BOT] executor setup fallback failed: {e}")
 
+            # プロファイルディレクトリを executor に伝える (last_table.json 保存用)
+            if self.bet_executor.is_live and profile_dir:
+                try:
+                    self.bet_executor.set_profile_dir(str(profile_dir))
+                except Exception:
+                    pass
+
             if cookies_file and cookies_file.exists():
                 try:
                     with open(cookies_file) as cf:
@@ -820,6 +903,10 @@ class DualLinePragmaticBot(cp.Collector):
                 self.last_qpid_scan_at = time.time()
             except Exception as e:
                 logger.warning(f"[qpid-scan] initial scan failed: {e}")
+
+            # 再起動後に前回テーブルへ自動再入場
+            if self.bet_executor.is_live and profile_dir:
+                self._auto_rejoin_last_table(page, profile_dir)
 
             last_report = time.time()
             last_db_stats = time.time()
@@ -1063,24 +1150,19 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     cookies = Path(args.cookies) if args.cookies else None
-    t0 = time.time()
-    while True:
-        try:
-            bot.stop_flag = False  # リトライ時にリセット
-            bot.run(
-                duration=args.duration or None,
-                profile_dir=profile,
-                cookies_file=cookies,
-            )
-        except KeyboardInterrupt:
-            logger.info("KeyboardInterrupt")
-            break
-        except Exception as e:
-            logger.error(f"run exception: {e}", exc_info=True)
-        if args.duration and args.duration > 0:
-            break
-        if time.time() - t0 > 5:
-            time.sleep(2)
+    exit_code = 0
+    try:
+        bot.stop_flag = False
+        bot.run(
+            duration=args.duration or None,
+            profile_dir=profile,
+            cookies_file=cookies,
+        )
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt")
+    except Exception as e:
+        logger.error(f"run exception: {e}", exc_info=True)
+        exit_code = 1
 
     bot._save_state()
     _send_telegram(
@@ -1089,7 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
         f"W/L/T: {bot.wins}/{bot.losses}/{bot.ties}\n"
         f"累計 PnL: ${bot.virtual_pnl:+.2f}"
     )
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

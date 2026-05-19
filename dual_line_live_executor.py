@@ -107,6 +107,7 @@ class LiveBetExecutor:
         self._notify = notify_fn or (lambda text: None)
         self._context: Any = None
         self._lobby_page: Any = None
+        self._profile_dir: str = ""          # set by bot.run() for persistence
 
         # game WS 状態
         self._game_ws_url: str = ""          # 検出した game WS URL
@@ -200,6 +201,7 @@ class LiveBetExecutor:
         if ws_table_id and not self._table_id:
             self._table_id = ws_table_id
             logger.info(f"[LIVE] tableId from URL: {self._table_id}")
+            self._save_last_table()
 
         # WS メッセージを受動的に取得
         # Playwright のバージョンにより f が str の場合と FrameData の場合がある
@@ -467,6 +469,25 @@ class LiveBetExecutor:
         """bot から table_name を補完する。"""
         if table_id == self._table_id and not self._table_name:
             self._table_name = table_name
+            self._save_last_table()  # name が判明したタイミングで上書き保存
+
+    def set_profile_dir(self, path: str) -> None:
+        """プロファイルディレクトリを設定 (bot.run() から呼ばれる)。"""
+        self._profile_dir = path
+
+    def _save_last_table(self) -> None:
+        """最後のテーブルIDをファイルに保存 (再起動後の自動再入場用)。"""
+        if not self._profile_dir or not self._table_id:
+            return
+        try:
+            import os as _os
+            path = _os.path.join(self._profile_dir, "last_table.json")
+            data = json.dumps({"table_id": self._table_id, "table_name": self._table_name})
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(data)
+            logger.info(f"[LIVE] last_table saved: {self._table_id} ({self._table_name})")
+        except Exception as e:
+            logger.warning(f"[LIVE] last_table save failed: {e}")
 
     @property
     def current_table_id(self) -> str:
