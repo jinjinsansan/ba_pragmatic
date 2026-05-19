@@ -255,11 +255,13 @@ class LiveBetExecutor:
                     self._bets_open_game_id = gid
                     self._last_bets_open_at = time.time()
                     logger.info(f"[LIVE] betsopen: game={gid} table={self._table_id}")
-                    self._notify(
-                        f"🟢 BET WINDOW OPEN\n"
-                        f"table: {self._table_name or self._table_id}\n"
-                        f"game: {gid}"
-                    )
+                    # 通知はBET予約がある時だけ（毎ハンド通知は不要）
+                    if self._pending_bet:
+                        self._notify(
+                            f"🟢 BET WINDOW OPEN\n"
+                            f"table: {self._table_name or self._table_id}\n"
+                            f"game: {gid}"
+                        )
                     self._try_execute_bet(gid)
                 return
 
