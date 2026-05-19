@@ -170,11 +170,11 @@ class LiveBetExecutor:
             self._attach_page(page)
         context.on("page", _on_new_page)
 
-        logger.info("[LIVE] executor ready — waiting for user to enter table")
+        logger.info("[LIVE] executor ready — lobby monitoring, auto-enter on signal")
         self._notify(
-            "⏳ テーブル入場待機中\n"
-            "Pragmaticロビーで好きなテーブルを\n"
-            "クリックして入場してください"
+            "📡 ロビー監視中\n"
+            "シグナル発生時に自動でテーブル入場・BETします\n"
+            "手動操作は不要です"
         )
 
     def _attach_page(self, page: Any) -> None:
