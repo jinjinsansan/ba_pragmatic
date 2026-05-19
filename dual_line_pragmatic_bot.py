@@ -567,10 +567,8 @@ class DualLinePragmaticBot(cp.Collector):
             logger.info(
                 f"[rebalance] switching game WS to table {best} name={tname!r} qpid={qpid!r} (score={score})"
             )
-            send_log(f"switch → {tname} qpid={qpid or '?'} (score={score_label})")
-            _send_telegram(
-                f"🔀 テーブル切替\n{tname}\nスコア: {score_label}\n→ game WS 入場開始"
-            )
+            send_log(f"pre-enter → {tname} qpid={qpid or '?'} (score={score_label})")
+            # Telegram通知は省略（シグナル発生時に通知する）
             self.bet_executor._request_switch(best, tname, qpid)
 
     def _resolve_prediction(
@@ -944,7 +942,21 @@ class DualLinePragmaticBot(cp.Collector):
                     ):
                         self._game_ws_url = self.bet_executor._game_ws_url
 
-                    # 新設計: テーブル選択はユーザーが手動で行うのでリバランスなし
+                    # 事前ポジショニング: WARM(score>=1)テーブルに事前入場
+                    # シグナル発生の1〜2手前にbet_pageを対象テーブルに入れておく。
+                    # シグナル発生時はすでにテーブル内なので即BETできる。
+                    if (
+                        self.bet_executor.is_live
+                        and now - last_rebalance_at >= 15.0
+                        and self.bet_executor.can_switch()
+                        and not self.pending
+                    ):
+                        last_rebalance_at = now
+                        try:
+                            self._rebalance_tables()
+                        except Exception as e:
+                            logger.debug(f"[rebalance] error: {e}")
+
                     # executor の現在テーブル名を補完（通知用）
                     if self.bet_executor.is_live:
                         ctid = getattr(self.bet_executor, "current_table_id", "")
