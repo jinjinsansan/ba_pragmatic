@@ -534,7 +534,7 @@ class LiveBetExecutor:
 
         queued_at = float(bet.get("queued_at") or 0.0)
         if queued_at:
-            max_age = float(os.getenv("BACOPY_MAX_BET_SIGNAL_AGE_SEC", "25") or 25)
+            max_age = float(os.getenv("BACOPY_MAX_BET_SIGNAL_AGE_SEC", "45") or 45)
             if (time.time() - queued_at) > max_age:
                 logger.warning("[LIVE] drop stale pending bet (signal too old)")
                 self._notify("⚠️ BET SKIP\nsignal too old")
@@ -644,9 +644,13 @@ class LiveBetExecutor:
         qpid = str(md.get("qpid_table_id") or "").strip()
         if table_name:
             self._table_name = table_name
-        self._request_switch(str(table_id or ""), table_name, qpid)
+        target = str(qpid or table_id or "").strip()
+        # 既に正しいテーブルにいる場合はスイッチしない（再入場による signal too old を防ぐ）
+        already_in = (self._phase == "ready" and target and self._table_id == target)
+        if not already_in:
+            self._request_switch(str(table_id or ""), table_name, qpid)
         bet_id = f"dl_{uuid.uuid4().hex[:12]}"
-        self.send_bet(side=side, amount=amount, table_id=(qpid or table_id), bet_id=bet_id)
+        self.send_bet(side=side, amount=amount, table_id=target, bet_id=bet_id)
         return bet_id
 
     def consume_sent_bet(self, bet_id: str) -> bool:
