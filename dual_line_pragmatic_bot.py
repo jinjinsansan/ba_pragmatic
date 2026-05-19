@@ -367,9 +367,7 @@ class DualLinePragmaticBot(cp.Collector):
             self._on_shoe_change(table_id, buf)
             self.shoe_active[table_id] = True
             if not was_active:
-                _send_telegram(
-                    f"👁 観測開始\n{buf.table_name or table_id}\n初回シュー検知 → パターン監視中"
-                )
+                pass  # 観測開始は Telegram 通知しない（テーブル数が多すぎるため）
             prev_count = 0
         self.last_fresh_start[table_id] = is_fresh
 
@@ -399,10 +397,9 @@ class DualLinePragmaticBot(cp.Collector):
                 f"シュー変化 ({table_name}): pending {pending_pkey} クリア"
             )
             send_log(f"シュー変化: pending {pending_pkey} クリア ({table_name})")
-            _send_telegram(f"🔄 シュー変化 (pending クリア)\n{table_name}\npending pattern: {pending_pkey}\n→ 観測リセット")
+            # pending があった場合のみ Telegram 通知（重要イベント）
+            _send_telegram(f"🔄 シュー変化 (BET pending クリア)\n{table_name}\npattern: {pending_pkey}\n→ 観測リセット")
             del self.pending[table_id]
-        else:
-            _send_telegram(f"🔄 シュー変化\n{table_name}\n→ 新シュー観測開始")
         self.shoe_changes[table_id] += 1
         self.last_hand_count[table_id] = 0
         send_phase("observing", "shoe changed")
