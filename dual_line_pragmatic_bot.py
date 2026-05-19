@@ -747,64 +747,54 @@ class DualLinePragmaticBot(cp.Collector):
 
     # ── 自動再入場 ────────────────────────────────────────────────
 
-    def _auto_rejoin_last_table(self, page, profile_dir) -> None:
-        """再起動後、前回テーブルへ自動クリックで再入場を試みる。"""
+    def _auto_rejoin_last_table(self, page, profile_dir) -> bool:
+        """再起動後、前回テーブルへ自動再入場を試みる。"""
         last_table_path = Path(profile_dir) / "last_table.json"
         if not last_table_path.exists():
             logger.info("[rejoin] last_table.json なし — 手動入場待ち")
-            return
+            return False
         try:
             data = json.loads(last_table_path.read_text(encoding="utf-8"))
             table_id = str(data.get("table_id") or "").strip()
             table_name = str(data.get("table_name") or "").strip()
         except Exception as e:
             logger.warning(f"[rejoin] last_table.json 読み込み失敗: {e}")
-            return
+            return False
         if not table_id:
-            return
+            return False
 
         logger.info(f"[rejoin] 前回テーブル: {table_id} ({table_name}) — 自動クリック試行")
         _send_telegram(f"🔄 再起動: 前回テーブル {table_name or table_id} へ自動再入場試行中...")
 
-        # 受け子モードの実績ある _join_table ロジックを再利用
+        # 受け子モードの実績ある _join_table ロジックをそのまま再利用
         try:
-            from bacopy_executor_pragmatic_ws_live import (
-                find_lobby_frames,
-                _LOBBY_TRY_CLICK_JS,
-            )
+            from bacopy_executor_pragmatic_ws_live import _join_table
         except Exception as e:
             logger.warning(f"[rejoin] import 失敗: {e} — フォールバック: 手動入場")
             _send_telegram(f"⚠️ 自動再入場不可\n手動でテーブルをクリックしてください:\n{table_name or table_id}")
-            return
+            return False
 
-        deadline = time.time() + 60.0  # 最大60秒試行
-        clicked = False
-        while time.time() < deadline and not clicked:
-            lobby_frames = find_lobby_frames(page)
-            for fr in lobby_frames:
-                try:
-                    res = fr.evaluate(_LOBBY_TRY_CLICK_JS, {
-                        "qpid": table_id,
-                        "candidates": [table_name] if table_name else [],
-                        "maxScroll": 30,
-                    })
-                except Exception as e:
-                    logger.debug(f"[rejoin] frame evaluate エラー: {e}")
-                    continue
-                if isinstance(res, dict) and res.get("clicked"):
-                    logger.info(
-                        f"[rejoin] クリック成功 type={res.get('matchType')} "
-                        f"via={res.get('via')} frame={getattr(fr,'url','')[:60]}"
-                    )
-                    _send_telegram(f"✅ テーブル再入場クリック成功: {table_name or table_id}")
-                    clicked = True
-                    break
-            if not clicked:
-                page.wait_for_timeout(3000)
-
-        if not clicked:
-            logger.warning(f"[rejoin] 自動クリック失敗 — 手動入場してください: {table_name or table_id}")
+        try:
+            auto_click_wait_sec = int(os.getenv("BACOPY_AUTO_CLICK_WAIT_SEC", "90") or "90")
+        except Exception:
+            auto_click_wait_sec = 90
+        try:
+            _join_table(
+                page,
+                table_substr=(table_name or table_id),
+                auto_click_wait_sec=auto_click_wait_sec,
+                state=None,
+                on_tick=None,
+                is_initial=False,
+                interrupt_check=None,
+                qpid_table_id=table_id,
+            )
+            _send_telegram(f"✅ テーブル再入場クリック成功: {table_name or table_id}")
+            return True
+        except Exception as e:
+            logger.warning(f"[rejoin] 自動再入場失敗: {e}")
             _send_telegram(f"⚠️ 自動再入場失敗\n手動でテーブルをクリックしてください:\n{table_name or table_id}")
+            return True
 
     # ── run() override: executor ライフサイクル統合 ───────────────
 
@@ -878,20 +868,25 @@ class DualLinePragmaticBot(cp.Collector):
                 except Exception as e:
                     logger.warning(f"Cookie restore failed: {e}")
 
-            logger.info(f"Navigating to {cp.LOBBY_URL}")
-            page.goto(
-                cp.LOBBY_URL, wait_until="domcontentloaded", timeout=60000
-            )
-            page.wait_for_timeout(8000)
-            try:
-                self._scan_lobby_qpid(page)
-                self.last_qpid_scan_at = time.time()
-            except Exception as e:
-                logger.warning(f"[qpid-scan] initial scan failed: {e}")
-
+            did_auto_rejoin = False
             # 再起動後に前回テーブルへ自動再入場
             if self.bet_executor.is_live and profile_dir:
-                self._auto_rejoin_last_table(page, profile_dir)
+                try:
+                    did_auto_rejoin = self._auto_rejoin_last_table(page, profile_dir)
+                except Exception as e:
+                    logger.warning(f"[rejoin] unexpected error: {e}")
+
+            if not did_auto_rejoin:
+                logger.info(f"Navigating to {cp.LOBBY_URL}")
+                page.goto(
+                    cp.LOBBY_URL, wait_until="domcontentloaded", timeout=60000
+                )
+                page.wait_for_timeout(8000)
+                try:
+                    self._scan_lobby_qpid(page)
+                    self.last_qpid_scan_at = time.time()
+                except Exception as e:
+                    logger.warning(f"[qpid-scan] initial scan failed: {e}")
 
             last_report = time.time()
             last_db_stats = time.time()
