@@ -28,9 +28,11 @@ try {
     --collect-all apify_fingerprint_datapoints `
     --collect-all language_tags `
     --collect-submodules playwright `
+    --collect-all encodings `
     --hidden-import tzdata `
     --hidden-import dual_line_pragmatic_bot `
     --hidden-import dual_line_match `
+    --hidden-import dual_line_money `
     --hidden-import dual_line_live_executor `
     --hidden-import collector_pragmatic `
     --distpath (Join-Path $ROOT "copytrade_gui/build_staging/engine") `
