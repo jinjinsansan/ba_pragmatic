@@ -220,7 +220,22 @@ class DryRunBetExecutor:
     def is_live(self) -> bool:
         return False
 
+    @property
+    def is_bet_in_flight(self) -> bool:
+        return False
+
+    @property
+    def has_pending_bet(self) -> bool:
+        return False
+
+    @property
+    def is_ready(self) -> bool:
+        return True
+
     def place_bet(self, table_id: str, side: str, amount: float, metadata: dict) -> None:
+        return None
+
+    def return_to_lobby(self) -> None:
         return None
 
 
@@ -668,6 +683,7 @@ class DualLinePragmaticBot(cp.Collector):
         n_nt = self.wins + self.losses
         wr = self.wins / n_nt * 100 if n_nt else 0
         ms = self.money.status_dict()
+        _seq7_turns = list(self.money._seq7_tracker.current_turns) if getattr(self.money, "_seq7_tracker", None) else []
         send_msg({
             "type": "resolution",
             "table_id": table_id,
@@ -687,6 +703,7 @@ class DualLinePragmaticBot(cp.Collector):
             "predicting_n": pending.get("predicting_n"),
             "money_status": ms,
             "bet_amount": pending.get("bet_amount", 0),
+            "seq7_current_turns": _seq7_turns,
         })
         status_icon = "✅" if result == "WIN" else ("🔵" if result == "TIE" else "❌")
         send_action(
@@ -926,14 +943,42 @@ class DualLinePragmaticBot(cp.Collector):
         """VPS の事前入場指示をポーリング。score=1 遷移時に対象テーブルへ事前入場して待機。"""
         if not self.bet_executor.is_live:
             return
+        now_ts = time.time()
+        if now_ts - float(getattr(self, "_last_prepos_diag_at", 0.0) or 0.0) >= 20.0:
+            logger.info("[PREPOS] tick")
+            self._last_prepos_diag_at = now_ts
         has_pb = self.bet_executor.has_pending_bet
         is_bif = self.bet_executor.is_bet_in_flight
         if has_pb or is_bif:
-            logger.debug(f"[PREPOS] skip: has_pending_bet={has_pb} is_bet_in_flight={is_bif}")
+            if now_ts - float(getattr(self, "_last_prepos_skip_log_at", 0.0) or 0.0) >= 10.0:
+                logger.info(f"[PREPOS] skip: has_pending_bet={has_pb} is_bet_in_flight={is_bif}")
+                self._last_prepos_skip_log_at = now_ts
             return
-        data = self._api_get("/api/preposition")
+        data: dict = {}
+        src_name = "primary"
+        src_base = ""
+        src_key = ""
+        trace: list[str] = []
+        for t in self._decision_poll_targets():
+            _base = str(t.get("base_url") or "")
+            _key = str(t.get("api_key") or "")
+            _d = self._api_get("/api/preposition", base_url=_base, api_key=_key)
+            if not isinstance(_d, dict):
+                trace.append(f"{str(t.get('name') or '?')}:non-dict")
+                continue
+            tid = str(_d.get("table_id") or "").strip()
+            trace.append(f"{str(t.get('name') or '?')}:{'hit' if tid else 'empty'}")
+            if tid:
+                data = _d
+                src_name = str(t.get("name") or "primary")
+                src_base = _base
+                src_key = _key
+                break
+            if not data:
+                data = _d
         table_id = str(data.get("table_id") or "").strip()
         if not table_id:
+            logger.info(f"[PREPOS] no target table ({', '.join(trace) or 'no-targets'})")
             return
         updated_at_str = str(data.get("updated_at") or "")
         if updated_at_str:
@@ -942,40 +987,55 @@ class DualLinePragmaticBot(cp.Collector):
                 updated_at = _dt.datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
                 now_utc = _dt.datetime.now(_dt.timezone.utc)
                 age_sec = (now_utc - updated_at).total_seconds()
-                if age_sec > 120:
-                    logger.debug(f"[PREPOS] expired ({age_sec:.0f}s): {table_id}")
+                max_age = float(os.getenv("BACOPY_PREPOSITION_MAX_AGE_SEC", "600") or 600)
+                if age_sec > max_age:
+                    logger.info(f"[PREPOS] expired ({age_sec:.0f}s > {max_age:.0f}s): {table_id}")
                     return
             except Exception:
                 pass
         table_name = str(data.get("table_name") or "")
         score = int(data.get("score") or 1)
+        stage = str(data.get("stage") or "").strip().lower()
+        intent = "preposition"
+        # 2歩手前: table scrollのみ / 1歩手前: BET準備クリック
+        if stage in ("prepare", "one_step", "step1", "warmup_ready"):
+            intent = "prepare"
+        elif stage in ("preposition", "two_step", "step2"):
+            intent = "preposition"
+        elif score >= 2:
+            intent = "prepare"
+        elif score <= 0:
+            return
         qpid = str(data.get("qpid") or table_id)
         current_table = str(getattr(self.bet_executor, "_table_id", "") or "")
         if current_table and (current_table == qpid or current_table == table_id):
             logger.debug(f"[PREPOS] already at table {table_id}, skip")
             return
-        current_key = f"{table_id}|{updated_at_str}"
+        current_key = f"{table_id}|{updated_at_str}|{intent}"
         if current_key == getattr(self, "_last_preposition_key", ""):
             logger.debug(f"[PREPOS] dedup skip (same key): {current_key[:40]}")
             return
         self._last_preposition_key = current_key
-        logger.info(f"[PREPOS] requesting switch → {table_name!r} qpid={qpid!r} score={score}")
+        logger.info(
+            f"[PREPOS] requesting switch → {table_name!r} qpid={qpid!r} score={score} "
+            f"intent={intent} src={src_name} base={src_base[:48]}"
+        )
         try:
-            self.bet_executor._request_switch(table_id, table_name, qpid, intent="preposition")
+            self.bet_executor._request_switch(table_id, table_name, qpid, intent=intent)
         except TypeError:
             self.bet_executor._request_switch(table_id, table_name, qpid)
         self._prepos_switch_at = time.time()
 
-    def _handle_decision(self, decision: dict) -> None:
+    def _handle_decision(self, decision: dict) -> bool:
         """VPS からの BET decision を受け取り、executor 経由で BET 実行。"""
         did = str(decision.get("decision_id") or "")
         fa = decision.get("friend_action") or {}
         if not isinstance(fa, dict):
-            return
+            return True
         side = str(fa.get("side") or "").upper()
         if side not in ("P", "B"):
             logger.warning(f"[DECISION] invalid side={side!r} in {did}")
-            return
+            return True
         table_id = str(decision.get("table_id") or "")
         table_name = str(decision.get("table_name") or "")
 
@@ -990,7 +1050,7 @@ class DualLinePragmaticBot(cp.Collector):
 
         if is_bif:
             logger.info(f"[DECISION] SKIP: bet in flight for {did}")
-            return
+            return False
         if isinstance(pending_bet, dict) and pending_bet:
             p_age = time.time() - float(pending_bet.get("queued_at") or time.time())
             pending_tid = str(pending_bet.get("table_id") or "")
@@ -1015,7 +1075,7 @@ class DualLinePragmaticBot(cp.Collector):
                 if did != getattr(self, "_last_pending_skip_did", ""):
                     logger.info(f"[DECISION] SKIP: pending bet exists (age={p_age:.1f}s) for {did}")
                     self._last_pending_skip_did = did
-                return
+                return False
 
         bet_amount = self.money.next_bet()
         logger.info(f"[BOT] decision received: {did} side={side} table={table_name} amount=${bet_amount}")
@@ -1043,6 +1103,7 @@ class DualLinePragmaticBot(cp.Collector):
         _send_telegram(
             f"🎯 BET予約\n{table_name}\nSide: {side} ${bet_amount:.2f}\nstatus: 送信待機\ndecision: {did[:12]}"
         )
+        return True
 
     def _flush_pending_decision_results(self) -> None:
         """送信済み/失敗を API に反映して processing 滞留を防ぐ。"""
@@ -1051,7 +1112,19 @@ class DualLinePragmaticBot(cp.Collector):
         post_timeout = float(os.getenv("BACOPY_DECISION_POST_TIMEOUT_SEC", "180") or 180)
         now = time.time()
         for did, p in list(self._pending_decisions.items()):
-            if not isinstance(p, dict) or p.get("result_posted"):
+            if not isinstance(p, dict):
+                continue
+            # result_posted=True でも180s超過なら self.pending を安全クリア
+            if p.get("result_posted"):
+                placed_at = float(p.get("placed_at") or now)
+                if now - placed_at > post_timeout:
+                    _tid = str(p.get("table_id") or "")
+                    if _tid:
+                        _tp = self.pending.get(_tid)
+                        if _tp and str(_tp.get("decision_id") or "") == did:
+                            self.pending.pop(_tid, None)
+                            self._pending_decision_ids.pop(_tid, None)
+                            logger.info(f"[DECISION] safety timeout clear pending table={_tid} did={did[:12]}")
                 continue
             bet_id = str(p.get("bet_id") or "")
             placed_at = float(p.get("placed_at") or now)
@@ -1094,6 +1167,19 @@ class DualLinePragmaticBot(cp.Collector):
                     except Exception:
                         pass
                     logger.info(f"[DECISION] result posted done(phase=bet_sent): {did}")
+                else:
+                    logger.warning(f"[DECISION] result post failed (keep retry): {did}")
+                    sent_since = float(p.get("_sent_since") or 0.0)
+                    if sent_since <= 0.0:
+                        p["_sent_since"] = now
+                        sent_since = now
+                    if now - sent_since > 20.0:
+                        try:
+                            if bet_id and hasattr(self.bet_executor, "consume_sent_bet"):
+                                self.bet_executor.consume_sent_bet(bet_id)
+                                logger.warning(f"[DECISION] force-unblock in-flight after post failure: {did}")
+                        except Exception:
+                            pass
                 continue
 
             if age > post_timeout:
@@ -1159,6 +1245,12 @@ class DualLinePragmaticBot(cp.Collector):
             if did not in self._pending_decisions:
                 continue
             pending = self._pending_decisions.pop(did)
+            try:
+                _bid = str((pending or {}).get("bet_id") or "")
+                if _bid and hasattr(self.bet_executor, "consume_sent_bet"):
+                    self.bet_executor.consume_sent_bet(_bid)
+            except Exception:
+                pass
             result = d.get("result") or {}
             status = str(d.get("status") or "")
             outcome = str(result.get("outcome") or "?")
@@ -1176,8 +1268,17 @@ class DualLinePragmaticBot(cp.Collector):
 
             if phase == "bet_sent" and not settled:
                 self.total_resolved += 1
+                # BET送信後タイムアウト返却: self.pending[table_id] をクリアして
+                # 次ハンドで誤W/L集計が発生しないようにする
+                _bet_tid = str((pending or {}).get("table_id") or "")
+                if _bet_tid:
+                    _tbl_pend = self.pending.get(_bet_tid)
+                    if _tbl_pend and str(_tbl_pend.get("decision_id") or "") == did:
+                        self.pending.pop(_bet_tid, None)
+                        self._pending_decision_ids.pop(_bet_tid, None)
+                        logger.info(f"[DECISION] bet_sent(unsettled): cleared pending table={_bet_tid} did={did[:12]}")
                 _send_telegram(
-                    f"📤 BET送信確定\n{pending.get('table_name') or pending.get('table_id')}\n"
+                    f"📤 BET送信確定(未決済)\n{pending.get('table_name') or pending.get('table_id')}\n"
                     f"Side: {pending.get('side')} ${float(pending.get('amount') or 0):.2f}\n"
                     f"decision: {did[:12]}"
                 )
@@ -1243,15 +1344,16 @@ class DualLinePragmaticBot(cp.Collector):
                         did = str(d.get("decision_id") or "")
                         if did and did in recent_ids:
                             continue
-                        if did:
-                            recent_ids[did] = now
                         d["_source_api_base"] = base
                         d["_source_api_key"] = key
+                        handled = False
                         if not getattr(self, "_stop_decision_poll", False):
                             try:
-                                self._handle_decision(d)
+                                handled = bool(self._handle_decision(d))
                             except Exception as e:
                                 logger.warning(f"[BOT] handle_decision error: {e}")
+                        if did and handled:
+                            recent_ids[did] = now
                 # keep recent dedup map bounded
                 if len(recent_ids) > 800:
                     cutoff = now - 1800
@@ -1279,6 +1381,8 @@ class DualLinePragmaticBot(cp.Collector):
         # 決定事項トラッキング初期化
         self._pending_decisions: dict[str, dict] = {}
         self._last_preposition_key: str = ""
+        self._last_prepos_diag_at: float = 0.0
+        self._last_prepos_skip_log_at: float = 0.0
         self._stop_decision_poll = False
 
         cp.init_db()
@@ -1522,7 +1626,7 @@ class DualLinePragmaticBot(cp.Collector):
                     try:
                         self._check_preposition()
                     except Exception as e:
-                        logger.debug(f"[BOT] preposition poll error: {e}")
+                        logger.warning(f"[BOT] preposition poll error: {e}")
 
                 # ── local送信結果の反映 (2秒ごと) ─────────────────
                 if now - last_result_flush_check >= 2.0:

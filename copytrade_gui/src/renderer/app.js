@@ -1814,6 +1814,12 @@ window.valhalla.onAgentMessage((msg) => {
       addResult(resultIcon);
       if (r.result === 'WIN') flashScreen('win');
       else if (r.result === 'LOSE') flashScreen('lose');
+      // STREAM (\u25cb\u00d7)
+      if (r.result !== 'TIE') _pushStreamMark(r.result === 'WIN' ? 'O' : 'X');
+      // CYCLE / RATIO / DRIFT / ROUND
+      const _ms = r.money_status || {};
+      const _turnsStr = Array.isArray(r.seq7_current_turns) ? r.seq7_current_turns.join('') : '';
+      updateDevPanel({ current_turn: _ms.seq_turn, overshoot: _ms.seq_overshoot, turns_display: _turnsStr });
       setAction(
         '[DL] ' + r.result + ' ' + r.table_name + ': ' + r.prediction + '\u2192' + r.outcome + ' ' +
         'pnl=' + ((r.pnl||0) >= 0 ? '+' : '') + '$' + (r.pnl||0).toFixed(2) + ' ' +
