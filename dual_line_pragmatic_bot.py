@@ -681,6 +681,7 @@ class DualLinePragmaticBot(cp.Collector):
         table_name = str(buf.table_name or table_id)
         _, china_pattern = chinese_road_predict(seq, next_n)
         _, big_pattern = big_road_predict(seq)
+        logger.info(f"[PREPOS-NOTIFY] score={score} table={table_name} direction={direction} china={china_pattern} big={big_pattern}")
         _send_preposition_legacy(table_name, score, direction, str(china_pattern or ""), str(big_pattern or ""))
 
     def _select_best_table(self) -> str | None:
