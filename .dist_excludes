@@ -97,6 +97,10 @@ AI_PREDICTION_PROJECT.md
 scripts/
 tests/
 
+# --- Server/bafather-only runners (hardcoded paths, not for client) ---
+run_direct.py
+tereko_predictor.py
+
 # --- Build artefacts and caches ---
 __pycache__/
 .git/

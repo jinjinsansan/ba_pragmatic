@@ -1341,7 +1341,8 @@ def _is_lobby_frame_url(url: str) -> bool:
     u = str(url or "")
     return (
         "pragmaticplaylive" in u
-        and ("desktop/lobby" in u or "lobby2" in u or "apps/lobby" in u)
+        and ("desktop/lobby" in u or "lobby2" in u or "apps/lobby" in u
+             or "desktop/multibaccarat" in u or "desktop/multi" in u)
     )
 
 

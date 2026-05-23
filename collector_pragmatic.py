@@ -333,19 +333,41 @@ class Collector:
             logger.info(f"[qpid-scan] scanned={total} updated={updated} frames={len(frames)}")
 
     def on_ws_frame(self, payload):
-        """WSフレーム受信コールバック。payload は bytes/str の可能性あり。"""
+        """WSフレーム受信コールバック。payload は bytes/str/dict/list を許容。"""
         self.stats_msg += 1
         try:
-            if isinstance(payload, bytes):
-                payload = payload.decode("utf-8", errors="replace")
-            msg = json.loads(payload)
+            if isinstance(payload, (dict, list)):
+                msg = payload
+            else:
+                if isinstance(payload, bytes):
+                    payload = payload.decode("utf-8", errors="replace")
+                msg = json.loads(payload)
         except Exception:
+            return
+
+        # 一部環境で list / envelope 形式で来るケースに対応
+        if isinstance(msg, list):
+            for item in msg:
+                if isinstance(item, (dict, list)):
+                    self.on_ws_frame(item)
             return
 
         if not isinstance(msg, dict):
             return
 
-        table_id = msg.get("tableId")
+        if not msg.get("tableId"):
+            nested = None
+            for k in ("data", "payload", "message", "messages", "updates", "tables"):
+                v = msg.get(k)
+                if isinstance(v, (dict, list)):
+                    nested = v
+                    break
+            if nested is not None:
+                self.on_ws_frame(nested)
+                return
+
+        table_id_raw = msg.get("tableId")
+        table_id = str(table_id_raw or "").strip()
         if not table_id:
             return
 
@@ -353,6 +375,18 @@ class Collector:
         if not buf:
             buf = ShoeBuffer(table_id)
             self.buffers[table_id] = buf
+
+        # 追加診断: baseline 以外のキー構造をサンプリング
+        _base_keys = {
+            "totalSeatedPlayers", "tableId", "tableName", "newTable",
+            "tableImage", "tableLimits", "tableOpen", "tableType", "currency",
+        }
+        _dbg_keys_cnt = int(getattr(self, "_dbg_keys_cnt", 0))
+        if _dbg_keys_cnt < 80:
+            kset = set(msg.keys())
+            if not kset.issubset(_base_keys):
+                logger.info(f"[dga-msg-keys-extra] table={table_id} keys={list(msg.keys())[:20]}")
+                self._dbg_keys_cnt = _dbg_keys_cnt + 1
 
         # metadata 更新
         if "tableName" in msg:
@@ -408,6 +442,14 @@ class Collector:
         # gameResult 追加
         gr = msg.get("gameResult")
         if isinstance(gr, list) and gr:
+            _dbg_gr_cnt = int(getattr(self, "_dbg_gr_cnt", 0))
+            if _dbg_gr_cnt < 10:
+                first = gr[0] if isinstance(gr[0], dict) else {}
+                logger.info(
+                    f"[gr-sample] table={table_id} len={len(gr)} "
+                    f"first_keys={list(first.keys())[:12]}"
+                )
+                self._dbg_gr_cnt = _dbg_gr_cnt + 1
             buf.add_hands(gr)
 
         self._emit_snapshot(table_id, buf)

@@ -133,6 +133,7 @@ let autoRestartCount = 0;
 let lastSpawnAt = 0;
 let autoRestartTimer = null;
 let _botSpawning = false;
+let _botGeneration = 0;
 const MAX_AUTO_RESTARTS = 10;
 const AUTO_RESTART_DELAY = 5000;
 const STABLE_RUN_THRESHOLD = 5 * 60 * 1000;
@@ -182,6 +183,7 @@ function schedulePeriodicRestart() {
     _telegramNotifyFromMain('🔄 bacopy periodic restart (' + h + 'h maintenance)');
     try {
       const cfg = lastStartConfig;
+      const generation = ++_botGeneration;
       userInitiatedStop = false;
 
       const pid = botProcess.pid;
@@ -192,7 +194,7 @@ function schedulePeriodicRestart() {
 
       setTimeout(() => {
         if (!botProcess && cfg && !_botSpawning) {
-          try { _doStartBot && _doStartBot(cfg); } catch (e) { console.warn('[periodic-restart] respawn err:', e && e.message); }
+          try { _doStartBot && _doStartBot(cfg, generation); } catch (e) { console.warn('[periodic-restart] respawn err:', e && e.message); }
         }
       }, 5000);
     } catch (e) {
@@ -684,6 +686,11 @@ function startBot(config) {
     sendToRenderer('agent-message', { type: 'error', message: verr });
     return;
   }
+  const generation = ++_botGeneration;
+  if (autoRestartTimer) {
+    clearTimeout(autoRestartTimer);
+    autoRestartTimer = null;
+  }
 
   if (botProcess) {
 
@@ -696,22 +703,26 @@ function startBot(config) {
     try { old.stderr?.removeAllListeners?.('data'); } catch (_) {}
     let started = false;
     old.once('exit', () => {
-      if (started) return;
+      if (started || generation !== _botGeneration) return;
       started = true;
-      _doStartBot(cfg);
+      _doStartBot(cfg, generation);
     });
     try { old.kill(); } catch (_) {
-      if (!started) {
+      if (!started && generation === _botGeneration) {
         started = true;
-        _doStartBot(cfg);
+        _doStartBot(cfg, generation);
       }
     }
     return;
   }
-  _doStartBot(cfg);
+  _doStartBot(cfg, generation);
 }
 
-function _doStartBot(config) {
+function _doStartBot(config, generation = _botGeneration) {
+  if (generation !== _botGeneration) {
+    console.log(`[Main] _doStartBot: obsolete generation ${generation}, current=${_botGeneration}`);
+    return;
+  }
   if (_botSpawning) {
     console.log('[Main] _doStartBot: already spawning, skipped');
     return;
@@ -756,6 +767,7 @@ function _doStartBot(config) {
   const cfg = config || {};
   const verr = _validateConfigForSpawn(cfg);
   if (verr) {
+    _botSpawning = false;
     sendToRenderer('agent-message', { type: 'error', message: verr });
     return;
   }
@@ -800,6 +812,7 @@ function _doStartBot(config) {
 
   const thisProcess = botProcess;
   const thisSpawnAt = lastSpawnAt;
+  const thisGeneration = generation;
 
   botProcess.on('exit', (code) => {
 
@@ -808,7 +821,7 @@ function _doStartBot(config) {
     if (rem) sendToRenderer('agent-message', { type: 'log', message: rem });
     _stdoutRemainder = '';
 
-    if (botProcess === thisProcess || botProcess === null) {
+    if (botProcess === thisProcess && thisGeneration === _botGeneration) {
       sendToRenderer('agent-message', { type: 'stopped', code });
       botProcess = null;
 
@@ -827,9 +840,9 @@ function _doStartBot(config) {
           sendToRenderer('agent-message', { type: 'log', message: msg });
           autoRestartTimer = setTimeout(() => {
             autoRestartTimer = null;
-            if (!botProcess && !userInitiatedStop && lastStartConfig) {
+            if (!botProcess && !userInitiatedStop && lastStartConfig && thisGeneration === _botGeneration) {
               sendToRenderer('agent-message', { type: 'log', message: '🔄 Auto-restart: restarting engine...' });
-              _doStartBot(lastStartConfig);
+              _doStartBot(lastStartConfig, thisGeneration);
             }
           }, AUTO_RESTART_DELAY);
         } else {
@@ -856,6 +869,7 @@ function _doStartBot(config) {
 }
 
 function stopBot() {
+  _botGeneration++;
   _botSpawning = false;
   if (!botProcess) {
     stopWatchdog();

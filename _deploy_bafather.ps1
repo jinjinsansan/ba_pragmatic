@@ -22,6 +22,9 @@ foreach ($f in $files) {
     if ($LASTEXITCODE -ne 0) { Write-Error "SCP failed: $f"; exit 1 }
     Write-Host "  OK: $f"
 }
+scp -i $KEY "$SRC\build\bacopy_engine_bafather.spec" "${BFHOST}:${DEST}\build\bacopy_engine.spec"
+if ($LASTEXITCODE -ne 0) { Write-Error "SCP failed: build\bacopy_engine_bafather.spec"; exit 1 }
+Write-Host "  OK: build\bacopy_engine.spec"
 
 # ── 2. エンジン停止 ───────────────────────────────────────────────────
 Write-Host "[2] Kill engine..."

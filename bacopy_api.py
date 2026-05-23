@@ -54,10 +54,21 @@ from decision_logger import (
     reconstruct_decisions,
 )
 from snapshot_store import get_snapshot, load_snapshots, update_snapshot
+from dual_line_match import live_preposition_for_history
 
 
 _DECISION_WAIT_COND = threading.Condition()
 _DECISION_WAIT_TICK = 0
+
+_PREPOSITION_STALE_SEC = float(os.getenv("BACOPY_PREPOSITION_STALE_SEC", "300") or 300)
+_DEFAULT_PREPOSITION_SNAPSHOT_FILE = (
+    r"C:\Users\Administrator\AppData\Local\Programs\bacopy-copytrade-gui\resources\engine\data\latest_snapshots_pragmatic.json"
+    if os.name == "nt" else ""
+)
+_PREPOSITION_SNAPSHOT_FILE = os.getenv(
+    "BACOPY_PREPOSITION_SNAPSHOT_FILE",
+    _DEFAULT_PREPOSITION_SNAPSHOT_FILE,
+).strip()
 
 # bafather approved-users cache (5 min TTL).
 _APPROVED_CACHE: dict[str, Any] = {"at": 0.0, "data": None, "error": ""}
@@ -338,6 +349,15 @@ def _executor_idle_alert_worker_loop() -> None:
 def _norm_table_name(s: str) -> str:
     out = "".join(ch for ch in str(s or "").lower() if ch.isalnum())
     return out
+
+
+def _is_unsupported_dual_line_table(name: str) -> bool:
+    n = str(name or "").casefold()
+    return (
+        "priv" in n
+        or "seotda" in n
+        or "sic bac" in n
+    )
 
 
 def _executor_on_selected_table(exec_row: dict[str, Any], table_id: str, table_name: str) -> bool:
@@ -677,6 +697,106 @@ def _resolve_table_id_from_snapshots(provider: str, table_name: str) -> str:
     return ""
 
 
+def _load_json_file(path: str) -> dict[str, Any]:
+    p = str(path or "").strip()
+    if not p:
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            v = json.load(f)
+            return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _collect_pragmatic_snapshots_for_preposition() -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+
+    data = load_snapshots()
+    snaps = (data.get("snapshots") or {}).get("pragmatic") or {}
+    if isinstance(snaps, dict):
+        for tid, snap in snaps.items():
+            if isinstance(tid, str) and isinstance(snap, dict):
+                merged[tid] = snap
+
+    extra_path = _PREPOSITION_SNAPSHOT_FILE
+    extra = _load_json_file(extra_path)
+    extra_snaps = extra.get("snapshots") if isinstance(extra, dict) else None
+    if isinstance(extra_snaps, dict):
+        for tid, snap in extra_snaps.items():
+            if not isinstance(tid, str) or not isinstance(snap, dict):
+                continue
+            cur = merged.get(tid) or {}
+            cur_at = str(cur.get("captured_at") or "")
+            new_at = str(snap.get("captured_at") or "")
+            if not cur or (new_at and new_at >= cur_at):
+                merged[tid] = snap
+
+    return merged
+
+
+def _build_preposition_payload() -> dict[str, Any]:
+    snaps = _collect_pragmatic_snapshots_for_preposition()
+    best: Optional[tuple[tuple[Any, ...], dict[str, Any]]] = None
+    now_iso = _now_iso()
+
+    for tid, snap in snaps.items():
+        if not isinstance(snap, dict):
+            continue
+        captured_at = str(snap.get("captured_at") or "")
+        if captured_at and _age_sec_from_iso(captured_at) > _PREPOSITION_STALE_SEC:
+            continue
+
+        seq_raw = str(snap.get("sequence") or "")
+        seq = "".join(c for c in seq_raw if c in ("P", "B"))
+        if len(seq) < 3:
+            continue
+        preview = live_preposition_for_history(seq)
+        score = int(preview.get("score") or 0)
+        direction = str(preview.get("side") or "")
+        if score <= 0:
+            continue
+
+        qpid = str(snap.get("qpid_table_id") or "").strip()
+        table_id = qpid or str(tid or "").strip()
+        if not table_id:
+            continue
+        table_name = str(snap.get("table_name") or tid or "")
+        if _is_unsupported_dual_line_table(f"{table_name} {table_id}"):
+            continue
+        hands = int(snap.get("hands") or 0)
+        payload = {
+            "table_id": table_id,
+            "table_name": table_name,
+            "qpid": qpid or table_id,
+            "score": int(score),
+            "steps_before": int(preview.get("steps_before") or 0),
+            "direction": str(direction or ""),
+            "side": str(direction or ""),
+            "pattern_keys": list(preview.get("pattern_keys") or []),
+            "candidates": list(preview.get("candidates") or []),
+            "updated_at": captured_at or now_iso,
+            "server_updated_at": now_iso,
+        }
+        rank = (int(score), captured_at, hands, table_name)
+        if best is None or rank > best[0]:
+            best = (rank, payload)
+
+    return dict(best[1]) if best else {
+        "table_id": "",
+        "table_name": "",
+        "qpid": "",
+        "score": 0,
+        "steps_before": 0,
+        "direction": "",
+        "side": "",
+        "pattern_keys": [],
+        "candidates": [],
+        "updated_at": "",
+        "server_updated_at": now_iso,
+    }
+
+
 def _compute_derived_roads(statistics: Any) -> dict[str, Any]:
     """大路(statistics)から中国罫線(大眼仔・小路・曱甴路)を計算する。
 
@@ -1008,6 +1128,8 @@ class _Handler(BaseHTTPRequestHandler):
             if provider and table_id:
                 return _send_json(self, 200, {"snapshot": get_snapshot(provider, table_id)})
             return _send_json(self, 200, load_snapshots())
+        if u.path == "/api/preposition":
+            return _send_json(self, 200, _build_preposition_payload())
         if u.path == "/api/decisions/pending":
             qs = parse_qs(u.query or "")
             try:

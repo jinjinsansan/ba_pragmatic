@@ -32,6 +32,7 @@ try {
     --hidden-import tzdata `
     --hidden-import dual_line_pragmatic_bot `
     --hidden-import dual_line_match `
+    --hidden-import dual_line_logic `
     --hidden-import dual_line_money `
     --hidden-import dual_line_live_executor `
     --hidden-import collector_pragmatic `

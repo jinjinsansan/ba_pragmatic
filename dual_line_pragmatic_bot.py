@@ -27,6 +27,7 @@ import os
 import signal
 import sys
 import time
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,7 +75,14 @@ except Exception as e:
     )
     raise
 
-from dual_line_match import decide, score_proximity, chinese_road_predict, big_road_predict
+from dual_line_match import (
+    LIVE_SIGNAL_PATTERNS,
+    decide,
+    live_preposition_for_history,
+    score_proximity,
+    chinese_road_predict,
+    big_road_predict,
+)
 from dual_line_money import BetManager, ALLOWED_MODES as MONEY_MODES, BET_MODES
 
 # ── Logger 設定 ──────────────────────────────────────────────────────
@@ -83,7 +91,7 @@ _bot_logger = logging.getLogger("dual_line.bot")
 _bot_logger.setLevel(logging.INFO)
 _bot_logger.propagate = False  # root logger に伝播させない
 if not _bot_logger.handlers:
-    _fh = logging.FileHandler(HERE / "dual_line_pragmatic_bot.log", encoding="utf-8")
+    _fh = logging.FileHandler(_PERSISTENT_DIR / "dual_line_pragmatic_bot.log", encoding="utf-8")
     _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     _bot_logger.addHandler(_fh)
     _sh = logging.StreamHandler()
@@ -93,14 +101,7 @@ logger = _bot_logger
 
 # ── 定数 ─────────────────────────────────────────────────────────────
 
-V2_PATTERNS = {
-    "telecho|telecho|B",
-    "telecho|nikoichi|P",
-    "telecho|niconico|P",
-    "niconico|niconico|B",
-    "niconico|dragon|P",
-    "sansan|telecho|P",
-}
+V2_PATTERNS = LIVE_SIGNAL_PATTERNS
 
 STATE_PATH = _PERSISTENT_DIR / "dual_line_pragmatic_state.json"
 STATE_TMP = _PERSISTENT_DIR / "dual_line_pragmatic_state.tmp"
@@ -167,6 +168,20 @@ def _is_fast_table_name(name: str) -> bool:
     return ("speed" in n) or ("turbo" in n)
 
 
+def _is_private_table_name(name: str) -> bool:
+    n = str(name or "").casefold()
+    return "priv" in n
+
+
+def _is_unsupported_table_name(name: str) -> bool:
+    n = str(name or "").casefold()
+    return (
+        _is_private_table_name(n)
+        or "seotda" in n
+        or "sic bac" in n
+    )
+
+
 def _fmt_pattern(pkey: str) -> str:
     """'telecho|telecho|B' → 'china=telecho / big=telecho / side=B'"""
     parts = pkey.split("|")
@@ -181,23 +196,28 @@ def _send_preposition_legacy(
     side: str,
     china_pattern: str = "",
     big_pattern: str = "",
+    pattern_keys: list[str] | None = None,
 ) -> None:
-    remain = "あと１手で確定予定" if int(score or 0) >= 2 else "あと２手で確定予定"
+    remain = "あと1手で6パターン候補" if int(score or 0) >= 2 else "あと2手で6パターン候補"
     side_u = str(side or "").upper()
-    side_name = "BANKER" if side_u == "B" else ("PLAYER" if side_u == "P" else "?")
+    side_name = "BANKER" if side_u == "B" else ("PLAYER" if side_u == "P" else "未確定")
     pattern_line = (
+        "Patterns: " + ", ".join(pattern_keys or [])
+        if pattern_keys else
         f"Pattern: china={china_pattern or '-'} / big={big_pattern or '-'} / side={side_u or '-'}"
     )
-    _send_telegram(
+    sent = _send_telegram(
         f"予告 {table_label}\n"
         f"{remain}\n"
         f"→ {side_name} BET\n"
         f"{pattern_line}\n"
         f"GUIが事前入場します"
     )
+    if sent:
+        logger.info(f"[PREPOS-TELEGRAM] sent table={table_label} score={score}")
 
 
-def _send_telegram(text: str) -> None:
+def _send_telegram(text: str) -> bool:
     # 優先順位: DUAL_LINE_* → TELEGRAM_* → ADMIN_TELEGRAM_*
     token = (
         os.getenv("DUAL_LINE_BOT_TOKEN", "").strip()
@@ -210,16 +230,25 @@ def _send_telegram(text: str) -> None:
         or os.getenv("ADMIN_TELEGRAM_CHAT_ID", "").strip()
     )
     if not token or not chat_id:
-        return
+        logger.warning("[TELEGRAM] send skipped: token/chat_id is not configured")
+        return False
     try:
         import requests
-        requests.post(
+        response = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+            json={"chat_id": chat_id, "text": text},
             timeout=5,
         )
+        if not response.ok:
+            logger.warning(
+                f"[TELEGRAM] send failed status={response.status_code} "
+                f"response={response.text[:160]!r}"
+            )
+            return False
+        return True
     except Exception as e:
-        logger.debug(f"telegram send failed: {e}")
+        logger.warning(f"[TELEGRAM] send failed: {e}")
+        return False
 
 
 # ── BetExecutor インターフェース ─────────────────────────────────────
@@ -318,6 +347,7 @@ class DualLinePragmaticBot(cp.Collector):
         self.pending: dict[str, dict] = {}  # table_id -> pending prediction
         self.table_scores: dict[str, int] = defaultdict(int)  # table_id -> score (0-2)
         self._prev_table_scores: dict[str, int] = {}         # VPS予告用: 前回スコア
+        self._prev_preposition_keys: dict[str, str] = {}
         self._last_prepos_notify_at: float = 0.0             # 予告通知レートリミット
         self._diag_skip_counts: dict[str, int] = defaultdict(int)
 
@@ -340,6 +370,7 @@ class DualLinePragmaticBot(cp.Collector):
         self._ws_disconnected_at: float = 0.0
         self._game_ws_url: str = ""
         self._last_collector_ws_at: float = 0.0
+        self._ws_input_seen: bool = False
         self._remote_snapshot_sig: dict[str, str] = {}
         self._last_remote_signal_log_at: float = 0.0
         self._last_remote_signal_warn_at: float = 0.0
@@ -419,6 +450,9 @@ class DualLinePragmaticBot(cp.Collector):
     def _process_table_frame(self, table_id: str) -> None:
         buf = self.buffers.get(table_id)
         if not buf:
+            return
+        if self.bet_executor.is_live and not self.no_vps_poll:
+            # Normal LIVE is executor-only. The VPS is the sole signal source.
             return
 
         # ── シュー変化検知 ──
@@ -506,6 +540,7 @@ class DualLinePragmaticBot(cp.Collector):
                 )
             return
         self._last_collector_ws_at = time.time()
+        self._ws_input_seen = True
 
         for table_id in table_ids:
             self._process_table_frame(table_id)
@@ -560,10 +595,10 @@ class DualLinePragmaticBot(cp.Collector):
             self._diag_skip("v2_filter", f"table={buf.table_name or table_id} pattern={pattern_key}")
             return
 
-        # Speed/Turboテーブルはbetsopen窓が3-5秒しかなく移動が間に合わない
-        # → GUI BETをスキップ（VPS側は参考シグナルとして記録済み）
-        if _is_fast_table_name(buf.table_name or ""):
-            self._diag_skip("fast_table", f"table={buf.table_name or table_id} pattern={pattern_key}")
+        # Private系など$1 BETやdual-line対象に合わないテーブルは対象外。
+        # Speed/Turboはマルチエリアの事前入場でBET対象にする。
+        if _is_unsupported_table_name(buf.table_name or table_id):
+            self._diag_skip("unsupported_table", f"table={buf.table_name or table_id} pattern={pattern_key}")
             return
 
         # マルチロビー環境で、一度もBETSOPENを受け取っていないテーブルはスキップ
@@ -613,6 +648,8 @@ class DualLinePragmaticBot(cp.Collector):
             amount=bet_amount,
             metadata=bet_metadata,
         )
+        if not self.bet_executor.is_live:
+            self._publish_live_decision(table_id, buf, bet_side, bet_amount, bet_metadata)
         # BET指示を出した → 事前入場タイマーをリセット（BET完了後はexecutorがlobbyに戻る）
         self._prepos_switch_at = 0.0
 
@@ -646,43 +683,41 @@ class DualLinePragmaticBot(cp.Collector):
         self.table_scores[table_id] = 2
 
     def _update_table_score(self, table_id: str, buf) -> None:
-        """dga hand 後、そのテーブルの現在の近接度スコアを計算。"""
+        """Update six-pattern preposition state for a table."""
         seq_chars = []
         for h in (buf.hands or []):
             c = _winner_to_char(h.get("winner"))
             if c and c != "T":
                 seq_chars.append(c)
         seq = "".join(seq_chars)
-        next_n = len(seq) + 1
-        score, direction = score_proximity(seq, next_n)
+        preview = live_preposition_for_history(seq)
+        score = int(preview.get("score") or 0)
+        direction = str(preview.get("side") or "")
         self.table_scores[table_id] = score
-        self._maybe_notify_preposition(table_id, buf, score, direction, seq, next_n)
+        self._maybe_notify_preposition(table_id, buf, score, direction, seq, preview)
 
     def _maybe_notify_preposition(
-        self, table_id: str, buf, score: int, direction: str, seq: str, next_n: int
+        self, table_id: str, buf, score: int, direction: str, seq: str, preview: dict
     ) -> None:
         """VPS bot (non-live) がスコア上昇時に直接予告 Telegram を送信。
         GUI bot はこの通知を担当しない (重複排除)。"""
         if self.bet_executor.is_live:
             return
         if score <= 0:
+            self._prev_preposition_keys.pop(table_id, None)
             return
-        if _is_fast_table_name(str(buf.table_name or "")):
+        if _is_unsupported_table_name(str(buf.table_name or table_id)):
             return
-        prev = self._prev_table_scores.get(table_id, 0)
-        self._prev_table_scores[table_id] = score
-        if score <= prev:
-            return  # スコアが上昇していなければ通知不要
-        # レートリミット: 直近20秒以内に別テーブルの予告を送った場合はスキップ
-        now = time.time()
-        if now - self._last_prepos_notify_at < 20.0:
+        pattern_keys = [str(x) for x in (preview.get("pattern_keys") or []) if str(x) in V2_PATTERNS]
+        if not pattern_keys:
             return
-        self._last_prepos_notify_at = now
+        dedup_key = f"{score}|{'/'.join(pattern_keys)}|{len(seq)}"
+        if self._prev_preposition_keys.get(table_id) == dedup_key:
+            return
+        self._prev_preposition_keys[table_id] = dedup_key
         table_name = str(buf.table_name or table_id)
-        _, china_pattern = chinese_road_predict(seq, next_n)
-        _, big_pattern = big_road_predict(seq)
-        logger.info(f"[PREPOS-NOTIFY] score={score} table={table_name} direction={direction} china={china_pattern} big={big_pattern}")
-        _send_preposition_legacy(table_name, score, direction, str(china_pattern or ""), str(big_pattern or ""))
+        logger.info(f"[PREPOS-NOTIFY] score={score} table={table_name} direction={direction or '?'} patterns={pattern_keys}")
+        _send_preposition_legacy(table_name, score, direction, pattern_keys=pattern_keys)
 
     def _select_best_table(self) -> str | None:
         """全アクティブテーブル中、最もスコアの高い table_id を返す。
@@ -874,6 +909,52 @@ class DualLinePragmaticBot(cp.Collector):
             f"Predict: {side} ({side_name}) | Bet: ${bet_amt:.2f}\n"
             f"W/L/T: {self.wins}/{self.losses}/{self.ties} ({wr:.1f}%) | 解決: {self.total_resolved}/{self.total_signals}"
         )
+
+    def _publish_live_decision(
+        self, table_id: str, buf, side: str, amount: float, metadata: dict
+    ) -> None:
+        """Publish the VPS-owned six-pattern signal for the GUI executor."""
+        pattern_key = str(metadata.get("pattern_key") or "")
+        if pattern_key not in V2_PATTERNS:
+            return
+        base_url = (
+            os.getenv("BACOPY_SIGNAL_API_URL", "").rstrip("/")
+            or os.getenv("BACOPY_REMOTE_API_URL", "").rstrip("/")
+            or "https://master.bafather.uk"
+        )
+        api_key = (
+            os.getenv("BACOPY_SIGNAL_API_KEY", "").strip()
+            or os.getenv("BACOPY_REMOTE_API_KEY", "").strip()
+            or os.getenv("BACOPY_API_KEY", "").strip()
+            or os.getenv("LAPLACE_API_KEY", "").strip()
+        )
+        if not api_key:
+            logger.error("[DECISION-PUBLISH] skipped: remote API key is not configured")
+            return
+        qpid = str(getattr(buf, "qpid_table_id", "") or table_id).strip()
+        did = f"dl_vps_{uuid.uuid4().hex[:16]}"
+        payload = {
+            "decision_id": did,
+            "provider": "pragmatic",
+            "table_id": qpid,
+            "table_name": str(buf.table_name or table_id),
+            "captured_at": _utc_now_iso(),
+            "source": "dual_line_vps_whitelist6",
+            "friend_action": {
+                "action": "BET",
+                "side": side,
+                "amount": float(amount),
+                "pattern_key": pattern_key,
+                "china_pattern": str(metadata.get("china_pattern") or ""),
+                "big_pattern": str(metadata.get("big_pattern") or ""),
+                "qpid_table_id": qpid,
+            },
+        }
+        result = self._api_post("/api/decisions", payload, base_url=base_url, api_key=api_key)
+        if result.get("accepted") or result.get("ok"):
+            logger.info(f"[DECISION-PUBLISH] accepted did={did} table={qpid} pattern={pattern_key}")
+        else:
+            logger.error(f"[DECISION-PUBLISH] failed did={did} base={base_url} result={result}")
 
     # ── 状態保存/復元 ──────────────────────────────────────────────
 
@@ -1106,6 +1187,8 @@ class DualLinePragmaticBot(cp.Collector):
     def _poll_remote_snapshots_for_signals(self) -> None:
         if not self.bet_executor.is_live:
             return
+        if not self.no_vps_poll:
+            return
         enabled = str(os.getenv("BACOPY_ENABLE_REMOTE_SIGNAL_BRIDGE", "1") or "1").strip().lower() in (
             "1",
             "true",
@@ -1204,6 +1287,7 @@ class DualLinePragmaticBot(cp.Collector):
 
         data: dict = {}
         src_name = "default"
+        saw_stale_candidate = False
         for t in targets:
             base = str(t.get("base_url") or "").rstrip("/")
             key = str(t.get("api_key") or "").strip()
@@ -1221,6 +1305,7 @@ class DualLinePragmaticBot(cp.Collector):
                     now_utc = _dt.datetime.now(_dt.timezone.utc)
                     age_sec = (now_utc - updated_at).total_seconds()
                     if age_sec > 120:
+                        saw_stale_candidate = True
                         now_ts = time.time()
                         stale_key = f"{base}|{table_id_c}|{updated_c}"
                         last_stale_key = str(getattr(self, "_last_preposition_stale_key", "") or "")
@@ -1235,19 +1320,60 @@ class DualLinePragmaticBot(cp.Collector):
                         continue
                 except Exception:
                     pass
+            candidate_patterns = [
+                str(x) for x in (candidate.get("pattern_keys") or []) if str(x)
+            ]
+            candidate_name = str(candidate.get("table_name") or "")
+            unsupported_name = f"{candidate_name} {table_id_c}".casefold()
+            reject_reason = ""
+            if self.use_v2_filter and not any(
+                pattern_key in V2_PATTERNS for pattern_key in candidate_patterns
+            ):
+                reject_reason = "non-whitelist-pattern"
+            elif _is_unsupported_table_name(unsupported_name):
+                reject_reason = "unsupported-multi-table"
+            if reject_reason:
+                now_ts = time.time()
+                reject_key = (
+                    f"{base}|{table_id_c}|{reject_reason}|"
+                    f"{'/'.join(sorted(candidate_patterns)) or '-'}"
+                )
+                if (
+                    reject_key
+                    != str(getattr(self, "_last_preposition_reject_key", "") or "")
+                    or now_ts
+                    - float(getattr(self, "_last_preposition_reject_log_at", 0.0) or 0.0)
+                    >= 60.0
+                ):
+                    logger.warning(
+                        f"[PREPOS] rejected candidate reason={reject_reason} "
+                        f"source={t.get('name') or base or 'default'} "
+                        f"table={candidate_name or table_id_c} patterns={candidate_patterns or ['-']}"
+                    )
+                    self._last_preposition_reject_key = reject_key
+                    self._last_preposition_reject_log_at = now_ts
+                continue
             data = candidate
             src_name = str(t.get("name") or base or "default")
             break
 
         table_id = str(data.get("table_id") or "").strip()
         if not table_id:
-            self._check_preposition_local_fallback()
+            # Permit the same candidate again only after the API reports that
+            # the previous forecast is no longer active.
+            if not saw_stale_candidate:
+                self._last_preposition_key = ""
+            if self.no_vps_poll:
+                self._check_preposition_local_fallback()
             return
-        updated_at_str = str(data.get("updated_at") or data.get("server_updated_at") or "")
         table_name = str(data.get("table_name") or "")
         score = int(data.get("score") or 1)
         qpid = str(data.get("qpid") or table_id)
+        if _is_unsupported_table_name(f"{table_name} {qpid} {table_id}"):
+            logger.info(f"[PREPOS] ignored unsupported table: {table_name or table_id}")
+            return
         direction = str(data.get("direction") or "").upper()
+        pattern_keys = sorted(str(x) for x in (data.get("pattern_keys") or []) if str(x))
         china_pattern = str(data.get("china_pattern") or "").strip()
         big_pattern = str(data.get("big_pattern") or "").strip()
         if direction not in ("P", "B"):
@@ -1261,7 +1387,7 @@ class DualLinePragmaticBot(cp.Collector):
         if current_table and (current_table == qpid or current_table == table_id):
             logger.debug(f"[PREPOS] already at table {table_id}, skip")
             return
-        current_key = f"{table_id}|{updated_at_str}|{src_name}"
+        current_key = f"{qpid or table_id}|{score}|{direction}|{'/'.join(pattern_keys)}|{src_name}"
         if current_key == getattr(self, "_last_preposition_key", ""):
             logger.debug(f"[PREPOS] dedup skip (same key): {current_key[:40]}")
             return
@@ -1271,7 +1397,7 @@ class DualLinePragmaticBot(cp.Collector):
             f"direction={direction or '?'} source={src_name}"
         )
         try:
-            self.bet_executor._request_switch(table_id, table_name, qpid, intent="preposition")
+            self.bet_executor._request_switch(table_id, table_name, qpid, intent="preposition", side=direction)
         except TypeError:
             self.bet_executor._request_switch(table_id, table_name, qpid)
         self._prepos_switch_at = time.time()
@@ -1316,7 +1442,7 @@ class DualLinePragmaticBot(cp.Collector):
             f"score={score} direction={direction or '?'}"
         )
         try:
-            self.bet_executor._request_switch(table_id, table_name, qpid, intent="preposition")
+            self.bet_executor._request_switch(table_id, table_name, qpid, intent="preposition", side=direction)
         except TypeError:
             self.bet_executor._request_switch(table_id, table_name, qpid)
         self._prepos_switch_at = time.time()
@@ -1324,11 +1450,6 @@ class DualLinePragmaticBot(cp.Collector):
     def _handle_decision(self, decision: dict) -> None:
         """VPS からの BET decision を受け取り、executor 経由で BET 実行。"""
         if not self.bet_executor.is_live:
-            return
-        # use_v2_filter=True の場合は外部 VPS decision を無視し、ローカル V2 シグナルのみを使用
-        if self.use_v2_filter:
-            did_skip = str(decision.get("decision_id") or "")[:12]
-            logger.debug(f"[DECISION] skip (use_v2_filter=True, external decision blocked): {did_skip}")
             return
         did = str(decision.get("decision_id") or "")
         fa = decision.get("friend_action") or {}
@@ -1338,10 +1459,87 @@ class DualLinePragmaticBot(cp.Collector):
         if side not in ("P", "B"):
             logger.warning(f"[DECISION] invalid side={side!r} in {did}")
             return
+        pattern_key = str(fa.get("pattern_key") or decision.get("pattern_key") or "")
+        if self.use_v2_filter and pattern_key not in V2_PATTERNS:
+            logger.warning(f"[DECISION] rejected non-whitelist signal: did={did[:12]} pattern={pattern_key or '-'}")
+            return
+        captured_at = str(decision.get("captured_at") or "").strip()
+        if captured_at:
+            try:
+                captured_dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+                decision_age = (datetime.now(timezone.utc) - captured_dt).total_seconds()
+                max_age = float(os.getenv("BACOPY_MAX_DECISION_AGE_SEC", "20") or 20)
+                if decision_age > max_age:
+                    logger.warning(
+                        f"[DECISION] SKIP stale: did={did[:12]} age={decision_age:.1f}s max={max_age:.1f}s"
+                    )
+                    self._api_post(
+                        f"/api/decisions/{did}/ack",
+                        {
+                            "ack": {
+                                "executor_id": "gui-1",
+                                "skipped_at": _utc_now_iso(),
+                                "reason": "stale_before_execution",
+                            },
+                            "status": "skipped_stale",
+                        },
+                        base_url=str(decision.get("_source_api_base") or ""),
+                        api_key=str(decision.get("_source_api_key") or ""),
+                    )
+                    return
+            except Exception as ex:
+                logger.warning(f"[DECISION] captured_at parse failed for {did[:12]}: {ex}")
         table_id = str(decision.get("table_id") or "")
         table_name = str(decision.get("table_name") or "")
+        if _is_unsupported_table_name(f"{table_name} {table_id}"):
+            logger.warning(f"[DECISION] SKIP unsupported table: did={did[:12]} table={table_name or table_id}")
+            self._api_post(
+                f"/api/decisions/{did}/ack",
+                {
+                    "ack": {
+                        "executor_id": "gui-1",
+                        "skipped_at": _utc_now_iso(),
+                        "reason": "unsupported_table",
+                    },
+                    "status": "skipped_unsupported_table",
+                },
+                base_url=str(decision.get("_source_api_base") or ""),
+                api_key=str(decision.get("_source_api_key") or ""),
+            )
+            return
 
         ex = self.bet_executor
+        if (
+            getattr(ex, "_multi_lobby_mode", False)
+            and getattr(ex, "_multi_diagnostic_only", False)
+        ):
+            logger.info(
+                f"[DECISION-DIAG] captured without BET: did={did} side={side} "
+                f"table={table_name!r} tid={table_id!r}"
+            )
+            try:
+                ex._request_switch(table_id, table_name, table_id, intent="preposition", side=side)
+            except Exception as diag_ex:
+                logger.warning(f"[DECISION-DIAG] probe request failed: {diag_ex}")
+            self._api_post(
+                f"/api/decisions/{did}/ack",
+                {
+                    "ack": {
+                        "executor_id": "gui-1",
+                        "skipped_at": _utc_now_iso(),
+                        "reason": "multi_diagnostic_only",
+                    },
+                    "status": "skipped_diagnostic",
+                },
+                base_url=str(decision.get("_source_api_base") or ""),
+                api_key=str(decision.get("_source_api_key") or ""),
+            )
+            _send_telegram(
+                f"🔎 診断モード: BET未送信\n{table_name}\n"
+                f"Side: {side} $0.00\n対象卓とボタンの対応を採取中"
+            )
+            return
+
         is_bif = getattr(ex, "is_bet_in_flight", False)
         pending_bet = getattr(ex, "_pending_bet", None)
         ex_phase = getattr(ex, "_phase", "?")
@@ -1382,7 +1580,11 @@ class DualLinePragmaticBot(cp.Collector):
         bet_amount = self.money.next_bet()
         logger.info(f"[BOT] decision received: {did} side={side} table={table_name} amount=${bet_amount}")
 
-        metadata = {"table_name": table_name, "qpid_table_id": table_id}
+        metadata = {
+            "table_name": table_name,
+            "qpid_table_id": table_id,
+            "pattern_key": pattern_key,
+        }
         bet_id = self.bet_executor.place_bet(table_id, side, bet_amount, metadata)
 
         self._pending_decisions[did] = {
@@ -1804,12 +2006,7 @@ class DualLinePragmaticBot(cp.Collector):
                 logger.info("[BOT] VPS API polling DISABLED (dry-run research mode)")
             else:
                 logger.info("[BOT] VPS API polling DISABLED (--no-vps-poll / direct local mode)")
-            _send_telegram(
-                f"📡 ロビー監視中\n"
-                f"VPS監視: hakudasama@gmail.com\n"
-                f"シグナル発生時に自動テーブル入場・BETします\n"
-                f"手動操作は不要です"
-            )
+            send_log("ロビー監視中: VPSの6パターンdecisionを待機してBETを実行します")
 
             last_report = time.time()
             last_executor_tick = time.time()
@@ -1817,6 +2014,9 @@ class DualLinePragmaticBot(cp.Collector):
             last_result_check = time.time()
             last_result_flush_check = time.time()
             last_remote_signal_poll = time.time() - 5
+            input_stale_restart_sec = float(
+                os.getenv("BACOPY_DRY_INPUT_STALE_RESTART_SEC", "180") or 180
+            )
             _table_enter_at: dict[str, float] = {}  # table_id -> entered timestamp
             _TABLE_TIMEOUT = 90.0   # 90秒シグナルなし → ロビーへ戻る
             self._prepos_switch_at = 0.0             # 事前入場スイッチ開始時刻
@@ -1852,6 +2052,21 @@ class DualLinePragmaticBot(cp.Collector):
                     raise
 
                 now = time.time()
+
+                # VPSのDRY監視botでは、プロセスが生きていてもPragmatic入力だけ
+                # 停止することがある。局面受信済みの接続が無音になったら再接続する。
+                if (
+                    not self.bet_executor.is_live
+                    and self._ws_input_seen
+                    and input_stale_restart_sec > 0
+                    and now - self._last_collector_ws_at > input_stale_restart_sec
+                ):
+                    stale_for = int(now - self._last_collector_ws_at)
+                    logger.error(
+                        f"[INPUT-WATCHDOG] no table frames for {stale_for}s; "
+                        "exiting for wrapper restart"
+                    )
+                    break
 
                 # ── lobby URL ガード（TOPページ固定を自己回復） ─────
                 if now - _last_lobby_recover_at >= 15.0:
@@ -2100,13 +2315,22 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     mode_label = "LIVE" if bot.bet_executor.is_live else "DRY RUN"
-    _send_telegram(
-        f"🟢 dual_line_pragmatic_bot 起動 ({mode_label})\n"
-        f"filter: {'v2 (6 patterns)' if not args.no_v2_filter else 'all patterns'}\n"
-        f"money: {BET_MODES[bot.money.mode]} unit=${bot.money.unit}\n"
-        f"stop: ${bot.money.profit_stop} cut: ${bot.money.loss_cut} on_limit: {bot.money.on_limit}\n"
-        f"累計 signals: {bot.total_signals}"
-    )
+    if bot.bet_executor.is_live:
+        _send_telegram(
+            "📊 LIVE 稼働 0分\n"
+            "通常BACCのBET: 0勝 / 0敗 / 0引分 (BET未実行)\n"
+            f"損益: $+0.00 (今回: $+0.00)\n"
+            f"次BET額: ${bot.money.status_dict()['next_bet']:.2f}"
+        )
+        bot._last_tg_status = time.time()
+    else:
+        _send_telegram(
+            f"🟢 dual_line_pragmatic_bot 起動 ({mode_label})\n"
+            f"filter: {'v2 (6 patterns)' if not args.no_v2_filter else 'all patterns'}\n"
+            f"money: {BET_MODES[bot.money.mode]} unit=${bot.money.unit}\n"
+            f"stop: ${bot.money.profit_stop} cut: ${bot.money.loss_cut} on_limit: {bot.money.on_limit}\n"
+            f"累計 signals: {bot.total_signals}"
+        )
 
     cookies = Path(args.cookies) if args.cookies else None
     exit_code = 0

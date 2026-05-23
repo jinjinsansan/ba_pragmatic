@@ -1,5 +1,5 @@
 # bafather GUI (app.asar) デプロイスクリプト
-# 前提: copytrade_gui/src/renderer/app.js または index.html を変更した後に実行
+# 前提: copytrade_gui/src/main.js、src/renderer/app.js、または index.html を変更した後に実行
 # ※ GUI を停止してから実行すること (app.asar がロックされている場合は上書き不可)
 
 $KEY    = "C:\Users\USER\.ssh\laplace_vps"

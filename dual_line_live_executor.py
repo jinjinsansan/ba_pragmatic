@@ -236,17 +236,28 @@ async (args) => {
   const candidates = Array.isArray(args && args.candidates) ? args.candidates : [];
   const norm = (s) => String(s || '').replace(/\s+/g, '').replace(/[$￥¥]/g, '').toLowerCase();
   const candNorm = candidates.map(norm).filter(Boolean);
+  const href = String(location.href || '');
+  const isMultiBaccaratDom =
+    href.includes('/desktop/multibaccarat') || !!document.querySelector('[id^="TileHeight-"]');
+  if (!isMultiBaccaratDom) {
+    return {
+      ok: true, found: false, clicked: false, reason: 'not_multi_baccarat_dom',
+      href: href.slice(0, 120), matchIndex: -1, totalNodes: 0
+    };
+  }
 
   function containsQpid(v) {
     const s = String(v || '');
     if (!qpid || !s) return false;
-    return s.includes('/snaps/' + qpid + '/') || s.includes('tableId=' + qpid) || s.includes('tableid=' + qpid) || s === qpid;
+    return s.includes('/snaps/' + qpid + '/') || s.includes('tableId=' + qpid) || s.includes('tableid=' + qpid) || s === qpid || s.includes('TileHeight-' + qpid);
   }
   function isCandidateText(text) {
     const t = norm(text);
     if (!t) return false;
     for (const c of candNorm) {
-      if (t === c || t.includes(c) || c.includes(t)) return true;
+      if (t === c) return true;
+      // A table such as "Thai Baccarat 1" must not match the chip button "1".
+      if (t.length >= 4 && c.length >= 4 && (t.includes(c) || c.includes(t))) return true;
     }
     return false;
   }
@@ -284,8 +295,28 @@ async (args) => {
       el.click();
     } catch(_) {}
   }
+  function diagOf(el) {
+    const out = [];
+    let cur = el;
+    for (let i = 0; i < 6 && cur; i++) {
+      try {
+        const text = String(cur.innerText || cur.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+        const buttons = Array.from(cur.querySelectorAll('button, [role="button"]')).slice(0, 8)
+          .map((b) => String(b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40));
+        out.push({
+          depth: i,
+          tag: String(cur.tagName || ''),
+          cls: String(cur.className || '').slice(0, 80),
+          text: text,
+          buttons: buttons,
+        });
+      } catch(_) {}
+      cur = cur.parentElement;
+    }
+    return out;
+  }
   function findTarget() {
-    const sels = '[role="button"], button, a, div[role="button"], [data-testid*="table"], [data-testid*="lobby"]';
+    const sels = '[id^="TileHeight-"], [role="button"], button, a, div[role="button"], [data-testid*="table"], [data-testid*="lobby"]';
     const nodes = document.querySelectorAll(sels);
     let idx = 0;
     for (const el of nodes) {
@@ -294,6 +325,7 @@ async (args) => {
           if (containsQpid(el.getAttribute && el.getAttribute('data-qpid'))) return { el: clickableAncestor(el), idx, total: nodes.length };
           if (containsQpid(el.getAttribute && el.getAttribute('data-table-id'))) return { el: clickableAncestor(el), idx, total: nodes.length };
           if (containsQpid(el.getAttribute && el.getAttribute('data-tableid'))) return { el: clickableAncestor(el), idx, total: nodes.length };
+          if (containsQpid(el.getAttribute && el.getAttribute('id'))) return { el: el, idx, total: nodes.length };
           if (containsQpid(el.getAttribute && el.getAttribute('href'))) return { el: clickableAncestor(el), idx, total: nodes.length };
           if (containsQpid(el.getAttribute && el.getAttribute('src'))) return { el: clickableAncestor(el), idx, total: nodes.length };
           if (containsQpid(el.getAttribute && el.getAttribute('style'))) return { el: clickableAncestor(el), idx, total: nodes.length };
@@ -353,7 +385,7 @@ async (args) => {
     if (t && t.el) {
       try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
       if (click) clickEl(t.el);
-      return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total) };
+      return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total), diag: diagOf(t.el) };
     }
     scrollStep(pickScroller(), true);
     await sleep(70);
@@ -363,12 +395,13 @@ async (args) => {
     if (t && t.el) {
       try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
       if (click) clickEl(t.el);
-      return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total) };
+      return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total), diag: diagOf(t.el) };
     }
     scrollStep(pickScroller(), false);
     await sleep(70);
   }
-  return { ok:true, found:false, clicked:false, matchIndex:-1, totalNodes:0 };
+  const finalTarget = findTarget();
+  return { ok:true, found:false, clicked:false, matchIndex:-1, totalNodes:Number(finalTarget.total || 0) };
 }
 """
 
@@ -431,6 +464,99 @@ _RECONNECTING_DETECT_JS = r"""
 }
 """
 
+_AUTO_RECOVER_IDLE_JS = r"""
+() => {
+  const dialogNeedles = [
+    '非アクティブ', '操作がありません', '接続が失われ', '再接続',
+    '他の場所でセッション', 'inactivity', 'are you still there',
+    'session elsewhere', 'reconnecting', 'connection lost',
+    'カスタマーサポート', 'お問い合わせください', 'customer support',
+    'please contact', 'contact support', 'technical issue',
+    'セッションが終了', 'session has ended', 'session expired'
+  ];
+  const buttonNeedles = [
+    'continue', 'stay', 'close', 'remain',
+    '続行', '閉じる', 'ここに残る', '再開', '戻る',
+    'ok', 'okay', 'dismiss', 'はい', '確認', '了解'
+  ];
+  const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const visible = (el) => {
+    try {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      return r.width > 20 && r.height > 12 && cs.visibility !== 'hidden' && cs.display !== 'none';
+    } catch(_) { return false; }
+  };
+  const click = (el) => {
+    try { el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+    try { el.click(); return true; } catch(_) {}
+    return false;
+  };
+  const dialogs = [];
+  for (const r of document.querySelectorAll('[role="dialog"], .modal, .dialog, .popup, [data-testid*="modal"], [class*="modal"]')) {
+    try {
+      if (!visible(r)) continue;
+      const t = norm((r.innerText || r.textContent || '').slice(0, 500));
+      if (t && dialogNeedles.some((k) => t.includes(k))) dialogs.push(r);
+    } catch(_) {}
+  }
+  let clicked = 0;
+  for (const d of dialogs) {
+    for (const el of d.querySelectorAll('button, [role="button"], [aria-label], a')) {
+      try {
+        if (!visible(el)) continue;
+        const t = norm((el.innerText || el.textContent || el.getAttribute('aria-label') || '').slice(0, 120));
+        if (t && buttonNeedles.some((k) => t.includes(k)) && click(el)) clicked += 1;
+        if (clicked >= 3) break;
+      } catch(_) {}
+    }
+    if (clicked >= 3) break;
+  }
+  return { ok:true, clicked, dialogs:dialogs.length };
+}
+"""
+
+_DISMISS_BETSLIP_SETTINGS_JS = r"""
+() => {
+  const dialogNeedles = ['ベットスリップ設定', 'bet slip settings', 'betslip settings'];
+  const closeNeedles = ['閉じる', 'キャンセル', 'cancel', 'close', 'skip', 'not now', '後で'];
+  const primaryNeedles = ['ok', '確認', 'continue', '続行'];
+  const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const visible = (el) => {
+    try {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      return r.width > 20 && r.height > 12 && cs.visibility !== 'hidden' && cs.display !== 'none';
+    } catch(_) { return false; }
+  };
+  const click = (el) => { try { el.click(); return true; } catch(_) { return false; } };
+  const dialogs = [];
+  for (const r of document.querySelectorAll('[role="dialog"], .modal, .dialog, .popup, [data-testid*="modal"], [class*="modal"]')) {
+    try {
+      if (!visible(r)) continue;
+      const t = norm((r.innerText || r.textContent || '').slice(0, 600));
+      if (t && dialogNeedles.some((k) => t.includes(k))) dialogs.push(r);
+    } catch(_) {}
+  }
+  let closed = 0;
+  for (const d of dialogs) {
+    const buttons = d.querySelectorAll('button, [role="button"], [aria-label], [data-testid*="close"]');
+    let done = false;
+    for (const b of buttons) {
+      const t = norm(b.innerText || b.textContent || b.getAttribute('aria-label') || '');
+      if (visible(b) && closeNeedles.some((k) => t.includes(k)) && click(b)) { closed += 1; done = true; break; }
+    }
+    if (!done) {
+      for (const b of buttons) {
+        const t = norm(b.innerText || b.textContent || b.getAttribute('aria-label') || '');
+        if (visible(b) && primaryNeedles.some((k) => t.includes(k)) && click(b)) { closed += 1; break; }
+      }
+    }
+  }
+  return { ok:true, found:dialogs.length, closed };
+}
+"""
+
 # ── ヘルパー ──────────────────────────────────────────────────────────
 
 def _side_to_bc(side: str) -> str:
@@ -489,6 +615,8 @@ class LiveBetExecutor:
         self._last_inactivity_check_at: float = 0.0
         self._last_session_elsewhere_check_at: float = 0.0
         self._last_reconnecting_check_at: float = 0.0
+        self._last_idle_recover_check_at: float = 0.0
+        self._last_betslip_check_at: float = 0.0
         self._reconnecting_first_at: float = 0.0   # 再接続しています 最初の検出時刻
         self._user_id: str = ""              # userId (for lpbet)
         self._game_id: str = ""              # current game id
@@ -505,11 +633,34 @@ class LiveBetExecutor:
         self._switch_in_progress: bool = False
         self._switch_target_table_id: str = ""
         self._multi_lobby_mode: bool = os.getenv("BACOPY_MULTI_LOBBY_MODE", "1") != "0"
+        self._multi_diagnostic_only: bool = (
+            os.getenv("BACOPY_MULTI_DIAGNOSTIC_ONLY", "1") != "0"
+        )
+        self._multi_bet_transport: str = (
+            os.getenv("BACOPY_MULTI_BET_TRANSPORT", "click").strip().lower() or "click"
+        )
+        if self._multi_bet_transport not in ("ws", "click"):
+            self._multi_bet_transport = "click"
+        self._diag_probe_qpid: str = os.getenv("BACOPY_MULTI_DIAG_PROBE_QPID", "").strip()
+        self._diag_probe_name: str = os.getenv("BACOPY_MULTI_DIAG_PROBE_NAME", "").strip()
+        self._diag_probe_side: str = os.getenv("BACOPY_MULTI_DIAG_PROBE_SIDE", "B").strip().upper()
+        if self._diag_probe_side not in ("P", "B"):
+            self._diag_probe_side = "B"
+        self._diag_probe_queued: bool = False
+        self._diag_prepared_side: str = self._diag_probe_side
+        self._diag_last_open_probe_gid: str = ""
+        self._prepared_table_id: str = ""
+        self._prepared_at: float = 0.0
+
+        # lpbet WS 確認（JS click 後に Pragmatic game client が送る <lpbet> メッセージ）
+        self._last_lpbet_gid: str = ""
+        self._last_lpbet_at: float = 0.0
         self._table_states: dict[str, dict[str, Any]] = {}
         self._last_multi_area_ensure_at: float = 0.0
         self._multi_area_ready: bool = False
         self._sent_bet_ids: set[str] = set()
         self._bet_send_in_progress: bool = False
+        self._last_bet_sent_at: float = 0.0
         self._lock = threading.Lock()
         self._owner_thread_id: int = threading.get_ident()
 
@@ -529,6 +680,7 @@ class LiveBetExecutor:
         # Playwright route_web_socket プロキシ（multi-lobby BET 送信用）
         self._ws_proxy_server: Any = None      # WebSocketRoute server side
         self._ws_proxy_route: Any = None       # WebSocketRoute client side
+        self._ws_proxy_servers: dict[str, Any] = {}
 
     # ── setup ────────────────────────────────────────────────────────
 
@@ -536,7 +688,12 @@ class LiveBetExecutor:
         self._context = context
         self._lobby_page = lobby_page
         self._bet_page = bet_page or lobby_page
-        logger.info(f"[EXEC-SETUP] setup called. multi_lobby={self._multi_lobby_mode} lobby_page={getattr(lobby_page,'url','?')[:80]}")
+        logger.info(
+            f"[EXEC-SETUP] setup called. multi_lobby={self._multi_lobby_mode} "
+            f"diagnostic_only={self._multi_diagnostic_only} "
+            f"multi_bet_transport={self._multi_bet_transport} "
+            f"lobby_page={getattr(lobby_page,'url','?')[:80]}"
+        )
         self._try_discover_user_id()
 
         try:
@@ -598,11 +755,7 @@ class LiveBetExecutor:
                 self._ensure_multi_area(force=True)
             except Exception as ex:
                 logger.warning(f"[EXEC-SETUP] _ensure_multi_area failed: {ex}")
-        self._notify(
-            "📡 ロビー監視中\n"
-            "シグナル発生時に自動でテーブル入場・BETします\n"
-            "手動操作は不要です"
-        )
+        logger.info("[EXEC-SETUP] lobby monitoring ready; waiting for VPS whitelist decisions")
 
     def _attach_page(self, page: Any) -> None:
         """既存/新規ページへ bridge + websocket hook を1回だけ設定。"""
@@ -683,7 +836,7 @@ class LiveBetExecutor:
         if not open_gid or open_gid == closed_gid:
             return False
         age = time.time() - float(st.get("last_bets_open_at") or 0.0)
-        max_age = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC", "17") or 17)
+        max_age = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC", "60") or 60)
         return 0 < age < max_age
 
     def _focus_table_in_multi(self, req: dict) -> bool:
@@ -695,12 +848,17 @@ class LiveBetExecutor:
             page_url = page.url[:80]
         except Exception:
             page_url = "(unknown)"
-        self._ensure_multi_area(force=True)
+        # A live multi-table WS proves that the multi-play view is already active.
+        # Re-clicking its tab during a preposition remounts the table grid and makes
+        # the target disappear during the short betting window.
+        self._ensure_multi_area(force=False)
         table_id = str(req.get("table_id") or "").strip()
         qpid = str(req.get("qpid") or "").strip()
         table_name = str(req.get("table_name") or "").strip()
         intent = str(req.get("intent") or "preposition").strip().lower()
-        click = intent in ("prepare", "decision", "bet")
+        preposition_click = os.getenv("BACOPY_PREPOSITION_CLICK_TILE", "1") != "0"
+        click = intent in ("prepare", "decision", "bet") or (intent == "preposition" and preposition_click)
+        side = str(req.get("side") or "").upper()
         candidates = [x for x in [table_name, table_id, qpid] if x]
         # 英日テーブル名の差分を吸収（例: "Baccarat 5" <-> "バカラ 5"）
         try:
@@ -713,6 +871,85 @@ class LiveBetExecutor:
         except Exception:
             pass
         logger.info(f"[FOCUS] intent={intent} click={click} table={table_name!r} qpid={qpid!r} page={page_url}")
+
+        # Diagnostic mode must not spend the preposition window trying to
+        # navigate an empty lobby frame. Probe every Pragmatic frame directly;
+        # the shared multi-table frame is where side buttons were observed.
+        if self._multi_diagnostic_only and side in ("P", "B") and (qpid or table_id):
+            tid = str(qpid or table_id)
+            side_class = {"P": "ym_yP", "B": "ym_yQ"}[side]
+            probe_frames: list[Any] = []
+            seen_frames: set[int] = set()
+            try:
+                pages = [page] + list(self._context.pages or [])
+            except Exception:
+                pages = [page]
+            for candidate_page in pages:
+                try:
+                    frames = [candidate_page] + list(candidate_page.frames or [])
+                except Exception:
+                    frames = [candidate_page]
+                for frame in frames:
+                    marker = id(frame)
+                    if marker in seen_frames:
+                        continue
+                    seen_frames.add(marker)
+                    try:
+                        frame_url = str(getattr(frame, "url", "") or "")
+                    except Exception:
+                        frame_url = ""
+                    if "pragmaticplaylive" in frame_url or "qpidreoxcc.net" in frame_url:
+                        probe_frames.append(frame)
+            logger.info(f"[ML-DIAG] direct frame probe count={len(probe_frames)} table={tid} side={side}")
+            seek_frames: list[tuple[int, Any]] = []
+            for i, probe_frame in enumerate(probe_frames):
+                try:
+                    probe = probe_frame.evaluate(
+                        self._JS_BET_COORDS,
+                        {"qpid": tid, "tableName": table_name, "sideClass": side_class},
+                    )
+                    visible_count = int((probe or {}).get("visibleCount") or 0) if isinstance(probe, dict) else 0
+                    if visible_count > 0:
+                        seek_frames.append((i, probe_frame))
+                    if bool((probe or {}).get("ok")) or visible_count > 0:
+                        logger.info(f"[ML-DIAG-PROBE] direct frame[{i}] table={tid} side={side} coords={probe}")
+                    if isinstance(probe, dict) and probe.get("ok"):
+                        return True
+                except Exception as ex:
+                    logger.warning(f"[ML-DIAG-PROBE] direct frame[{i}] failed table={tid}: {ex}")
+            # Multi tiles are virtualized: if the requested qpid is off-screen,
+            # scroll the actual multi-game frame until its TileHeight-qpid card
+            # is mounted, then probe the side button inside that exact tile.
+            seek_args = {
+                "qpid": tid,
+                "click": False,
+                "maxScroll": int(os.getenv("BACOPY_MULTI_SCROLL_MAX", "48") or "48"),
+                "candidates": [table_name, tid],
+                "hintIndex": -1,
+                "hintTotal": 0,
+            }
+            for i, probe_frame in (seek_frames or list(enumerate(probe_frames))):
+                try:
+                    seek = probe_frame.evaluate(_MULTI_LOBBY_FOCUS_JS, seek_args)
+                    logger.info(f"[ML-DIAG-SEEK] direct frame[{i}] table={tid} result={seek}")
+                    if not (isinstance(seek, dict) and seek.get("found")):
+                        continue
+                    self._prepared_table_id = tid
+                    self._prepared_at = time.time()
+                    self._diag_prepared_side = side
+                    logger.info(f"[ML-DIAG-PREPARED] exact tile mounted table={tid} side={side}")
+                    self._hover_multi_tile(probe_frame, tid)
+                    probe = probe_frame.evaluate(
+                        self._JS_BET_COORDS,
+                        {"qpid": tid, "tableName": table_name, "sideClass": side_class},
+                    )
+                    logger.info(f"[ML-DIAG-PROBE] mapped frame[{i}] table={tid} side={side} coords={probe}")
+                    if isinstance(probe, dict) and probe.get("ok"):
+                        return True
+                except Exception as ex:
+                    logger.warning(f"[ML-DIAG-SEEK] direct frame[{i}] failed table={tid}: {ex}")
+            logger.warning(f"[ML-DIAG-PROBE] no mapped side button found table={tid} side={side}")
+            return False
 
         frames = [page]
         try:
@@ -786,6 +1023,33 @@ class LiveBetExecutor:
                     f"{tag} FOUND table={table_name or table_id or qpid} qpid={qpid or table_id or '-'} "
                     f"clicked={bool(res.get('clicked'))}"
                 )
+                if click and res.get("clicked") and tid:
+                    try:
+                        page.wait_for_timeout(750)
+                    except Exception:
+                        pass
+                    self._prepared_table_id = tid
+                    self._prepared_at = time.time()
+                    logger.info(f"[ML-PREPARED] active target ready for BET table={tid}")
+                if side in ("P", "B") and tid:
+                    side_class = {"P": "ym_yP", "B": "ym_yQ"}[side]
+                    probe_frame = self._find_pragmatic_frame(target_qpid=tid)
+                    if probe_frame is not None:
+                        try:
+                            probe = probe_frame.evaluate(
+                                self._JS_BET_COORDS,
+                                {
+                                    "qpid": tid,
+                                    "tableName": table_name,
+                                    "sideClass": side_class,
+                                },
+                            )
+                            logger.info(
+                                f"[ML-DIAG-PROBE] table={tid} side={side} "
+                                f"clicked={bool(res.get('clicked'))} coords={probe}"
+                            )
+                        except Exception as ex:
+                            logger.warning(f"[ML-DIAG-PROBE] failed table={tid}: {ex}")
                 return True
         logger.warning(
             f"[FOCUS] NOT FOUND table={table_name or table_id or qpid or '-'} intent={intent} candidates={candidates}"
@@ -1263,6 +1527,13 @@ class LiveBetExecutor:
         logger.info(f"[WS-SENT-RAW] tid={ws_table_id} len={len(data) if data else 0} raw={_raw}")
         if not data:
             return
+        # <lpbet> 検出: Pragmatic game client がクリック受理後に自動送信する BET確定メッセージ
+        if "<lpbet" in data:
+            m_gid = re.search(r'gId="([^"]+)"', data)
+            gid = str(m_gid.group(1) if m_gid else "").strip()
+            self._last_lpbet_gid = gid
+            self._last_lpbet_at = time.time()
+            logger.info(f"[LPBET-CONFIRM] WS lpbet detected: gId={gid!r} table={ws_table_id!r}")
         if not self._user_id:
             m_uid_any = re.search(r'"(?:userId|uId)"\s*:\s*"([^"]{6,})"', data)
             if m_uid_any:
@@ -1394,6 +1665,26 @@ class LiveBetExecutor:
             )
             logger.info(f"[DIAG] known tables({len(self._table_states)}): {ws_summary}")
 
+        if (
+            self._multi_diagnostic_only
+            and self._diag_probe_qpid
+            and not self._diag_probe_queued
+            and self._is_multi_table_ws
+            and self._diag_probe_qpid in self._table_states
+        ):
+            self._diag_probe_queued = True
+            logger.info(
+                f"[ML-DIAG-ONESHOT] queued table={self._diag_probe_qpid} "
+                f"name={self._diag_probe_name or '-'} side={self._diag_probe_side}"
+            )
+            self._request_switch(
+                self._diag_probe_qpid,
+                self._diag_probe_name or self._diag_probe_qpid,
+                self._diag_probe_qpid,
+                intent="preposition",
+                side=self._diag_probe_side,
+            )
+
         # switch 要求があれば先に処理（テーブル入場）
         if self._switch_request and not self._switch_in_progress:
             req = self._switch_request
@@ -1406,6 +1697,95 @@ class LiveBetExecutor:
                 logger.warning(f"[TICK] switch failed: {e}")
             finally:
                 self._switch_in_progress = False
+
+        if self._multi_diagnostic_only and self._prepared_table_id:
+            prepared_tid = self._prepared_table_id
+            prepared_st = self._table_states.get(prepared_tid) or {}
+            open_gid = str(prepared_st.get("bets_open_game_id") or "")
+            if open_gid and open_gid != self._diag_last_open_probe_gid:
+                self._diag_last_open_probe_gid = open_gid
+                probe_frame = self._find_pragmatic_frame(target_qpid=prepared_tid)
+                if probe_frame is not None:
+                    side_class = {"P": "ym_yP", "B": "ym_yQ"}[self._diag_prepared_side]
+                    self._hover_multi_tile(probe_frame, prepared_tid)
+                    try:
+                        open_probe = probe_frame.evaluate(
+                            self._JS_BET_COORDS,
+                            {
+                                "qpid": prepared_tid,
+                                "tableName": self._diag_probe_name or prepared_tid,
+                                "sideClass": side_class,
+                            },
+                        )
+                        logger.info(
+                            f"[ML-DIAG-OPEN-PROBE] table={prepared_tid} gid={open_gid} "
+                            f"side={self._diag_prepared_side} coords={open_probe}"
+                        )
+                        if not (isinstance(open_probe, dict) and open_probe.get("ok")):
+                            reseek = probe_frame.evaluate(
+                                _MULTI_LOBBY_FOCUS_JS,
+                                {
+                                    "qpid": prepared_tid,
+                                    "click": False,
+                                    "maxScroll": int(os.getenv("BACOPY_MULTI_SCROLL_MAX", "48") or "48"),
+                                    "candidates": [self._diag_probe_name or prepared_tid, prepared_tid],
+                                    "hintIndex": -1,
+                                    "hintTotal": 0,
+                                },
+                            )
+                            logger.info(
+                                f"[ML-DIAG-OPEN-RESEEK] table={prepared_tid} gid={open_gid} result={reseek}"
+                            )
+                            if isinstance(reseek, dict) and reseek.get("found"):
+                                self._hover_multi_tile(probe_frame, prepared_tid)
+                                open_probe = probe_frame.evaluate(
+                                    self._JS_BET_COORDS,
+                                    {
+                                        "qpid": prepared_tid,
+                                        "tableName": self._diag_probe_name or prepared_tid,
+                                        "sideClass": side_class,
+                                    },
+                                )
+                                logger.info(
+                                    f"[ML-DIAG-OPEN-REPROBE] table={prepared_tid} gid={open_gid} "
+                                    f"side={self._diag_prepared_side} coords={open_probe}"
+                                )
+                            if not (isinstance(open_probe, dict) and open_probe.get("ok")):
+                                for retry_no in range(1, 9):
+                                    time.sleep(0.3)
+                                    reseek = probe_frame.evaluate(
+                                        _MULTI_LOBBY_FOCUS_JS,
+                                        {
+                                            "qpid": prepared_tid,
+                                            "click": False,
+                                            "maxScroll": int(os.getenv("BACOPY_MULTI_SCROLL_MAX", "48") or "48"),
+                                            "candidates": [self._diag_probe_name or prepared_tid, prepared_tid],
+                                            "hintIndex": -1,
+                                            "hintTotal": 0,
+                                        },
+                                    )
+                                    if isinstance(reseek, dict) and reseek.get("found"):
+                                        self._hover_multi_tile(probe_frame, prepared_tid)
+                                        open_probe = probe_frame.evaluate(
+                                            self._JS_BET_COORDS,
+                                            {
+                                                "qpid": prepared_tid,
+                                                "tableName": self._diag_probe_name or prepared_tid,
+                                                "sideClass": side_class,
+                                            },
+                                        )
+                                    ok_now = bool(isinstance(open_probe, dict) and open_probe.get("ok"))
+                                    logger.info(
+                                        f"[ML-DIAG-OPEN-RETRY] table={prepared_tid} gid={open_gid} "
+                                        f"attempt={retry_no} ok={ok_now} "
+                                        f"source={(open_probe or {}).get('source') if isinstance(open_probe, dict) else '-'}"
+                                    )
+                                    if ok_now:
+                                        break
+                    except Exception as ex:
+                        logger.warning(
+                            f"[ML-DIAG-OPEN-PROBE] failed table={prepared_tid} gid={open_gid}: {ex}"
+                        )
 
         # pending bet が長時間残っている場合は解放（decision 詰まり防止）
         pending_age = 0.0
@@ -1521,6 +1901,17 @@ class LiveBetExecutor:
             self._phase = "waiting"
             self._notify("⚠️ BET予約を破棄\n送信待機が長すぎたためスキップ")
 
+        bif_clear_sec = float(os.getenv("BACOPY_BIF_STUCK_CLEAR_SEC", "180") or 180)
+        with self._lock:
+            bif_stuck = bool(self._sent_bet_ids) and not self._bet_send_in_progress and not self._pending_bet
+            last_sent = self._last_bet_sent_at
+        if bif_stuck and last_sent > 0 and (now - last_sent) > bif_clear_sec:
+            logger.warning(
+                f"[TICK] BIF stuck clear: sent_bet_ids stale {now - last_sent:.0f}s > {bif_clear_sec}s"
+            )
+            with self._lock:
+                self._sent_bet_ids.clear()
+
         if self._multi_lobby_mode:
             try:
                 self._ensure_multi_area()
@@ -1541,7 +1932,7 @@ class LiveBetExecutor:
 
         # betsopen タイムアウト監視
         if self._multi_lobby_mode:
-            max_age = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC", "17") or 17)
+            max_age = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC", "60") or 60)
             for tid, st in list(self._table_states.items()):
                 last_open = float(st.get("last_bets_open_at") or 0.0)
                 if last_open > 0 and (now - last_open > max_age + 2):
@@ -1555,7 +1946,7 @@ class LiveBetExecutor:
                     self._table_states.pop(tid, None)
         else:
             if self._phase == "ready" and self._last_bets_open_at > 0:
-                max_age = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC", "17") or 17)
+                max_age = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC", "60") or 60)
                 if now - self._last_bets_open_at > max_age + 2:
                     if self._bets_open_game_id != self._bets_closed_game_id:
                         self._bets_closed_game_id = self._bets_open_game_id
@@ -1582,6 +1973,32 @@ class LiveBetExecutor:
                 _dismiss_inactivity_modal(page, None)
             except Exception as e:
                 logger.debug(f"[LIVE] inactivity check error: {e}")
+
+        if self._multi_lobby_mode and now - self._last_betslip_check_at >= 3.0:
+            self._last_betslip_check_at = now
+            try:
+                rec = page.evaluate(_DISMISS_BETSLIP_SETTINGS_JS)
+                if isinstance(rec, dict) and int(rec.get("closed") or 0) > 0:
+                    logger.info(f"[LIVE] betslip settings modal dismissed closed={rec.get('closed')}")
+            except Exception as e:
+                logger.debug(f"[LIVE] betslip modal check error: {e}")
+
+        if self._multi_lobby_mode and now - self._last_idle_recover_check_at >= 6.0:
+            self._last_idle_recover_check_at = now
+            try:
+                rec = page.evaluate(_AUTO_RECOVER_IDLE_JS)
+                if isinstance(rec, dict) and int(rec.get("clicked") or 0) > 0:
+                    logger.info(f"[LIVE] idle dialog auto-recovered (main) clicks={rec.get('clicked')}")
+            except Exception as e:
+                logger.debug(f"[LIVE] idle recover check error: {e}")
+            try:
+                from bacopy_executor_pragmatic_ws_live import find_lobby_frames
+                for frame in (find_lobby_frames(page) or []):
+                    rec = frame.evaluate(_AUTO_RECOVER_IDLE_JS)
+                    if isinstance(rec, dict) and int(rec.get("clicked") or 0) > 0:
+                        logger.info(f"[LIVE] idle dialog auto-recovered (frame) clicks={rec.get('clicked')}")
+            except Exception as e:
+                logger.debug(f"[LIVE] idle recover frame check error: {e}")
 
         # 「他の場所でセッションが開始されました」モーダル検出・解除 (10秒ごと)
         # WS 並列接続後にサーバが session-elsewhere を送ることがある。旧 executor と同じ
@@ -1658,6 +2075,16 @@ class LiveBetExecutor:
             logger.info(f"[SWITCH] _focus_table_in_multi result={ok}")
             if ok and self._switch_target_table_id:
                 self._switch_target_table_id = ""
+            target = str(qpid or table_id)
+            if ok and target and self._prepared_table_id == target:
+                with self._lock:
+                    pending_target = str((self._pending_bet or {}).get("table_id") or "")
+                if pending_target == target and self._is_table_bet_window_open(target):
+                    st = self._table_states.get(target) or {}
+                    gid = str(st.get("bets_open_game_id") or "")
+                    if gid:
+                        logger.info(f"[SWITCH] prepared target has open BET window; resume pending BET table={target}")
+                        self._try_execute_bet(gid, table_id=target)
             return
 
         try:
@@ -1718,12 +2145,17 @@ class LiveBetExecutor:
             logger.warning("[SEND-BET] SKIP: empty target table (table_id and _table_id both empty)")
             return False
 
-        # multi-lobby: テーブルが画面外なら scroll して WS を確立させる（クリック=遷移しない）
+        # multi-lobby WS transport receives all table windows; no DOM table selection is needed.
         if self._multi_lobby_mode:
             st = self._ensure_table_state(target_table)
             if self._table_name and not st.get("table_name"):
                 st["table_name"] = self._table_name
-            self._request_switch(target_table, self._table_name, target_table, intent="preposition")
+            if self._multi_bet_transport == "click" and self._prepared_table_id != target_table:
+                self._request_switch(target_table, self._table_name, target_table, intent="decision")
+            elif self._multi_bet_transport == "click":
+                logger.info(f"[BET-QUEUED] target already prepared table={target_table}")
+            else:
+                logger.info(f"[BET-QUEUED] multi WS transport selected; no DOM prepare table={target_table}")
         else:
             if self._phase == "waiting" or (self._table_id and target_table != self._table_id):
                 self._request_switch(target_table, self._table_name, target_table)
@@ -1770,7 +2202,7 @@ class LiveBetExecutor:
         if self._bets_open_game_id == self._bets_closed_game_id:
             return False
         age = time.time() - self._last_bets_open_at
-        max_age = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC", "17") or 17)
+        max_age = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC", "60") or 60)
         return 0 < age < max_age
 
     def _try_execute_bet(self, game_id: str, table_id: str = "") -> None:
@@ -1808,6 +2240,24 @@ class LiveBetExecutor:
             logger.info(f"[TRY-BET] multi-WS: ws_channel={chosen_table} bet_table={bet_table_id}")
         else:
             bet_table_id = chosen_table
+        if self._multi_lobby_mode and self._multi_bet_transport == "click":
+            prepared = str(self._prepared_table_id or "")
+            if prepared != bet_table_id:
+                logger.info(
+                    f"[TRY-BET-DEFER] target not prepared: target={bet_table_id} "
+                    f"prepared={prepared or '-'} switching={self._switch_in_progress}"
+                )
+                with self._lock:
+                    self._pending_bet = bet
+                if not self._switch_in_progress:
+                    st_for_prepare = self._table_states.get(bet_table_id) or {}
+                    self._request_switch(
+                        bet_table_id,
+                        str(st_for_prepare.get("table_name") or self._table_name or bet_table_id),
+                        bet_table_id,
+                        intent="prepare",
+                    )
+                return
         bet_id = str(bet.get("bet_id") or "").strip()
         st = self._table_states.get(bet_table_id) or self._table_states.get(chosen_table) or {}
         game_id = str(game_id or st.get("game_id") or st.get("bets_open_game_id") or self._game_id or "").strip()
@@ -1855,12 +2305,19 @@ class LiveBetExecutor:
         tname = str(st.get("table_name") or self._table_name or bet_table_id)
         logger.info(f"[TRY-BET] SENDING: {side_name} ${amount:.2f} table={tname} game={game_id} ck={ck}")
         self._phase = "betting"
+        lpbet_before_at = self._last_lpbet_at
 
-        # multi-lobby モードはクリックBETを使用（Worker WS経由は不可能）
-        if self._multi_lobby_mode and self._is_multi_table_ws:
+        # UI buttons cannot be safely mapped to a table in the shared multi frame.
+        # Default to sending the targeted lpbet message over the established multi WS proxy.
+        if self._multi_lobby_mode and self._is_multi_table_ws and self._multi_bet_transport == "click":
             self._bet_send_in_progress = True
             try:
-                click_ok = self._click_place_bet(side, amount)
+                click_ok = self._click_place_bet(
+                    side,
+                    amount,
+                    target_qpid=bet_table_id,
+                    target_table_name=tname,
+                )
             finally:
                 self._bet_send_in_progress = False
             result = {"ok": click_ok, "method": "click"}
@@ -1876,11 +2333,39 @@ class LiveBetExecutor:
             logger.info(f"[TRY-BET] _ws_send result={result}")
 
         if ok:
-            logger.info(f"[LIVE] bet sent OK ck={ck}")
+            # multi-lobby click モードではクリック成功だけでは不十分。
+            # Pragmatic game client が実際に BET を受理した場合、<lpbet> WS メッセージを自動送信する。
+            # UI反映とWS送信に数秒かかる場合があるため、確認を十分に待つ。
+            lpbet_confirmed = False
+            if self._multi_lobby_mode and self._is_multi_table_ws and self._multi_bet_transport == "click":
+                _lpbet_wait = float(os.getenv("BACOPY_LPBET_CONFIRM_WAIT_SEC", "35.0") or 35.0)
+                _lpbet_deadline = time.time() + _lpbet_wait
+                while time.time() < _lpbet_deadline:
+                    if self._last_lpbet_at > lpbet_before_at and (
+                        not game_id or self._last_lpbet_gid == game_id
+                    ):
+                        lpbet_confirmed = True
+                        break
+                    time.sleep(0.1)
+                if not lpbet_confirmed:
+                    logger.warning(
+                        f"[LIVE] click ok but NO lpbet WS received (game={game_id}) — "
+                        f"bet may not have been placed; skipping _sent_bet_ids"
+                    )
+                    self._notify(f"⚠️ BETクリック実行済みだがWS未確認\n{tname}\n{side_name} ${amount:.2f}")
+                else:
+                    logger.info(f"[LIVE] bet sent OK + lpbet confirmed ck={ck} gId={self._last_lpbet_gid!r}")
+            else:
+                lpbet_confirmed = True  # WS送信モードは従来通り
+                logger.info(f"[LIVE] bet sent OK ck={ck}")
+
             self._consecutive_failures = 0
-            if bet_id:
+            if lpbet_confirmed and bet_id:
                 self._sent_bet_ids.add(bet_id)
-            self._notify(f"📤 BET送信\n{tname}\n{side_name} ${amount:.2f}\n(確定待ち)")
+                self._last_bet_sent_at = time.time()
+            # lpbet WS確認済みの場合のみ「BET送信」を通知（空振りクリックは通知しない）
+            if lpbet_confirmed:
+                self._notify(f"📤 BET送信確定\n{tname}\n{side_name} ${amount:.2f}\n(結果待ち)")
         else:
             logger.error(f"[LIVE] bet send FAILED: {result}")
             self._consecutive_failures += 1
@@ -1891,10 +2376,11 @@ class LiveBetExecutor:
                         self._inject_all(_p)
                     except Exception:
                         pass
+            # シグナルは1ハンド1回限り。失敗しても再キューしない（次のシグナルを待つ）
             with self._lock:
-                self._pending_bet = bet  # 再キュー
-            self._notify(f"⚠️ BET送信失敗(リトライ待機)\n{tname}\n{side_name} ${amount:.2f}")
-            return  # phase/table_id をリセットしない
+                self._pending_bet = None
+            self._notify(f"⚠️ BET失敗(このハンドはスキップ)\n{tname}\n{side_name} ${amount:.2f}")
+            return
 
         if not self._multi_lobby_mode:
             # 従来モード: BET完了後にロビーへ戻す
@@ -1920,16 +2406,285 @@ class LiveBetExecutor:
     # クリックBET（multi-lobby専用）
     # ──────────────────────────────────────────────────────────────────────
 
-    def _find_pragmatic_frame(self):
-        """client.pragmaticplaylive.net フレームを返す（見つからない場合None）。"""
+    def _find_pragmatic_frame(self, target_qpid: str = ""):
+        """client.pragmaticplaylive.net フレームを返す。
+        target_qpid が指定された場合はそのテーブルのフレームを優先して返す。
+        """
+        fallback = None
         try:
             for _p in [self._lobby_page] + list(self._context.pages or []):
                 for _fr in [_p] + list(_p.frames or []):
-                    if 'pragmaticplaylive' in str(getattr(_fr, 'url', '')):
-                        return _fr
+                    url = str(getattr(_fr, 'url', ''))
+                    if 'pragmaticplaylive' not in url:
+                        continue
+                    if target_qpid and target_qpid in url:
+                        return _fr  # qpid一致フレームを最優先
+                    if fallback is None:
+                        fallback = _fr
         except Exception:
             pass
-        return None
+        return fallback
+
+    # JS は btn.click() を呼ばず、ボタンの viewport 座標を返すだけにする。
+    # Python 側で page.mouse.click(x, y) を使うことで isTrusted=true の
+    # 本物のマウスイベントを発火させ、Pragmatic ゲームクライアントに認識させる。
+    _JS_BET_COORDS = r"""
+(args) => {
+  const qpid = args.qpid || '';
+  const tableName = String(args.tableName || '');
+  const sideClass = args.sideClass || 'ym_yP';
+  const activeClass = 'ym_yn';
+  const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, '').trim();
+  const tableCandidates = new Set([norm(tableName)].filter(Boolean));
+  let m = tableName.match(/^\s*Baccarat\s*(\d+)\s*$/i);
+  if (m) {
+    tableCandidates.add(norm('バカラ ' + m[1]));
+    tableCandidates.add(norm('Baccarat ' + m[1]));
+  }
+  m = tableName.match(/^\s*Fortune\s*(\d+)\s*Baccarat\s*$/i);
+  if (m) {
+    tableCandidates.add(norm('フォーチュン ' + m[1] + ' バカラ'));
+    tableCandidates.add(norm('Fortune ' + m[1] + ' Baccarat'));
+  }
+
+  function rectOk(r) {
+    return r && r.width > 10 && r.height > 10 && r.right > 0 && r.bottom > 0;
+  }
+  function btnCoords(btn, wasActive, src) {
+    try { btn.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+    const r = btn.getBoundingClientRect();
+    if (!rectOk(r)) return null;
+    return {ok: true, x: r.left + r.width / 2, y: r.top + r.height / 2,
+            wasActive: wasActive, source: src, btnW: r.width, btnH: r.height};
+  }
+
+  function tryWithinTile(tile, src) {
+    if (!tile) return null;
+    const allBtns = Array.from(tile.querySelectorAll('.' + sideClass));
+    const visibleBtns = allBtns.filter((b) => {
+      const r = b.getBoundingClientRect();
+      return rectOk(r) && r.x >= 0 && r.y >= 0;
+    });
+    if (visibleBtns.length !== 1) return null;
+    const btn = visibleBtns[0];
+    return btnCoords(btn, btn.classList.contains(activeClass), src);
+  }
+  function tryActivePanelAfterTargetTile(tile) {
+    if (!tile) return null;
+    // In multi-baccarat the selected tile and the actual wager panel can be
+    // rendered as separate DOM islands. Once the exact qpid tile is mounted,
+    // accept the active side button in the shared panel, but avoid buttons
+    // nested under a different TileHeight-* card.
+    const candidates = Array.from(document.querySelectorAll('.' + sideClass + '.' + activeClass))
+      .filter((btn) => {
+        const r = btn.getBoundingClientRect();
+        if (!(rectOk(r) && r.x >= 0 && r.y >= 0)) return false;
+        const tileOfBtn = enclosingTile(btn);
+        return !tileOfBtn || tileOfBtn === tile;
+      })
+      .map((btn) => {
+        const r = btn.getBoundingClientRect();
+        return {btn, area: r.width * r.height, x: r.left, y: r.top};
+      })
+      .sort((a, b) => b.area - a.area);
+    if (candidates.length < 1) return null;
+    return btnCoords(candidates[0].btn, true, 'active_panel_after_qpid_tile');
+  }
+  function enclosingTile(el) {
+    let node = el;
+    for (let depth = 0; depth < 12 && node; depth++, node = node.parentElement) {
+      if (String(node.id || '').startsWith('TileHeight-')) return node;
+    }
+    return null;
+  }
+
+  let targetTile = null;
+  // 1) qpid と一致するタイル内部だけを対象にする。親グリッドへは広げない。
+  if (qpid) {
+    targetTile = document.getElementById('TileHeight-' + qpid);
+    if (targetTile) {
+      const result = tryWithinTile(targetTile, 'qpid_tile');
+      if (result) return result;
+      const activePanelResult = tryActivePanelAfterTargetTile(targetTile);
+      if (activePanelResult) return activePanelResult;
+    }
+  }
+
+  // 2) 表示タイルのテーブル名を完全一致させ、そのタイル内の指定側ボタンだけを返す。
+  //    マルチ画面では qpid が DOM に存在しないため、この経路が主経路となる。
+  if (tableCandidates.size) {
+    for (const el of document.querySelectorAll('*')) {
+      try {
+        if (!tableCandidates.has(norm(el.textContent))) continue;
+        let hasExactChild = false;
+        for (const child of el.children || []) {
+          if (tableCandidates.has(norm(child.textContent))) { hasExactChild = true; break; }
+        }
+        if (hasExactChild) continue;
+        const tile = enclosingTile(el);
+        const result = tryWithinTile(tile, 'table_name_tile');
+        if (result) return result;
+        const activePanelResult = tryActivePanelAfterTargetTile(tile);
+        if (activePanelResult) return activePanelResult;
+      } catch(e) {}
+    }
+  }
+
+  // Ambiguous button counts are diagnostic only. Never click a shared-frame
+  // button unless it was bound to the requested table above.
+  const activeBtns = Array.from(document.querySelectorAll('.' + sideClass + '.' + activeClass))
+    .filter(b => rectOk(b.getBoundingClientRect()));
+
+  const visibleBtns = Array.from(document.querySelectorAll('.' + sideClass))
+    .filter(b => { const r = b.getBoundingClientRect(); return rectOk(r) && r.x >= 0 && r.y >= 0; });
+  const buttonSamples = visibleBtns.slice(0, 12).map((btn, idx) => {
+    const r = btn.getBoundingClientRect();
+    const parents = [];
+    let node = btn;
+    for (let depth = 0; depth < 12 && node; depth++, node = node.parentElement) {
+      const txt = String(node.innerText || node.textContent || '')
+        .replace(/\s+/g, ' ').trim().slice(0, 220);
+      const attrs = {};
+      try {
+        for (const attr of node.attributes || []) {
+          const key = String(attr.name || '').toLowerCase();
+          if (key.includes('table') || key.includes('qpid') || key === 'id' || key.includes('testid')) {
+            attrs[key] = String(attr.value || '').slice(0, 100);
+          }
+        }
+      } catch(_) {}
+      parents.push({
+        depth: depth,
+        tag: String(node.tagName || ''),
+        cls: String(node.className || '').slice(0, 70),
+        text: txt,
+        attrs: attrs,
+      });
+    }
+    return {
+      idx: idx,
+      active: btn.classList.contains(activeClass),
+      x: Math.round(r.left),
+      y: Math.round(r.top),
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      parents: parents,
+    };
+  });
+  const targetDiag = targetTile ? Array.from(targetTile.querySelectorAll('[class]'))
+    .filter((el) => String(el.className || '').includes('ym_'))
+    .slice(0, 18)
+    .map((el) => {
+      const r = el.getBoundingClientRect();
+      return {
+        cls: String(el.className || '').slice(0, 80),
+        text: String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40),
+        x: Math.round(r.left), y: Math.round(r.top),
+        w: Math.round(r.width), h: Math.round(r.height),
+      };
+    }) : [];
+
+  return {ok: false, reason: 'not_found',
+          tableName: tableName, tableCandidates: Array.from(tableCandidates),
+          sideBtnCount: document.querySelectorAll('.' + sideClass).length,
+          activeBtnCount: document.querySelectorAll('.' + sideClass + '.' + activeClass).length,
+          visibleCount: visibleBtns.length, buttonSamples: buttonSamples,
+          targetTileFound: !!targetTile, targetDiag: targetDiag};
+}
+"""
+
+    def _hover_multi_tile(self, frame: Any, qpid: str) -> bool:
+        """Expose the wager controls for one exact multi-play card without betting."""
+        tid = str(qpid or "").strip()
+        if not tid:
+            return False
+        try:
+            frame.locator(f'[id="TileHeight-{tid}"]').hover(timeout=2000, force=True)
+            frame.page.wait_for_timeout(250)
+            logger.info(f"[ML-HOVER] exact tile hovered table={tid}")
+            return True
+        except Exception as ex:
+            logger.warning(f"[ML-HOVER] exact tile hover failed table={tid}: {ex}")
+            return False
+
+    def _js_click_bet_in_container(self, frame, qpid: str, table_name: str, side_class: str) -> bool:
+        """BET ボタンの座標を JS で取得し、page.mouse.click() で isTrusted=true クリックする"""
+        try:
+            res = frame.evaluate(
+                self._JS_BET_COORDS,
+                {"qpid": qpid, "tableName": table_name, "sideClass": side_class},
+            )
+            logger.info(f"[CLICK-BET-JS] qpid={qpid!r} table={table_name!r} coords={res}")
+            if not (isinstance(res, dict) and res.get("ok")):
+                return False
+
+            btn_x = float(res.get("x", 0))
+            btn_y = float(res.get("y", 0))
+
+            page_x, page_y = btn_x, btn_y
+            try:
+                frame_el = frame.frame_element()
+                bbox = frame_el.bounding_box()
+                if bbox:
+                    page_x = bbox["x"] + btn_x
+                    page_y = bbox["y"] + btn_y
+            except Exception as _fe:
+                logger.debug(f"[CLICK-BET-JS] frame_element offset failed: {_fe}")
+
+            page = frame.page
+            page.mouse.move(page_x, page_y)
+            page.wait_for_timeout(80)
+            page.mouse.click(page_x, page_y)
+            logger.info(f"[CLICK-BET-JS] mouse.click at ({page_x:.1f}, {page_y:.1f}) wasActive={res.get('wasActive')}")
+            return True
+        except Exception as ex:
+            logger.warning(f"[CLICK-BET-JS] error: {ex}")
+            return False
+
+    _JS_SELECTOR_COORDS = r"""
+(selector) => {
+  const el = document.querySelector(selector);
+  if (!el) return {ok:false, reason:'not_found', selector};
+  try { el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+  const r = el.getBoundingClientRect();
+  const cs = getComputedStyle(el);
+  if (!r || r.width <= 4 || r.height <= 4 || cs.visibility === 'hidden' || cs.display === 'none') {
+    return {ok:false, reason:'not_visible', selector,
+            x: r ? r.left : 0, y: r ? r.top : 0,
+            w: r ? r.width : 0, h: r ? r.height : 0};
+  }
+  return {ok:true, selector, x:r.left + r.width / 2, y:r.top + r.height / 2,
+          w:r.width, h:r.height, text:String(el.innerText || el.textContent || '').trim().slice(0,80)};
+}
+"""
+
+    def _js_click_selector(self, frame, selector: str, label: str) -> bool:
+        """Click an arbitrary frame element via page.mouse for elements Playwright considers non-actionable."""
+        try:
+            res = frame.evaluate(self._JS_SELECTOR_COORDS, selector)
+            logger.info(f"[CLICK-{label}-JS] selector={selector!r} coords={res}")
+            if not (isinstance(res, dict) and res.get("ok")):
+                return False
+            x = float(res.get("x") or 0)
+            y = float(res.get("y") or 0)
+            page_x, page_y = x, y
+            try:
+                frame_el = frame.frame_element()
+                bbox = frame_el.bounding_box()
+                if bbox:
+                    page_x = bbox["x"] + x
+                    page_y = bbox["y"] + y
+            except Exception as _fe:
+                logger.debug(f"[CLICK-{label}-JS] frame_element offset failed: {_fe}")
+            page = frame.page
+            page.mouse.move(page_x, page_y)
+            page.wait_for_timeout(60)
+            page.mouse.click(page_x, page_y)
+            logger.info(f"[CLICK-{label}-JS] mouse.click at ({page_x:.1f}, {page_y:.1f})")
+            return True
+        except Exception as ex:
+            logger.warning(f"[CLICK-{label}-JS] error: {ex}")
+            return False
 
     _CHIP_DENOMS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 500, 1000]
 
@@ -1939,39 +2694,95 @@ class LiveBetExecutor:
         for d in self._CHIP_DENOMS:
             if d <= amount + 0.001:
                 best = d
-        # 整数なら整数表記、小数ならそのまま
         return str(int(best)) if best == int(best) else str(best)
 
-    def _click_place_bet(self, side: str, amount: float) -> bool:
+    def _click_place_bet(
+        self, side: str, amount: float, target_qpid: str = "", target_table_name: str = ""
+    ) -> bool:
         """Pragmatic multi-play フレームでクリックBETを実行する。
         side: 'P'=Player, 'B'=Banker, 'T'=Tie, 'PP'=P-Pair, 'BP'=B-Pair
         amount: BET額 (USDT)
+        target_qpid: 対象テーブルのqpid。指定するとそのテーブルのiframeを優先検索する。
         Returns True if click succeeded.
         """
         side_class = {'P': 'ym_yP', 'B': 'ym_yQ', 'T': 'ym_yB',
                       'PP': 'ym_yT', 'BP': 'ym_yU'}.get(side, 'ym_yP')
 
-        frame = self._find_pragmatic_frame()
+        frame = self._find_pragmatic_frame(target_qpid=target_qpid)
         if not frame:
             logger.warning("[CLICK-BET] Pragmatic frame not found")
             return False
+        frame_url = str(getattr(frame, 'url', ''))
+        qpid_matched = bool(target_qpid and target_qpid in frame_url)
+        logger.info(f"[CLICK-BET] frame selected: qpid_matched={qpid_matched} target={target_qpid!r} frame_url={frame_url[:80]}")
 
-        # チップ選択（BETSOPENごとに毎回実施して確実に選択）
+        # チップ選択
         chip_str = self._pick_chip_denom(amount)
         chip_sel = f'[data-testid="chip-stack-value-{chip_str}"]'
         try:
-            frame.click(chip_sel, timeout=2000)
+            chip_timeout_ms = int(float(os.getenv("BACOPY_CHIP_SELECT_TIMEOUT_SEC", "0.8") or 0.8) * 1000)
+            frame.click(chip_sel, timeout=max(250, chip_timeout_ms))
             logger.info(f"[CLICK-BET] chip selected: {chip_str} (selector={chip_sel})")
         except Exception as ce:
             logger.warning(f"[CLICK-BET] chip select failed ({chip_sel}): {ce}")
-            # チップが見つからなくてもBETクリックは試みる
+            if self._js_click_selector(frame, chip_sel, "CHIP"):
+                logger.info(f"[CLICK-BET] chip selected via JS mouse: {chip_str} (selector={chip_sel})")
+                try:
+                    frame.page.wait_for_timeout(120)
+                except Exception:
+                    pass
 
-        # BETスポットクリック: BETSOPENアクティブな要素を優先
-        # Playwright の frame.click() は nested cross-origin iframe も自動処理
+        self._hover_multi_tile(frame, target_qpid)
+
+        # multi-baccarat モードはフレームURLにqpidが入らない（1フレーム共有）
+        # → JSでフレーム内DOM検索して対象テーブルのボタンを特定してクリック
+        # (qpid_matched=False でも JS は実行し、フォールバック含めて試みる)
+        if self._js_click_bet_in_container(frame, target_qpid, target_table_name, side_class):
+            logger.info(f"[CLICK-BET] JS click OK: side={side} qpid={target_qpid!r} qpid_matched={qpid_matched}")
+            return True
+
+        if target_qpid and not qpid_matched:
+            try:
+                retry_sec = float(os.getenv("BACOPY_MULTI_BUTTON_WAIT_SEC", "3.5") or 3.5)
+                deadline = time.time() + max(0.5, retry_sec)
+                attempt = 0
+                while time.time() < deadline:
+                    attempt += 1
+                    reseek = frame.evaluate(
+                        _MULTI_LOBBY_FOCUS_JS,
+                        {
+                            "qpid": target_qpid,
+                            "click": True,
+                            "maxScroll": int(os.getenv("BACOPY_MULTI_SCROLL_MAX", "48") or "48"),
+                            "candidates": [target_table_name, target_qpid],
+                            "hintIndex": -1,
+                            "hintTotal": 0,
+                        },
+                    )
+                    logger.info(f"[CLICK-BET-RESEEK] qpid={target_qpid!r} attempt={attempt} result={reseek}")
+                    if isinstance(reseek, dict) and reseek.get("found"):
+                        try:
+                            frame.page.wait_for_timeout(350)
+                        except Exception:
+                            pass
+                        self._hover_multi_tile(frame, target_qpid)
+                        if self._js_click_bet_in_container(frame, target_qpid, target_table_name, side_class):
+                            logger.info(f"[CLICK-BET] JS click OK after reseek: side={side} qpid={target_qpid!r} attempt={attempt}")
+                            return True
+                    frame.page.wait_for_timeout(250)
+            except Exception as ex:
+                logger.warning(f"[CLICK-BET-RESEEK] failed qpid={target_qpid!r}: {ex}")
+
+        if not qpid_matched:
+            # マルチロビー共有フレームで JS 完全失敗 → no fallback (別テーブル誤クリックのリスク)
+            logger.warning(f"[CLICK-BET] JS failed for qpid={target_qpid!r} in multi-lobby — no selector fallback")
+            return False
+
+        # 単一テーブルフレーム (qpid_matched=True) のセレクターフォールバック
         for sel in [f'.{side_class}.ym_yn', f'.{side_class}']:
             try:
                 frame.click(sel, timeout=2000)
-                logger.info(f"[CLICK-BET] bet placed: side={side} selector={sel}")
+                logger.info(f"[CLICK-BET] bet placed (selector fallback): side={side} selector={sel}")
                 return True
             except Exception as e:
                 logger.debug(f"[CLICK-BET] frame.click({sel}) failed: {e}")
@@ -2071,15 +2882,23 @@ class LiveBetExecutor:
             return best
 
         # 0. Playwright WS プロキシルート経由（multi-lobby 最優先）
-        if self._multi_lobby_mode and self._ws_proxy_server is not None:
+        proxy_server = (
+            self._ws_proxy_servers.get(table_id) or self._ws_proxy_server
+            if self._multi_lobby_mode else None
+        )
+        if proxy_server is not None:
             try:
-                self._ws_proxy_server.send(payload)
-                logger.info("[WS-SEND] ws_proxy_server.send OK")
-                return {"ok": True, "mode": "ws_proxy"}
+                proxy_server.send(payload)
+                logger.info(f"[WS-SEND] ws_proxy_server.send OK channel={table_id}")
+                return {"ok": True, "mode": "ws_proxy", "channel": table_id}
             except Exception as _e:
                 logger.warning(f"[WS-SEND] ws_proxy_server.send failed: {_e}")
                 with self._lock:
-                    self._ws_proxy_server = None
+                    if self._ws_proxy_servers.get(table_id) is proxy_server:
+                        self._ws_proxy_servers.pop(table_id, None)
+                    if self._ws_proxy_server is proxy_server:
+                        self._ws_proxy_server = None
+                        self._ws_proxy_route = None
 
         # 1. Worker ブリッジ経由（multi-lobby モードの次点ルート）
         if self._multi_lobby_mode:
@@ -2134,14 +2953,18 @@ class LiveBetExecutor:
             st = self._ensure_table_state(target)
             if table_name:
                 st["table_name"] = table_name
-        # 既に正しいテーブルにいる場合はスイッチしない（再入場による signal too old を防ぐ）
-        already_in = (self._phase == "ready" and target and self._table_id == target)
+        # WS transport already observes every multi-table window; it does not navigate a tile.
+        already_in = (
+            (self._phase == "ready" and target and self._table_id == target)
+            or (self._multi_lobby_mode and target and self._prepared_table_id == target)
+            or (self._multi_lobby_mode and self._multi_bet_transport == "ws")
+        )
         # switch が進行中 or 要求済みで同一テーブルなら二重ナビゲーション不要
         pending_req = (self._switch_request or {}).get("table_id", "") or (self._switch_request or {}).get("qpid", "")
         already_switching_to_target = bool(pending_req and (pending_req == target)) or self._switch_in_progress
         if not already_in and not already_switching_to_target:
             # multi-lobby: scroll のみ（クリックで個別テーブルへ遷移させない）
-            _intent = "preposition" if self._multi_lobby_mode else "prepare"
+            _intent = "decision" if self._multi_lobby_mode else "prepare"
             self._request_switch(str(table_id or ""), table_name, qpid, intent=_intent)
         bet_id = f"dl_{uuid.uuid4().hex[:12]}"
         self.send_bet(side=side, amount=amount, table_id=target, bet_id=bet_id)
@@ -2175,6 +2998,8 @@ class LiveBetExecutor:
         self._last_bets_open_at = 0.0
         self._switch_request = None
         self._switch_target_table_id = ""
+        self._prepared_table_id = ""
+        self._prepared_at = 0.0
         self._pending_bet = None
         if self._multi_lobby_mode:
             logger.info("[RETURN-LOBBY] multi-lobby: state reset only (no navigation)")
@@ -2191,17 +3016,43 @@ class LiveBetExecutor:
             except Exception as e:
                 logger.warning(f"[LIVE] return_to_lobby navigation failed: {e}")
 
-    def _request_switch(self, table_id: str = "", table_name: str = "", qpid: str = "", intent: str = "preposition") -> None:
+    def _request_switch(
+        self,
+        table_id: str = "",
+        table_name: str = "",
+        qpid: str = "",
+        intent: str = "preposition",
+        side: str = "",
+    ) -> None:
         """対象卓への switch 要求をキューに積む。"""
         tid = str(table_id or "").strip()
         if not tid and not qpid:
             return
-        self._switch_request = {
+        new_req = {
             "table_id": tid or str(qpid or "").strip(),
             "table_name": str(table_name or "").strip(),
             "qpid": str(qpid or "").strip(),
             "intent": str(intent or "preposition").strip().lower(),
+            "side": str(side or "").strip().upper(),
+            "requested_at": time.time(),
         }
+        priorities = {"preposition": 10, "prepare": 20, "decision": 30, "bet": 30, "fallback_join": 40}
+        new_intent = str(new_req["intent"])
+        new_target = str(new_req["qpid"] or new_req["table_id"])
+        current = self._switch_request or {}
+        cur_intent = str(current.get("intent") or "")
+        cur_target = str(current.get("qpid") or current.get("table_id") or "")
+        cur_age = max(0.0, time.time() - float(current.get("requested_at") or 0.0)) if current else 0.0
+        if current and priorities.get(cur_intent, 15) > priorities.get(new_intent, 15) and cur_age < 8.0:
+            logger.debug(f"[SWITCH] keep higher priority request {cur_intent}:{cur_target}")
+            return
+        if current and cur_target == new_target and priorities.get(cur_intent, 15) >= priorities.get(new_intent, 15) and cur_age < 8.0:
+            return
+        if current and cur_intent == "preposition" and new_intent == "preposition" and cur_target != new_target and cur_age < 4.0:
+            logger.info(f"[SWITCH] drop overlapping preposition: keep={cur_target} drop={new_target}")
+            return
+        self._switch_request = new_req
+        logger.info(f"[SWITCH] queued intent={new_intent} target={new_target or '-'}")
 
     def set_table_name(self, table_id: str, table_name: str) -> None:
         """bot から table_name を補完する。"""
@@ -2215,12 +3066,26 @@ class LiveBetExecutor:
         """Playwright route_web_socket で game WS を透過プロキシ化して BET 送信口を確立。"""
         def _handle_ws(route: Any) -> None:
             try:
-                logger.info(f"[WS-PROXY] intercepted WS: {getattr(route, 'url', '?')[:100]}")
+                route_url = str(getattr(route, "url", "") or "")
+                logger.info(f"[WS-PROXY] intercepted WS: {route_url[:100]}")
                 server = route.connect_to_server()
-                with self._lock:
-                    self._ws_proxy_server = server
-                    self._ws_proxy_route = route
-                logger.info("[WS-PROXY] transparent proxy established — BET送信口 OK")
+                if (
+                    ("pragmaticplaylive.net" in route_url or "qpidreoxcc.net" in route_url)
+                    and "/game" in route_url
+                ):
+                    m_tid = re.search(r"[?&]tableId=([^&]+)", route_url)
+                    channel_id = str(m_tid.group(1) if m_tid else "").strip()
+                    is_multi = "multiTable=true" in route_url
+                    with self._lock:
+                        if channel_id:
+                            self._ws_proxy_servers[channel_id] = server
+                        if is_multi:
+                            self._ws_proxy_server = server
+                            self._ws_proxy_route = route
+                    logger.info(
+                        f"[WS-PROXY] game proxy registered channel={channel_id or '-'} "
+                        f"multi={is_multi}"
+                    )
                 route.on_message(lambda msg: _safe_send(server, msg))
                 server.on_message(lambda msg: _safe_send(route, msg))
             except Exception as e:
@@ -2236,7 +3101,11 @@ class LiveBetExecutor:
             except Exception:
                 pass
 
-        for _pattern in ["**pragmaticplaylive.net/game**", "wss://**pragmaticplaylive**", "**"]:
+        # Some embedded multi-baccarat sockets are not matched by host-based
+        # patterns even though Playwright emits a websocket event for them.
+        # Proxy all sockets transparently, but only register Pragmatic /game
+        # channels above as BET send targets.
+        for _pattern in ["**"]:
             try:
                 context.route_web_socket(_pattern, _handle_ws)
                 logger.info(f"[WS-PROXY] route_web_socket registered pattern={_pattern!r}")
