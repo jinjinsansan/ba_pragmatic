@@ -36,6 +36,15 @@ from typing import Protocol, runtime_checkable
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+# PyInstaller one-file exe では __file__ が毎回異なる _MEI* 一時ディレクトリを指すため
+# state ファイルは exe と同じディレクトリ（再起動後も残る）に保存する
+import sys as _sys
+_PERSISTENT_DIR: Path = (
+    Path(_sys.executable).resolve().parent
+    if getattr(_sys, "frozen", False)
+    else HERE
+)
+
 # .env を load (= TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID 等)
 # 複数候補を試し、TELEGRAM credentials が含まれているものを優先
 try:
@@ -65,7 +74,7 @@ except Exception as e:
     )
     raise
 
-from dual_line_match import decide, score_proximity
+from dual_line_match import decide, score_proximity, chinese_road_predict, big_road_predict
 from dual_line_money import BetManager, ALLOWED_MODES as MONEY_MODES, BET_MODES
 
 # ── Logger 設定 ──────────────────────────────────────────────────────
@@ -93,8 +102,8 @@ V2_PATTERNS = {
     "sansan|telecho|P",
 }
 
-STATE_PATH = HERE / "dual_line_pragmatic_state.json"
-STATE_TMP = HERE / "dual_line_pragmatic_state.tmp"
+STATE_PATH = _PERSISTENT_DIR / "dual_line_pragmatic_state.json"
+STATE_TMP = _PERSISTENT_DIR / "dual_line_pragmatic_state.tmp"
 LOGIC_VERSION = "v3_whitelist6_sansan"  # 変更でstateを自動リセット
 COMMISSION_BANKER = 0.95
 
@@ -164,6 +173,28 @@ def _fmt_pattern(pkey: str) -> str:
     if len(parts) == 3:
         return f"china={parts[0]} / big={parts[1]} / side={parts[2]}"
     return pkey
+
+
+def _send_preposition_legacy(
+    table_label: str,
+    score: int,
+    side: str,
+    china_pattern: str = "",
+    big_pattern: str = "",
+) -> None:
+    remain = "あと１手で確定予定" if int(score or 0) >= 2 else "あと２手で確定予定"
+    side_u = str(side or "").upper()
+    side_name = "BANKER" if side_u == "B" else ("PLAYER" if side_u == "P" else "?")
+    pattern_line = (
+        f"Pattern: china={china_pattern or '-'} / big={big_pattern or '-'} / side={side_u or '-'}"
+    )
+    _send_telegram(
+        f"予告 {table_label}\n"
+        f"{remain}\n"
+        f"→ {side_name} BET\n"
+        f"{pattern_line}\n"
+        f"GUIが事前入場します"
+    )
 
 
 def _send_telegram(text: str) -> None:
@@ -277,7 +308,7 @@ class DualLinePragmaticBot(cp.Collector):
             mode=money_mode, unit=money_unit,
             profit_stop=profit_stop, loss_cut=loss_cut,
             on_limit=on_limit,
-            state_path=HERE / "dual_line_money_state.json",
+            state_path=_PERSISTENT_DIR / "dual_line_money_state.json",
         )
 
         # per-table 状態
@@ -286,6 +317,9 @@ class DualLinePragmaticBot(cp.Collector):
         self.shoe_active: dict[str, bool] = defaultdict(bool)  # 完全観測中フラグ
         self.pending: dict[str, dict] = {}  # table_id -> pending prediction
         self.table_scores: dict[str, int] = defaultdict(int)  # table_id -> score (0-2)
+        self._prev_table_scores: dict[str, int] = {}         # VPS予告用: 前回スコア
+        self._last_prepos_notify_at: float = 0.0             # 予告通知レートリミット
+        self._diag_skip_counts: dict[str, int] = defaultdict(int)
 
 
         # 累計統計
@@ -305,6 +339,10 @@ class DualLinePragmaticBot(cp.Collector):
         self._ws_alive: bool = True
         self._ws_disconnected_at: float = 0.0
         self._game_ws_url: str = ""
+        self._last_collector_ws_at: float = 0.0
+        self._remote_snapshot_sig: dict[str, str] = {}
+        self._last_remote_signal_log_at: float = 0.0
+        self._last_remote_signal_warn_at: float = 0.0
 
         # collector の WS watchdog を bot 用に短縮
         os.environ["BACOPY_COLLECTOR_WS_STALE_SEC"] = BOT_WS_STALE_SEC
@@ -360,26 +398,25 @@ class DualLinePragmaticBot(cp.Collector):
 
     # ── ハンドオブザーバ ──────────────────────────────────────────
 
-    def on_ws_frame(self, payload):  # type: ignore[override]
-        super().on_ws_frame(payload)
-        try:
-            if isinstance(payload, bytes):
-                payload = payload.decode("utf-8", errors="replace")
-            msg = json.loads(payload)
-        except Exception:
+    def _collect_table_ids_from_msg(self, obj, out: set[str], depth: int = 0) -> None:
+        if depth > 3:
             return
-        if not isinstance(msg, dict):
-            return
-        table_id = msg.get("tableId")
-        if not table_id:
-            # tableId がないフレームはハンド情報を持たないのでスキップ。
-            # shuffle=true が tableId なしで来る可能性は極めて低いが、
-            # 万が一到達した場合は警告。
-            if msg.get("shuffle") is True:
-                logger.warning(
-                    f"shuffle=true but no tableId in msg: keys={list(msg.keys())[:10]}"
-                )
-            return
+        if isinstance(obj, dict):
+            tid = obj.get("tableId") or obj.get("tableid")
+            if isinstance(tid, (str, int)):
+                tid_s = str(tid).strip()
+                if tid_s:
+                    out.add(tid_s)
+            for k in ("data", "payload", "message", "messages", "updates", "tables"):
+                v = obj.get(k)
+                if isinstance(v, (dict, list)):
+                    self._collect_table_ids_from_msg(v, out, depth + 1)
+        elif isinstance(obj, list):
+            for item in obj[:100]:
+                if isinstance(item, (dict, list)):
+                    self._collect_table_ids_from_msg(item, out, depth + 1)
+
+    def _process_table_frame(self, table_id: str) -> None:
         buf = self.buffers.get(table_id)
         if not buf:
             return
@@ -410,22 +447,71 @@ class DualLinePragmaticBot(cp.Collector):
         # 完全観測開始前 (初回 shuffle 前) はハンド処理をスキップ
         # mid-shoe の部分データでは next_n が実際の手番号とずれるため
         if not self.shoe_active.get(table_id, False):
+            if self.bet_executor.is_live:
+                try:
+                    live_min_hands = int(os.getenv("BACOPY_LIVE_MIN_HANDS_FOR_MIDSHOE", "12") or 12)
+                except Exception:
+                    live_min_hands = 12
+                live_min_hands = max(1, live_min_hands)
+                if current_count >= live_min_hands:
+                    self.shoe_active[table_id] = True
+                    self.last_hand_count[table_id] = current_count
+                    logger.info(
+                        f"[LIVE-MIDSHOE] activate table={buf.table_name or table_id} "
+                        f"hands={current_count} (no shuffle wait)"
+                    )
+                    self._update_table_score(table_id, buf)
+                    return
             self.last_hand_count[table_id] = current_count
             return
 
         # ── 新規ハンド検知 ──
         if current_count <= prev_count:
             return
-        new_hands = (buf.hands or [])[prev_count:current_count]
+        all_hands = buf.hands or []
+        new_hands = all_hands[prev_count:current_count]
         self.last_hand_count[table_id] = current_count
 
-        for new_hand in new_hands:
-            self._on_new_hand(table_id, buf, new_hand)
+        for i, new_hand in enumerate(new_hands):
+            hist_upto = all_hands[: prev_count + i + 1]
+            self._on_new_hand(table_id, buf, new_hand, history_hands=hist_upto)
 
         # 手処理後、全テーブルのスコアを更新（LOOP でも BET でも）
         self._update_table_score(table_id, buf)
 
+    def _diag_skip(self, reason: str, detail: str) -> None:
+        n = int(self._diag_skip_counts.get(reason, 0)) + 1
+        self._diag_skip_counts[reason] = n
+        if n <= 20 or n % 200 == 0:
+            logger.info(f"[SIGNAL-SKIP] reason={reason} count={n} {detail}")
+
+    def on_ws_frame(self, payload):  # type: ignore[override]
+        super().on_ws_frame(payload)
+        try:
+            if isinstance(payload, (dict, list)):
+                msg = payload
+            else:
+                if isinstance(payload, bytes):
+                    payload = payload.decode("utf-8", errors="replace")
+                msg = json.loads(payload)
+        except Exception:
+            return
+
+        table_ids: set[str] = set()
+        self._collect_table_ids_from_msg(msg, table_ids)
+        if not table_ids:
+            if isinstance(msg, dict) and msg.get("shuffle") is True:
+                logger.warning(
+                    f"shuffle=true but no tableId in msg: keys={list(msg.keys())[:10]}"
+                )
+            return
+        self._last_collector_ws_at = time.time()
+
+        for table_id in table_ids:
+            self._process_table_frame(table_id)
+
     def _on_shoe_change(self, table_id: str, buf):
+        self._prev_table_scores.pop(table_id, None)  # 新シューで予告履歴リセット
         table_name = buf.table_name or table_id
         if table_id in self.pending:
             pending_pkey = self.pending[table_id].get("pattern_key", "?")
@@ -441,9 +527,10 @@ class DualLinePragmaticBot(cp.Collector):
         send_phase("observing", "shoe changed")
         self._save_state()
 
-    def _on_new_hand(self, table_id: str, buf, new_hand: dict):
+    def _on_new_hand(self, table_id: str, buf, new_hand: dict, history_hands: list[dict] | None = None):
         outcome_char = _winner_to_char(new_hand.get("winner"))
         if not outcome_char:
+            self._diag_skip("no_outcome", f"table={buf.table_name or table_id}")
             return
 
         # 1) 前回の予想を resolve
@@ -453,7 +540,7 @@ class DualLinePragmaticBot(cp.Collector):
 
         # 2) observed_sequence を構築
         seq_chars = []
-        for h in (buf.hands or []):
+        for h in (history_hands if history_hands is not None else (buf.hands or [])):
             c = _winner_to_char(h.get("winner"))
             if c and c != "T":
                 seq_chars.append(c)
@@ -463,25 +550,43 @@ class DualLinePragmaticBot(cp.Collector):
         next_n = len(observed_sequence) + 1
         d = decide(observed_sequence, next_n=next_n)
         if d.action == "LOOK":
+            self._diag_skip("look", f"table={buf.table_name or table_id} len={len(observed_sequence)}")
             return
 
         bet_side = "P" if d.action == "BET_P" else "B"
         pattern_key = f"{d.china_pattern}|{d.big_pattern}|{bet_side}"
 
         if self.use_v2_filter and pattern_key not in V2_PATTERNS:
+            self._diag_skip("v2_filter", f"table={buf.table_name or table_id} pattern={pattern_key}")
             return
 
         # Speed/Turboテーブルはbetsopen窓が3-5秒しかなく移動が間に合わない
         # → GUI BETをスキップ（VPS側は参考シグナルとして記録済み）
         if _is_fast_table_name(buf.table_name or ""):
+            self._diag_skip("fast_table", f"table={buf.table_name or table_id} pattern={pattern_key}")
             return
+
+        # マルチロビー環境で、一度もBETSOPENを受け取っていないテーブルはスキップ
+        # （例: bcadigitalsqz001 など、マルチプレイロビーに存在しないテーブル）
+        # _multi_lobby_mode は起動直後から True → 起動直後のリモートスナップ誤シグナルを防ぐ
+        # executor.place_bet は qpid or table_id を target として _table_states に記録するため同一キーで確認
+        if self.bet_executor.is_live and getattr(self.bet_executor, "_multi_lobby_mode", False):
+            _ts_map = getattr(self.bet_executor, "_table_states", {})
+            _qpid = str(getattr(buf, "qpid_table_id", "") or "").strip()
+            _effective_id = _qpid or table_id
+            _tbl_st = (_ts_map.get(_effective_id) or _ts_map.get(table_id)) or {}
+            if not float(_tbl_st.get("last_bets_open_at") or 0.0):
+                self._diag_skip("no_betsopen_history", f"table={table_id}({_effective_id}) pattern={pattern_key}")
+                return
 
         # 4) ベット発行
         # LIVE モード: 同時BETはしない（1件ずつ処理）
         if self.bet_executor.is_live:
             if self.pending:
+                self._diag_skip("live_pending", f"table={buf.table_name or table_id} pattern={pattern_key}")
                 return
             if getattr(self.bet_executor, "has_pending_bet", False):
+                self._diag_skip("executor_pending", f"table={buf.table_name or table_id} pattern={pattern_key}")
                 return
 
         bet_amount = self.money.next_bet(side=bet_side)
@@ -549,8 +654,34 @@ class DualLinePragmaticBot(cp.Collector):
                 seq_chars.append(c)
         seq = "".join(seq_chars)
         next_n = len(seq) + 1
-        score, _direction = score_proximity(seq, next_n)
+        score, direction = score_proximity(seq, next_n)
         self.table_scores[table_id] = score
+        self._maybe_notify_preposition(table_id, buf, score, direction, seq, next_n)
+
+    def _maybe_notify_preposition(
+        self, table_id: str, buf, score: int, direction: str, seq: str, next_n: int
+    ) -> None:
+        """VPS bot (non-live) がスコア上昇時に直接予告 Telegram を送信。
+        GUI bot はこの通知を担当しない (重複排除)。"""
+        if self.bet_executor.is_live:
+            return
+        if score <= 0:
+            return
+        if _is_fast_table_name(str(buf.table_name or "")):
+            return
+        prev = self._prev_table_scores.get(table_id, 0)
+        self._prev_table_scores[table_id] = score
+        if score <= prev:
+            return  # スコアが上昇していなければ通知不要
+        # レートリミット: 直近20秒以内に別テーブルの予告を送った場合はスキップ
+        now = time.time()
+        if now - self._last_prepos_notify_at < 20.0:
+            return
+        self._last_prepos_notify_at = now
+        table_name = str(buf.table_name or table_id)
+        _, china_pattern = chinese_road_predict(seq, next_n)
+        _, big_pattern = big_road_predict(seq)
+        _send_preposition_legacy(table_name, score, direction, str(china_pattern or ""), str(big_pattern or ""))
 
     def _select_best_table(self) -> str | None:
         """全アクティブテーブル中、最もスコアの高い table_id を返す。
@@ -683,7 +814,6 @@ class DualLinePragmaticBot(cp.Collector):
         n_nt = self.wins + self.losses
         wr = self.wins / n_nt * 100 if n_nt else 0
         ms = self.money.status_dict()
-        _seq7_turns = list(self.money._seq7_tracker.current_turns) if getattr(self.money, "_seq7_tracker", None) else []
         send_msg({
             "type": "resolution",
             "table_id": table_id,
@@ -703,7 +833,6 @@ class DualLinePragmaticBot(cp.Collector):
             "predicting_n": pending.get("predicting_n"),
             "money_status": ms,
             "bet_amount": pending.get("bet_amount", 0),
-            "seq7_current_turns": _seq7_turns,
         })
         status_icon = "✅" if result == "WIN" else ("🔵" if result == "TIE" else "❌")
         send_action(
@@ -891,7 +1020,14 @@ class DualLinePragmaticBot(cp.Collector):
             with _ur.urlopen(req, timeout=10) as r:
                 return json.loads(r.read().decode("utf-8"))
         except Exception as e:
-            logger.debug(f"[API] GET {path} failed: {e}")
+            if path == "/api/preposition":
+                now = time.time()
+                last = float(getattr(self, "_last_preposition_api_error_at", 0.0) or 0.0)
+                if now - last >= 30.0:
+                    logger.warning(f"[PREPOS] API GET failed base={url_base} err={e}")
+                    self._last_preposition_api_error_at = now
+            else:
+                logger.debug(f"[API] GET {path} failed: {e}")
             return {}
 
     def _api_post(self, path: str, data: dict, base_url: str = "", api_key: str = "") -> dict:
@@ -939,103 +1075,268 @@ class DualLinePragmaticBot(cp.Collector):
                 })
         return targets
 
+    @staticmethod
+    def _sequence_to_hands(sequence: str) -> list[dict]:
+        hands: list[dict] = []
+        for ch in str(sequence or ""):
+            if ch == "P":
+                hands.append({"winner": "PLAYER"})
+            elif ch == "B":
+                hands.append({"winner": "BANKER"})
+            elif ch == "T":
+                hands.append({"winner": "TIE"})
+        return hands
+
+    def _remote_signal_target(self) -> dict[str, str]:
+        for t in self._decision_poll_targets():
+            base = str(t.get("base_url") or "").rstrip("/")
+            low = base.lower()
+            if (not base) or ("127.0.0.1" in low) or ("localhost" in low):
+                continue
+            key = str(t.get("api_key") or "").strip()
+            if key:
+                return {
+                    "name": str(t.get("name") or "remote"),
+                    "base_url": base,
+                    "api_key": key,
+                }
+        return {}
+
+    def _poll_remote_snapshots_for_signals(self) -> None:
+        if not self.bet_executor.is_live:
+            return
+        enabled = str(os.getenv("BACOPY_ENABLE_REMOTE_SIGNAL_BRIDGE", "1") or "1").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if not enabled:
+            return
+
+        now = time.time()
+        stale_sec = float(os.getenv("BACOPY_REMOTE_SIGNAL_BRIDGE_STALE_SEC", "20") or 20)
+        last_local = float(getattr(self, "_last_collector_ws_at", 0.0) or 0.0)
+        if last_local > 0 and (now - last_local) <= stale_sec:
+            return
+
+        tgt = self._remote_signal_target()
+        if not tgt:
+            if now - self._last_remote_signal_warn_at >= 60.0:
+                logger.warning("[REMOTE-SIGNAL] no remote target configured; bridge idle")
+                self._last_remote_signal_warn_at = now
+            return
+
+        data = self._api_get(
+            "/api/snapshots",
+            "provider=pragmatic",
+            base_url=str(tgt.get("base_url") or ""),
+            api_key=str(tgt.get("api_key") or ""),
+        )
+        snaps = ((data.get("snapshots") or {}).get("pragmatic") or {})
+        if not isinstance(snaps, dict):
+            return
+
+        changed = 0
+        for table_id_raw, snap in snaps.items():
+            table_id = str(table_id_raw or "").strip()
+            if not table_id or not isinstance(snap, dict):
+                continue
+
+            seq = str(snap.get("sequence") or "")
+            if not seq:
+                continue
+            last_hand = snap.get("last_hand") if isinstance(snap.get("last_hand"), dict) else {}
+            gid = str((last_hand or {}).get("gameId") or "")
+            sig = gid if gid else seq
+            if self._remote_snapshot_sig.get(table_id) == sig:
+                continue
+            self._remote_snapshot_sig[table_id] = sig
+
+            hands = self._sequence_to_hands(seq)
+            if not hands:
+                continue
+
+            buf = self.buffers.get(table_id)
+            if not buf:
+                buf = cp.ShoeBuffer(table_id)
+                self.buffers[table_id] = buf
+
+            tname = str(snap.get("table_name") or "").strip()
+            if tname:
+                buf.table_name = tname
+            ttype = snap.get("table_type")
+            if ttype:
+                buf.table_type = str(ttype)
+            qpid = str(snap.get("qpid_table_id") or "").strip()
+            if qpid:
+                buf.qpid_table_id = qpid
+            table_image = str(snap.get("table_image") or "").strip()
+            if table_image:
+                buf.table_image = table_image
+            buf.fresh_start = bool(snap.get("fresh_start"))
+            buf.hands = hands
+            self._process_table_frame(table_id)
+            changed += 1
+
+        if changed and (now - self._last_remote_signal_log_at >= 30.0):
+            stale_age = (now - last_local) if last_local > 0 else 9e9
+            logger.info(
+                f"[REMOTE-SIGNAL] applied={changed} source={tgt.get('name') or 'remote'} "
+                f"collector_stale={stale_age:.0f}s"
+            )
+            self._last_remote_signal_log_at = now
+
     def _check_preposition(self) -> None:
         """VPS の事前入場指示をポーリング。score=1 遷移時に対象テーブルへ事前入場して待機。"""
         if not self.bet_executor.is_live:
             return
-        now_ts = time.time()
-        if now_ts - float(getattr(self, "_last_prepos_diag_at", 0.0) or 0.0) >= 20.0:
-            logger.info("[PREPOS] tick")
-            self._last_prepos_diag_at = now_ts
         has_pb = self.bet_executor.has_pending_bet
         is_bif = self.bet_executor.is_bet_in_flight
         if has_pb or is_bif:
-            if now_ts - float(getattr(self, "_last_prepos_skip_log_at", 0.0) or 0.0) >= 10.0:
-                logger.info(f"[PREPOS] skip: has_pending_bet={has_pb} is_bet_in_flight={is_bif}")
-                self._last_prepos_skip_log_at = now_ts
+            logger.debug(f"[PREPOS] skip: has_pending_bet={has_pb} is_bet_in_flight={is_bif}")
             return
+
+        targets = self._decision_poll_targets()
+        if not targets:
+            targets = [{"name": "default", "base_url": "", "api_key": ""}]
+
         data: dict = {}
-        src_name = "primary"
-        src_base = ""
-        src_key = ""
-        trace: list[str] = []
-        for t in self._decision_poll_targets():
-            _base = str(t.get("base_url") or "")
-            _key = str(t.get("api_key") or "")
-            _d = self._api_get("/api/preposition", base_url=_base, api_key=_key)
-            if not isinstance(_d, dict):
-                trace.append(f"{str(t.get('name') or '?')}:non-dict")
+        src_name = "default"
+        for t in targets:
+            base = str(t.get("base_url") or "").rstrip("/")
+            key = str(t.get("api_key") or "").strip()
+            candidate = self._api_get("/api/preposition", base_url=base, api_key=key)
+            if not isinstance(candidate, dict):
                 continue
-            tid = str(_d.get("table_id") or "").strip()
-            trace.append(f"{str(t.get('name') or '?')}:{'hit' if tid else 'empty'}")
-            if tid:
-                data = _d
-                src_name = str(t.get("name") or "primary")
-                src_base = _base
-                src_key = _key
-                break
-            if not data:
-                data = _d
+            table_id_c = str(candidate.get("table_id") or "").strip()
+            if not table_id_c:
+                continue
+            updated_c = str(candidate.get("updated_at") or candidate.get("server_updated_at") or "")
+            if updated_c:
+                try:
+                    import datetime as _dt
+                    updated_at = _dt.datetime.fromisoformat(updated_c.replace("Z", "+00:00"))
+                    now_utc = _dt.datetime.now(_dt.timezone.utc)
+                    age_sec = (now_utc - updated_at).total_seconds()
+                    if age_sec > 120:
+                        now_ts = time.time()
+                        stale_key = f"{base}|{table_id_c}|{updated_c}"
+                        last_stale_key = str(getattr(self, "_last_preposition_stale_key", "") or "")
+                        last_stale_log = float(getattr(self, "_last_preposition_stale_log_at", 0.0) or 0.0)
+                        if stale_key != last_stale_key or now_ts - last_stale_log >= 60.0:
+                            logger.warning(
+                                f"[PREPOS] stale preposition ignored source={t.get('name') or base or 'default'} "
+                                f"table={table_id_c} age={age_sec:.0f}s updated_at={updated_c}"
+                            )
+                            self._last_preposition_stale_key = stale_key
+                            self._last_preposition_stale_log_at = now_ts
+                        continue
+                except Exception:
+                    pass
+            data = candidate
+            src_name = str(t.get("name") or base or "default")
+            break
+
         table_id = str(data.get("table_id") or "").strip()
         if not table_id:
-            logger.info(f"[PREPOS] no target table ({', '.join(trace) or 'no-targets'})")
+            self._check_preposition_local_fallback()
             return
-        updated_at_str = str(data.get("updated_at") or "")
-        if updated_at_str:
-            try:
-                import datetime as _dt
-                updated_at = _dt.datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
-                now_utc = _dt.datetime.now(_dt.timezone.utc)
-                age_sec = (now_utc - updated_at).total_seconds()
-                max_age = float(os.getenv("BACOPY_PREPOSITION_MAX_AGE_SEC", "600") or 600)
-                if age_sec > max_age:
-                    logger.info(f"[PREPOS] expired ({age_sec:.0f}s > {max_age:.0f}s): {table_id}")
-                    return
-            except Exception:
-                pass
+        updated_at_str = str(data.get("updated_at") or data.get("server_updated_at") or "")
         table_name = str(data.get("table_name") or "")
         score = int(data.get("score") or 1)
-        stage = str(data.get("stage") or "").strip().lower()
-        intent = "preposition"
-        # 2歩手前: table scrollのみ / 1歩手前: BET準備クリック
-        if stage in ("prepare", "one_step", "step1", "warmup_ready"):
-            intent = "prepare"
-        elif stage in ("preposition", "two_step", "step2"):
-            intent = "preposition"
-        elif score >= 2:
-            intent = "prepare"
-        elif score <= 0:
-            return
         qpid = str(data.get("qpid") or table_id)
+        direction = str(data.get("direction") or "").upper()
+        china_pattern = str(data.get("china_pattern") or "").strip()
+        big_pattern = str(data.get("big_pattern") or "").strip()
+        if direction not in ("P", "B"):
+            if "BANKER" in direction:
+                direction = "B"
+            elif "PLAYER" in direction:
+                direction = "P"
+            else:
+                direction = ""
         current_table = str(getattr(self.bet_executor, "_table_id", "") or "")
         if current_table and (current_table == qpid or current_table == table_id):
             logger.debug(f"[PREPOS] already at table {table_id}, skip")
             return
-        current_key = f"{table_id}|{updated_at_str}|{intent}"
+        current_key = f"{table_id}|{updated_at_str}|{src_name}"
         if current_key == getattr(self, "_last_preposition_key", ""):
             logger.debug(f"[PREPOS] dedup skip (same key): {current_key[:40]}")
             return
         self._last_preposition_key = current_key
         logger.info(
             f"[PREPOS] requesting switch → {table_name!r} qpid={qpid!r} score={score} "
-            f"intent={intent} src={src_name} base={src_base[:48]}"
+            f"direction={direction or '?'} source={src_name}"
         )
         try:
-            self.bet_executor._request_switch(table_id, table_name, qpid, intent=intent)
+            self.bet_executor._request_switch(table_id, table_name, qpid, intent="preposition")
         except TypeError:
             self.bet_executor._request_switch(table_id, table_name, qpid)
         self._prepos_switch_at = time.time()
 
-    def _handle_decision(self, decision: dict) -> bool:
+    def _check_preposition_local_fallback(self) -> None:
+        """API preposition が使えない場合のローカル fallback（table score ベース）。"""
+        best = self._select_best_table()
+        if not best:
+            return
+        score = int(self.table_scores.get(best, 0) or 0)
+        if score <= 0:
+            return
+        buf = self.buffers.get(best)
+        if not buf:
+            return
+        table_id = str(best or "").strip()
+        table_name = str(buf.table_name or table_id)
+        qpid = str(getattr(buf, "qpid_table_id", "") or table_id)
+        current_table = str(getattr(self.bet_executor, "_table_id", "") or "")
+        if current_table and (current_table == qpid or current_table == table_id):
+            return
+
+        seq_chars = []
+        for h in (buf.hands or []):
+            c = _winner_to_char(h.get("winner"))
+            if c and c != "T":
+                seq_chars.append(c)
+        seq = "".join(seq_chars)
+        next_n = len(seq) + 1
+        _china_pred, china_pattern = chinese_road_predict(seq, next_n)
+        _big_pred, big_pattern = big_road_predict(seq)
+        _score, direction = score_proximity(seq, next_n)
+        hand_count = len(buf.hands or [])
+
+        current_key = f"local|{table_id}|{score}|{direction}|{hand_count}"
+        if current_key == getattr(self, "_last_preposition_key", ""):
+            return
+        self._last_preposition_key = current_key
+
+        logger.info(
+            f"[PREPOS-LOCAL] requesting switch → {table_name!r} qpid={qpid!r} "
+            f"score={score} direction={direction or '?'}"
+        )
+        try:
+            self.bet_executor._request_switch(table_id, table_name, qpid, intent="preposition")
+        except TypeError:
+            self.bet_executor._request_switch(table_id, table_name, qpid)
+        self._prepos_switch_at = time.time()
+
+    def _handle_decision(self, decision: dict) -> None:
         """VPS からの BET decision を受け取り、executor 経由で BET 実行。"""
+        if not self.bet_executor.is_live:
+            return
+        # use_v2_filter=True の場合は外部 VPS decision を無視し、ローカル V2 シグナルのみを使用
+        if self.use_v2_filter:
+            did_skip = str(decision.get("decision_id") or "")[:12]
+            logger.debug(f"[DECISION] skip (use_v2_filter=True, external decision blocked): {did_skip}")
+            return
         did = str(decision.get("decision_id") or "")
         fa = decision.get("friend_action") or {}
         if not isinstance(fa, dict):
-            return True
+            return
         side = str(fa.get("side") or "").upper()
         if side not in ("P", "B"):
             logger.warning(f"[DECISION] invalid side={side!r} in {did}")
-            return True
+            return
         table_id = str(decision.get("table_id") or "")
         table_name = str(decision.get("table_name") or "")
 
@@ -1050,7 +1351,7 @@ class DualLinePragmaticBot(cp.Collector):
 
         if is_bif:
             logger.info(f"[DECISION] SKIP: bet in flight for {did}")
-            return False
+            return
         if isinstance(pending_bet, dict) and pending_bet:
             p_age = time.time() - float(pending_bet.get("queued_at") or time.time())
             pending_tid = str(pending_bet.get("table_id") or "")
@@ -1075,7 +1376,7 @@ class DualLinePragmaticBot(cp.Collector):
                 if did != getattr(self, "_last_pending_skip_did", ""):
                     logger.info(f"[DECISION] SKIP: pending bet exists (age={p_age:.1f}s) for {did}")
                     self._last_pending_skip_did = did
-                return False
+                return
 
         bet_amount = self.money.next_bet()
         logger.info(f"[BOT] decision received: {did} side={side} table={table_name} amount=${bet_amount}")
@@ -1103,7 +1404,6 @@ class DualLinePragmaticBot(cp.Collector):
         _send_telegram(
             f"🎯 BET予約\n{table_name}\nSide: {side} ${bet_amount:.2f}\nstatus: 送信待機\ndecision: {did[:12]}"
         )
-        return True
 
     def _flush_pending_decision_results(self) -> None:
         """送信済み/失敗を API に反映して processing 滞留を防ぐ。"""
@@ -1112,19 +1412,7 @@ class DualLinePragmaticBot(cp.Collector):
         post_timeout = float(os.getenv("BACOPY_DECISION_POST_TIMEOUT_SEC", "180") or 180)
         now = time.time()
         for did, p in list(self._pending_decisions.items()):
-            if not isinstance(p, dict):
-                continue
-            # result_posted=True でも180s超過なら self.pending を安全クリア
-            if p.get("result_posted"):
-                placed_at = float(p.get("placed_at") or now)
-                if now - placed_at > post_timeout:
-                    _tid = str(p.get("table_id") or "")
-                    if _tid:
-                        _tp = self.pending.get(_tid)
-                        if _tp and str(_tp.get("decision_id") or "") == did:
-                            self.pending.pop(_tid, None)
-                            self._pending_decision_ids.pop(_tid, None)
-                            logger.info(f"[DECISION] safety timeout clear pending table={_tid} did={did[:12]}")
+            if not isinstance(p, dict) or p.get("result_posted"):
                 continue
             bet_id = str(p.get("bet_id") or "")
             placed_at = float(p.get("placed_at") or now)
@@ -1167,19 +1455,6 @@ class DualLinePragmaticBot(cp.Collector):
                     except Exception:
                         pass
                     logger.info(f"[DECISION] result posted done(phase=bet_sent): {did}")
-                else:
-                    logger.warning(f"[DECISION] result post failed (keep retry): {did}")
-                    sent_since = float(p.get("_sent_since") or 0.0)
-                    if sent_since <= 0.0:
-                        p["_sent_since"] = now
-                        sent_since = now
-                    if now - sent_since > 20.0:
-                        try:
-                            if bet_id and hasattr(self.bet_executor, "consume_sent_bet"):
-                                self.bet_executor.consume_sent_bet(bet_id)
-                                logger.warning(f"[DECISION] force-unblock in-flight after post failure: {did}")
-                        except Exception:
-                            pass
                 continue
 
             if age > post_timeout:
@@ -1245,12 +1520,6 @@ class DualLinePragmaticBot(cp.Collector):
             if did not in self._pending_decisions:
                 continue
             pending = self._pending_decisions.pop(did)
-            try:
-                _bid = str((pending or {}).get("bet_id") or "")
-                if _bid and hasattr(self.bet_executor, "consume_sent_bet"):
-                    self.bet_executor.consume_sent_bet(_bid)
-            except Exception:
-                pass
             result = d.get("result") or {}
             status = str(d.get("status") or "")
             outcome = str(result.get("outcome") or "?")
@@ -1268,17 +1537,8 @@ class DualLinePragmaticBot(cp.Collector):
 
             if phase == "bet_sent" and not settled:
                 self.total_resolved += 1
-                # BET送信後タイムアウト返却: self.pending[table_id] をクリアして
-                # 次ハンドで誤W/L集計が発生しないようにする
-                _bet_tid = str((pending or {}).get("table_id") or "")
-                if _bet_tid:
-                    _tbl_pend = self.pending.get(_bet_tid)
-                    if _tbl_pend and str(_tbl_pend.get("decision_id") or "") == did:
-                        self.pending.pop(_bet_tid, None)
-                        self._pending_decision_ids.pop(_bet_tid, None)
-                        logger.info(f"[DECISION] bet_sent(unsettled): cleared pending table={_bet_tid} did={did[:12]}")
                 _send_telegram(
-                    f"📤 BET送信確定(未決済)\n{pending.get('table_name') or pending.get('table_id')}\n"
+                    f"📤 BET送信確定\n{pending.get('table_name') or pending.get('table_id')}\n"
                     f"Side: {pending.get('side')} ${float(pending.get('amount') or 0):.2f}\n"
                     f"decision: {did[:12]}"
                 )
@@ -1336,24 +1596,39 @@ class DualLinePragmaticBot(cp.Collector):
                         continue
                     url = f"{base}/api/decisions/wait?provider=pragmatic&wait_sec=5"
                     req = _ur.Request(url, headers={"Authorization": f"Bearer {key}"})
-                    with _ur.urlopen(req, timeout=30) as r:
-                        data = json.loads(r.read().decode("utf-8"))
+                    try:
+                        with _ur.urlopen(req, timeout=30) as r:
+                            data = json.loads(r.read().decode("utf-8"))
+                    except Exception as e:
+                        err_key = f"{t.get('name') or 'target'}|{base}"
+                        now_t = time.time()
+                        err_map = getattr(self, "_decision_poll_target_error_at", {})
+                        if not isinstance(err_map, dict):
+                            err_map = {}
+                        last_err = float(err_map.get(err_key, 0.0) or 0.0)
+                        if now_t - last_err >= 30.0:
+                            logger.warning(
+                                f"[BOT] decision poll target failed: "
+                                f"{t.get('name') or 'target'}={base} err={e}"
+                            )
+                            err_map[err_key] = now_t
+                            self._decision_poll_target_error_at = err_map
+                        continue
                     for d in (data.get("decisions") or []):
                         if not isinstance(d, dict):
                             continue
                         did = str(d.get("decision_id") or "")
                         if did and did in recent_ids:
                             continue
+                        if did:
+                            recent_ids[did] = now
                         d["_source_api_base"] = base
                         d["_source_api_key"] = key
-                        handled = False
                         if not getattr(self, "_stop_decision_poll", False):
                             try:
-                                handled = bool(self._handle_decision(d))
+                                self._handle_decision(d)
                             except Exception as e:
                                 logger.warning(f"[BOT] handle_decision error: {e}")
-                        if did and handled:
-                            recent_ids[did] = now
                 # keep recent dedup map bounded
                 if len(recent_ids) > 800:
                     cutoff = now - 1800
@@ -1381,8 +1656,6 @@ class DualLinePragmaticBot(cp.Collector):
         # 決定事項トラッキング初期化
         self._pending_decisions: dict[str, dict] = {}
         self._last_preposition_key: str = ""
-        self._last_prepos_diag_at: float = 0.0
-        self._last_prepos_skip_log_at: float = 0.0
         self._stop_decision_poll = False
 
         cp.init_db()
@@ -1520,12 +1793,14 @@ class DualLinePragmaticBot(cp.Collector):
 
             # BET decision polling thread (background) - スキップ可 (--no-vps-poll)
             import threading as _threading
-            if not self.no_vps_poll:
+            if (not self.no_vps_poll) and self.bet_executor.is_live:
                 poll_thread = _threading.Thread(
                     target=self._decisions_poll_loop, daemon=True, name="decision-poll"
                 )
                 poll_thread.start()
                 logger.info("[BOT] VPS API polling started (decisions + preposition)")
+            elif not self.bet_executor.is_live:
+                logger.info("[BOT] VPS API polling DISABLED (dry-run research mode)")
             else:
                 logger.info("[BOT] VPS API polling DISABLED (--no-vps-poll / direct local mode)")
             _send_telegram(
@@ -1540,6 +1815,7 @@ class DualLinePragmaticBot(cp.Collector):
             last_prepos_check = time.time() - 10  # 初回即チェック
             last_result_check = time.time()
             last_result_flush_check = time.time()
+            last_remote_signal_poll = time.time() - 5
             _table_enter_at: dict[str, float] = {}  # table_id -> entered timestamp
             _TABLE_TIMEOUT = 90.0   # 90秒シグナルなし → ロビーへ戻る
             self._prepos_switch_at = 0.0             # 事前入場スイッチ開始時刻
@@ -1626,7 +1902,15 @@ class DualLinePragmaticBot(cp.Collector):
                     try:
                         self._check_preposition()
                     except Exception as e:
-                        logger.warning(f"[BOT] preposition poll error: {e}")
+                        logger.debug(f"[BOT] preposition poll error: {e}")
+
+                # ── collector 停滞時の remote snapshot 補助シグナル (2秒ごと) ──
+                if now - last_remote_signal_poll >= 2.0:
+                    last_remote_signal_poll = now
+                    try:
+                        self._poll_remote_snapshots_for_signals()
+                    except Exception as e:
+                        logger.debug(f"[BOT] remote signal poll error: {e}")
 
                 # ── local送信結果の反映 (2秒ごと) ─────────────────
                 if now - last_result_flush_check >= 2.0:
@@ -1656,7 +1940,7 @@ class DualLinePragmaticBot(cp.Collector):
                         f"resolved={self.total_resolved}  W/L={self.wins}/{self.losses}  "
                         f"pnl=${self.virtual_pnl:+.2f}  next=${ms['next_bet']}"
                     )
-                    if now - getattr(self, "_last_tg_status", 0) >= 300:
+                    if self.bet_executor.is_live and now - getattr(self, "_last_tg_status", 0) >= 300:
                         _send_telegram(
                             f"📊 LIVE 稼働 {elapsed//60}分\n"
                             f"通常BACCのBET: {self.wins}勝 / {self.losses}敗 / {self.ties}引分"
@@ -1807,7 +2091,7 @@ def main(argv: list[str] | None = None) -> int:
         profit_stop=args.profit_target,
         loss_cut=args.loss_cut,
         on_limit=args.on_limit,
-        notify_signal=True,
+        notify_signal=(not args.live),  # VPS(DryRun)のみSIGNAL通知担当、GUI botは重複排除
         notify_resolution=(not args.no_resolution_notify),
         notify_tie=False,
         bet_executor=bet_executor,
