@@ -788,6 +788,13 @@ class DualLinePragmaticBot(cp.Collector):
         pkey = pending["pattern_key"]
         bet_id = str(pending.get("bet_id") or "").strip()
 
+        mark_resolved = getattr(self.bet_executor, "mark_bet_resolved", None)
+        if callable(mark_resolved):
+            try:
+                mark_resolved(bet_id=bet_id, table_id=table_id)
+            except Exception:
+                pass
+
         # LIVE: 実BET送信が確認できないシグナルは資金管理/勝敗に反映しない
         if self.bet_executor.is_live and bet_id:
             consume_sent = getattr(self.bet_executor, "consume_sent_bet", None)

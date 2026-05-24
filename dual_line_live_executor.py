@@ -22,6 +22,7 @@ import sqlite3
 import threading
 import time
 import base64
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 # bot と同じロガーを使うことでログファイルへの書き込みを保証する
@@ -278,6 +279,24 @@ async (args) => {
     }
     return el;
   }
+  function hasBetCells(el) {
+    if (!el || !el.querySelectorAll) return false;
+    let count = 0;
+    for (const cell of el.querySelectorAll('.ym_qA')) {
+      try {
+        const r = cell.getBoundingClientRect();
+        if (r && r.width > 10 && r.height > 10) count += 1;
+      } catch(_) {}
+      if (count >= 3) return true;
+    }
+    return false;
+  }
+  function qpidTarget(el) {
+    const target = clickableAncestor(el);
+    const tile = String((el && el.id) || '').startsWith('TileHeight-') ? el : (target || el);
+    if (String((tile && tile.id) || '').startsWith('TileHeight-') && !hasBetCells(tile)) return null;
+    return target;
+  }
   function clickEl(el) {
     try { el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
     const r = el.getBoundingClientRect ? el.getBoundingClientRect() : {left:0, top:0, width:0, height:0};
@@ -322,20 +341,24 @@ async (args) => {
     for (const el of nodes) {
       try {
         if (qpid) {
-          if (containsQpid(el.getAttribute && el.getAttribute('data-qpid'))) return { el: clickableAncestor(el), idx, total: nodes.length };
-          if (containsQpid(el.getAttribute && el.getAttribute('data-table-id'))) return { el: clickableAncestor(el), idx, total: nodes.length };
-          if (containsQpid(el.getAttribute && el.getAttribute('data-tableid'))) return { el: clickableAncestor(el), idx, total: nodes.length };
-          if (containsQpid(el.getAttribute && el.getAttribute('id'))) return { el: el, idx, total: nodes.length };
-          if (containsQpid(el.getAttribute && el.getAttribute('href'))) return { el: clickableAncestor(el), idx, total: nodes.length };
-          if (containsQpid(el.getAttribute && el.getAttribute('src'))) return { el: clickableAncestor(el), idx, total: nodes.length };
-          if (containsQpid(el.getAttribute && el.getAttribute('style'))) return { el: clickableAncestor(el), idx, total: nodes.length };
+          let qt = null;
+          if (containsQpid(el.getAttribute && el.getAttribute('data-qpid'))) qt = qpidTarget(el);
+          if (!qt && containsQpid(el.getAttribute && el.getAttribute('data-table-id'))) qt = qpidTarget(el);
+          if (!qt && containsQpid(el.getAttribute && el.getAttribute('data-tableid'))) qt = qpidTarget(el);
+          if (!qt && containsQpid(el.getAttribute && el.getAttribute('id'))) qt = qpidTarget(el);
+          if (!qt && containsQpid(el.getAttribute && el.getAttribute('href'))) qt = qpidTarget(el);
+          if (!qt && containsQpid(el.getAttribute && el.getAttribute('src'))) qt = qpidTarget(el);
+          if (!qt && containsQpid(el.getAttribute && el.getAttribute('style'))) qt = qpidTarget(el);
           try {
             const cs = getComputedStyle(el);
-            if (containsQpid(cs && cs.backgroundImage)) return { el: clickableAncestor(el), idx, total: nodes.length };
+            if (!qt && containsQpid(cs && cs.backgroundImage)) qt = qpidTarget(el);
           } catch(_) {}
           try {
-            if (containsQpid(el.innerHTML || '')) return { el: clickableAncestor(el), idx, total: nodes.length };
+            if (!qt && containsQpid(el.innerHTML || '')) qt = qpidTarget(el);
           } catch(_) {}
+          if (qt) return { el: qt, idx, total: nodes.length };
+          idx += 1;
+          continue;
         }
         if (isCandidateText(textOf(el))) return { el: clickableAncestor(el), idx, total: nodes.length };
       } catch(_) {}
@@ -470,14 +493,17 @@ _AUTO_RECOVER_IDLE_JS = r"""
     '非アクティブ', '操作がありません', '接続が失われ', '再接続',
     '他の場所でセッション', 'inactivity', 'are you still there',
     'session elsewhere', 'reconnecting', 'connection lost',
-    'カスタマーサポート', 'お問い合わせください', 'customer support',
-    'please contact', 'contact support', 'technical issue',
+    'カスタマーサポート', 'カスタマーサポートに連絡してください',
+    'お問い合わせください', 'customer support',
+    '連絡してください', 'サポートに連絡', 'please contact', 'contact support', 'technical issue',
+    'something went wrong', 'try again later', 'エラーが発生',
     'セッションが終了', 'session has ended', 'session expired'
   ];
   const buttonNeedles = [
-    'continue', 'stay', 'close', 'remain',
-    '続行', '閉じる', 'ここに残る', '再開', '戻る',
-    'ok', 'okay', 'dismiss', 'はい', '確認', '了解'
+    'continue', 'stay', 'close', 'remain', 'dismiss', 'ok', 'okay',
+    'got it', 'understand', 'retry', 'reload', 'refresh', 'confirm',
+    '続行', '閉じる', 'ここに残る', '再開', '戻る', '再試行', '更新',
+    'はい', '確認', '了解', 'オーケー'
   ];
   const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
   const visible = (el) => {
@@ -489,30 +515,75 @@ _AUTO_RECOVER_IDLE_JS = r"""
   };
   const click = (el) => {
     try { el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+    try {
+      const r = el.getBoundingClientRect();
+      const x = r.left + Math.max(1, r.width / 2);
+      const y = r.top + Math.max(1, r.height / 2);
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        el.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, clientX:x, clientY:y, view:window}));
+      }
+      return true;
+    } catch(_) {}
     try { el.click(); return true; } catch(_) {}
     return false;
   };
   const dialogs = [];
-  for (const r of document.querySelectorAll('[role="dialog"], .modal, .dialog, .popup, [data-testid*="modal"], [class*="modal"]')) {
+  const dialogSelector = [
+    '[role="dialog"]', '[aria-modal="true"]', '.modal', '.dialog', '.popup',
+    '[data-testid*="modal"]', '[data-testid*="dialog"]',
+    '[class*="modal"]', '[class*="dialog"]', '[class*="popup"]', '[class*="overlay"]'
+  ].join(',');
+  for (const r of document.querySelectorAll(dialogSelector)) {
     try {
       if (!visible(r)) continue;
       const t = norm((r.innerText || r.textContent || '').slice(0, 500));
       if (t && dialogNeedles.some((k) => t.includes(k))) dialogs.push(r);
     } catch(_) {}
   }
+  if (!dialogs.length) {
+    try {
+      const bodyText = norm((document.body && (document.body.innerText || document.body.textContent) || '').slice(0, 1200));
+      if (bodyText && dialogNeedles.some((k) => bodyText.includes(k))) dialogs.push(document.body);
+    } catch(_) {}
+  }
   let clicked = 0;
+  let fallbackClicked = 0;
   for (const d of dialogs) {
-    for (const el of d.querySelectorAll('button, [role="button"], [aria-label], a')) {
+    const candidates = Array.from(d.querySelectorAll(
+      'button, input[type="button"], input[type="submit"], [role="button"], [aria-label], [data-testid*="close"], [class*="close"], a'
+    ));
+    for (const el of candidates) {
       try {
         if (!visible(el)) continue;
-        const t = norm((el.innerText || el.textContent || el.getAttribute('aria-label') || '').slice(0, 120));
-        if (t && buttonNeedles.some((k) => t.includes(k)) && click(el)) clicked += 1;
+        const t = norm((
+          el.innerText || el.textContent || el.getAttribute('aria-label') ||
+          el.getAttribute('value') || el.getAttribute('title') ||
+          el.getAttribute('data-testid') || el.className || ''
+        ).slice(0, 160));
+        const isOkLike = t === 'ok' || t === 'okay' || t === '確認' || t === '了解';
+        if (t && (isOkLike || buttonNeedles.some((k) => t.includes(k))) && click(el)) clicked += 1;
         if (clicked >= 3) break;
       } catch(_) {}
     }
+    if (!clicked) {
+      for (const el of candidates) {
+        try {
+          if (!visible(el)) continue;
+          const t = norm((el.innerText || el.textContent || el.getAttribute('aria-label') || '').slice(0, 160));
+          if (t.includes('support') || t.includes('サポート') || t.includes('customer')) continue;
+          if (click(el)) { fallbackClicked += 1; break; }
+        } catch(_) {}
+      }
+    }
     if (clicked >= 3) break;
   }
-  return { ok:true, clicked, dialogs:dialogs.length };
+  if (dialogs.length && !clicked && !fallbackClicked) {
+    try {
+      document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', code:'Escape', bubbles:true}));
+      document.dispatchEvent(new KeyboardEvent('keyup', {key:'Escape', code:'Escape', bubbles:true}));
+    } catch(_) {}
+  }
+  return { ok:true, clicked, fallbackClicked, dialogs:dialogs.length };
 }
 """
 
@@ -641,6 +712,15 @@ class LiveBetExecutor:
         )
         if self._multi_bet_transport not in ("ws", "click"):
             self._multi_bet_transport = "click"
+        if (
+            self._multi_bet_transport == "ws"
+            and os.getenv("BACOPY_ALLOW_WS_BET_TRANSPORT", "0").strip() != "1"
+        ):
+            logger.warning(
+                "[EXEC-SETUP] BACOPY_MULTI_BET_TRANSPORT=ws ignored; "
+                "forcing click transport because WS send did not prove real Stake balance acceptance"
+            )
+            self._multi_bet_transport = "click"
         self._diag_probe_qpid: str = os.getenv("BACOPY_MULTI_DIAG_PROBE_QPID", "").strip()
         self._diag_probe_name: str = os.getenv("BACOPY_MULTI_DIAG_PROBE_NAME", "").strip()
         self._diag_probe_side: str = os.getenv("BACOPY_MULTI_DIAG_PROBE_SIDE", "B").strip().upper()
@@ -655,12 +735,19 @@ class LiveBetExecutor:
         # lpbet WS 確認（JS click 後に Pragmatic game client が送る <lpbet> メッセージ）
         self._last_lpbet_gid: str = ""
         self._last_lpbet_at: float = 0.0
+        self._last_bet_modal_recover_at: float = 0.0
         self._table_states: dict[str, dict[str, Any]] = {}
+        self._game_to_table_id: dict[str, str] = {}
         self._last_multi_area_ensure_at: float = 0.0
         self._multi_area_ready: bool = False
         self._sent_bet_ids: set[str] = set()
         self._bet_send_in_progress: bool = False
         self._last_bet_sent_at: float = 0.0
+        self._chip_plan_cache: dict[tuple[tuple[float, ...], int], list[float]] = {}
+        self._chip_plan_prewarmed_keys: set[tuple[float, ...]] = set()
+        self._preselected_chip: dict[str, Any] = {}
+        self._visible_bet_hold: dict[str, Any] = {}
+        self._last_visible_bet_center_at: float = 0.0
         self._lock = threading.Lock()
         self._owner_thread_id: int = threading.get_ident()
 
@@ -906,7 +993,7 @@ class LiveBetExecutor:
                 try:
                     probe = probe_frame.evaluate(
                         self._JS_BET_COORDS,
-                        {"qpid": tid, "tableName": table_name, "sideClass": side_class},
+                        {"qpid": tid, "tableName": table_name, "sideClass": side_class, "sideCode": side},
                     )
                     visible_count = int((probe or {}).get("visibleCount") or 0) if isinstance(probe, dict) else 0
                     if visible_count > 0:
@@ -941,7 +1028,7 @@ class LiveBetExecutor:
                     self._hover_multi_tile(probe_frame, tid)
                     probe = probe_frame.evaluate(
                         self._JS_BET_COORDS,
-                        {"qpid": tid, "tableName": table_name, "sideClass": side_class},
+                        {"qpid": tid, "tableName": table_name, "sideClass": side_class, "sideCode": side},
                     )
                     logger.info(f"[ML-DIAG-PROBE] mapped frame[{i}] table={tid} side={side} coords={probe}")
                     if isinstance(probe, dict) and probe.get("ok"):
@@ -1042,6 +1129,7 @@ class LiveBetExecutor:
                                     "qpid": tid,
                                     "tableName": table_name,
                                     "sideClass": side_class,
+                                    "sideCode": side,
                                 },
                             )
                             logger.info(
@@ -1390,6 +1478,12 @@ class LiveBetExecutor:
                         per_st["bets_open_game_id"] = gid
                         per_st["last_bets_open_at"] = now
                         per_st.setdefault("multi_channel", msg_tid)
+                        if self._game_ws_url and not per_st.get("ws_url"):
+                            per_st["ws_url"] = self._game_ws_url
+                        self._game_to_table_id[gid] = bo_table_id
+                        if len(self._game_to_table_id) > 600:
+                            for old_gid in list(self._game_to_table_id.keys())[:200]:
+                                self._game_to_table_id.pop(old_gid, None)
                     if (not self._multi_lobby_mode) and gid != self._bets_open_game_id:
                         self._bets_open_game_id = gid
                         self._last_bets_open_at = now
@@ -1464,6 +1558,10 @@ class LiveBetExecutor:
                 if gid:
                     if st:
                         st["bets_closed_game_id"] = gid
+                    closed_table_id = str(self._game_to_table_id.get(gid) or "")
+                    if closed_table_id:
+                        closed_st = self._ensure_table_state(closed_table_id)
+                        closed_st["bets_closed_game_id"] = gid
                     if (not self._multi_lobby_mode) or (msg_tid and msg_tid == self._table_id):
                         self._bets_closed_game_id = gid
                     logger.info(f"[BETSCLOSED] table={msg_tid} game={gid}")
@@ -1698,6 +1796,28 @@ class LiveBetExecutor:
             finally:
                 self._switch_in_progress = False
 
+        # send_bet は API polling thread から呼ばれるため、即時実行は owner thread の tick で拾い直す。
+        if (
+            self._multi_lobby_mode
+            and self._multi_bet_transport == "click"
+            and not self._switch_in_progress
+            and not self._bet_send_in_progress
+        ):
+            try:
+                with self._lock:
+                    pending_target = str((self._pending_bet or {}).get("table_id") or "")
+                if pending_target and self._prepared_table_id == pending_target and self._is_table_bet_window_open(pending_target):
+                    st = self._table_states.get(pending_target) or {}
+                    gid = str(st.get("bets_open_game_id") or "")
+                    if gid:
+                        logger.info(
+                            f"[TICK] owner-thread resume pending BET: "
+                            f"table={pending_target} game={gid}"
+                        )
+                        self._try_execute_bet(gid, table_id=pending_target)
+            except Exception as ex:
+                logger.warning(f"[TICK] owner-thread pending resume failed: {ex}")
+
         if self._multi_diagnostic_only and self._prepared_table_id:
             prepared_tid = self._prepared_table_id
             prepared_st = self._table_states.get(prepared_tid) or {}
@@ -1711,11 +1831,12 @@ class LiveBetExecutor:
                     try:
                         open_probe = probe_frame.evaluate(
                             self._JS_BET_COORDS,
-                            {
-                                "qpid": prepared_tid,
-                                "tableName": self._diag_probe_name or prepared_tid,
-                                "sideClass": side_class,
-                            },
+                                {
+                                    "qpid": prepared_tid,
+                                    "tableName": self._diag_probe_name or prepared_tid,
+                                    "sideClass": side_class,
+                                    "sideCode": self._diag_prepared_side,
+                                },
                         )
                         logger.info(
                             f"[ML-DIAG-OPEN-PROBE] table={prepared_tid} gid={open_gid} "
@@ -1744,6 +1865,7 @@ class LiveBetExecutor:
                                         "qpid": prepared_tid,
                                         "tableName": self._diag_probe_name or prepared_tid,
                                         "sideClass": side_class,
+                                        "sideCode": self._diag_prepared_side,
                                     },
                                 )
                                 logger.info(
@@ -1772,6 +1894,7 @@ class LiveBetExecutor:
                                                 "qpid": prepared_tid,
                                                 "tableName": self._diag_probe_name or prepared_tid,
                                                 "sideClass": side_class,
+                                                "sideCode": self._diag_prepared_side,
                                             },
                                         )
                                     ok_now = bool(isinstance(open_probe, dict) and open_probe.get("ok"))
@@ -1917,6 +2040,10 @@ class LiveBetExecutor:
                 self._ensure_multi_area()
             except Exception:
                 pass
+            try:
+                self._maintain_visible_bet_hold(now)
+            except Exception as ex:
+                logger.debug(f"[VISIBLE-HOLD] maintain failed: {ex}")
 
         # 5秒ごとにブリッジを再注入（フレーム遷移・新フレームに備える）
         if now - self._last_bridge_inject > 5.0:
@@ -1983,22 +2110,10 @@ class LiveBetExecutor:
             except Exception as e:
                 logger.debug(f"[LIVE] betslip modal check error: {e}")
 
-        if self._multi_lobby_mode and now - self._last_idle_recover_check_at >= 6.0:
+        idle_recover_interval = float(os.getenv("BACOPY_IDLE_RECOVER_CHECK_SEC", "0.5") or 0.5)
+        if self._multi_lobby_mode and now - self._last_idle_recover_check_at >= max(0.2, idle_recover_interval):
             self._last_idle_recover_check_at = now
-            try:
-                rec = page.evaluate(_AUTO_RECOVER_IDLE_JS)
-                if isinstance(rec, dict) and int(rec.get("clicked") or 0) > 0:
-                    logger.info(f"[LIVE] idle dialog auto-recovered (main) clicks={rec.get('clicked')}")
-            except Exception as e:
-                logger.debug(f"[LIVE] idle recover check error: {e}")
-            try:
-                from bacopy_executor_pragmatic_ws_live import find_lobby_frames
-                for frame in (find_lobby_frames(page) or []):
-                    rec = frame.evaluate(_AUTO_RECOVER_IDLE_JS)
-                    if isinstance(rec, dict) and int(rec.get("clicked") or 0) > 0:
-                        logger.info(f"[LIVE] idle dialog auto-recovered (frame) clicks={rec.get('clicked')}")
-            except Exception as e:
-                logger.debug(f"[LIVE] idle recover frame check error: {e}")
+            self._auto_recover_idle_dialogs("tick")
 
         # 「他の場所でセッションが開始されました」モーダル検出・解除 (10秒ごと)
         # WS 並列接続後にサーバが session-elsewhere を送ることがある。旧 executor と同じ
@@ -2079,12 +2194,15 @@ class LiveBetExecutor:
             if ok and target and self._prepared_table_id == target:
                 with self._lock:
                     pending_target = str((self._pending_bet or {}).get("table_id") or "")
+                    pending_amount = float((self._pending_bet or {}).get("amount") or 0.0)
                 if pending_target == target and self._is_table_bet_window_open(target):
                     st = self._table_states.get(target) or {}
                     gid = str(st.get("bets_open_game_id") or "")
                     if gid:
                         logger.info(f"[SWITCH] prepared target has open BET window; resume pending BET table={target}")
                         self._try_execute_bet(gid, table_id=target)
+                elif pending_target == target and pending_amount > 0:
+                    self._preselect_first_chip(target, pending_amount)
             return
 
         try:
@@ -2136,6 +2254,43 @@ class LiveBetExecutor:
 
     # ── BET API ──────────────────────────────────────────────────────
 
+    def _auto_recover_idle_dialogs(self, reason: str = "tick", include_frames: bool = True) -> int:
+        """Dismiss transient Stake/Pragmatic dialogs such as contact-support OK modals."""
+        if not self._multi_lobby_mode:
+            return 0
+        page = self._bet_page or self._lobby_page
+        if page is None:
+            return 0
+        total = 0
+        try:
+            rec = page.evaluate(_AUTO_RECOVER_IDLE_JS)
+            if isinstance(rec, dict):
+                hits = int(rec.get("clicked") or 0) + int(rec.get("fallbackClicked") or 0)
+                if hits:
+                    total += hits
+                    logger.info(
+                        f"[LIVE] idle/support dialog auto-recovered (main/{reason}) "
+                        f"clicks={rec.get('clicked')} fallback={rec.get('fallbackClicked')}"
+                    )
+        except Exception as e:
+            logger.debug(f"[LIVE] idle recover main error ({reason}): {e}")
+        if include_frames:
+            try:
+                from bacopy_executor_pragmatic_ws_live import find_lobby_frames
+                for frame in (find_lobby_frames(page) or []):
+                    rec = frame.evaluate(_AUTO_RECOVER_IDLE_JS)
+                    if isinstance(rec, dict):
+                        hits = int(rec.get("clicked") or 0) + int(rec.get("fallbackClicked") or 0)
+                        if hits:
+                            total += hits
+                            logger.info(
+                                f"[LIVE] idle/support dialog auto-recovered (frame/{reason}) "
+                                f"clicks={rec.get('clicked')} fallback={rec.get('fallbackClicked')}"
+                            )
+            except Exception as e:
+                logger.debug(f"[LIVE] idle recover frame error ({reason}): {e}")
+        return total
+
     def send_bet(self, side: str, amount: float, table_id: str = "", bet_id: str = "") -> bool:
         """BET を予約する。次の betsopen で送信。"""
         target_table = str(table_id or self._table_id or "").strip()
@@ -2169,6 +2324,10 @@ class LiveBetExecutor:
                 "queued_at": time.time(),
             }
         logger.info(f"[BET-QUEUED] side={side} ${amount:.2f} table={target_table} known_tables={list(self._table_states.keys())[:6]}")
+        if self._multi_lobby_mode and self._multi_bet_transport == "click" and on_owner_thread:
+            self._preselect_first_chip(target_table, amount)
+        elif self._multi_lobby_mode and self._multi_bet_transport == "click":
+            logger.info("[CHIP-PRESELECT] deferred to owner thread")
 
         # すでに betsopen 中なら即送信
         if self._multi_lobby_mode:
@@ -2276,6 +2435,33 @@ class LiveBetExecutor:
             self._user_id = user_id
             self._persist_user_id(user_id)
 
+        if self._multi_lobby_mode and self._multi_bet_transport == "click":
+            latest_open_gid = str(st.get("bets_open_game_id") or "").strip()
+            latest_closed_gid = str(st.get("bets_closed_game_id") or "").strip()
+            latest_open_at = float(st.get("last_bets_open_at") or 0.0)
+            max_open_age = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC", "60") or 60)
+            latest_open_active = bool(
+                latest_open_gid
+                and latest_open_gid != latest_closed_gid
+                and latest_open_at
+                and 0 < (time.time() - latest_open_at) < max_open_age
+            )
+            if latest_open_active and latest_open_gid != game_id:
+                logger.info(
+                    f"[TRY-BET] refresh game_id for prepared target: "
+                    f"{game_id!r} -> {latest_open_gid!r} table={bet_table_id}"
+                )
+                game_id = latest_open_gid
+            elif not latest_open_active:
+                logger.info(
+                    f"[TRY-BET-DEFER] target bet window not active before click: "
+                    f"table={bet_table_id} game={game_id!r} latest_open={latest_open_gid!r} "
+                    f"closed={latest_closed_gid!r}"
+                )
+                with self._lock:
+                    self._pending_bet = bet
+                return
+
         logger.info(f"[TRY-BET] table={bet_table_id} game_id={game_id!r} user_id={'...'+user_id[-8:] if user_id else 'NONE'} st_keys={list(st.keys())}")
         if not user_id:
             logger.warning(f"[TRY-BET] DEFER: user_id UNKNOWN for table={bet_table_id} (st.user_id={st.get('user_id')!r} global={self._user_id!r} env={bool(os.getenv('BACOPY_USER_ID'))})")
@@ -2306,6 +2492,7 @@ class LiveBetExecutor:
         logger.info(f"[TRY-BET] SENDING: {side_name} ${amount:.2f} table={tname} game={game_id} ck={ck}")
         self._phase = "betting"
         lpbet_before_at = self._last_lpbet_at
+        self._auto_recover_idle_dialogs("pre-bet")
 
         # UI buttons cannot be safely mapped to a table in the shared multi frame.
         # Default to sending the targeted lpbet message over the established multi WS proxy.
@@ -2323,6 +2510,7 @@ class LiveBetExecutor:
             result = {"ok": click_ok, "method": "click"}
             ok = click_ok
             logger.info(f"[TRY-BET] click_place_bet result={result}")
+            self._auto_recover_idle_dialogs("post-click")
         else:
             self._bet_send_in_progress = True
             try:
@@ -2331,14 +2519,22 @@ class LiveBetExecutor:
                 self._bet_send_in_progress = False
             ok = isinstance(result, dict) and result.get("ok")
             logger.info(f"[TRY-BET] _ws_send result={result}")
+            self._auto_recover_idle_dialogs("post-ws")
 
         if ok:
-            # multi-lobby click モードではクリック成功だけでは不十分。
-            # Pragmatic game client が実際に BET を受理した場合、<lpbet> WS メッセージを自動送信する。
-            # UI反映とWS送信に数秒かかる場合があるため、確認を十分に待つ。
+            # multi-lobby modeでは「クリック成功」や「WS send OK」だけでは不十分。
+            # Pragmatic game client が実際に BET を受理した場合、<lpbet> WS メッセージを送信する。
+            # Stake残高表示とズレる疑いを避けるため、multiでは lpbet 確認を成功条件にする。
             lpbet_confirmed = False
-            if self._multi_lobby_mode and self._is_multi_table_ws and self._multi_bet_transport == "click":
-                _lpbet_wait = float(os.getenv("BACOPY_LPBET_CONFIRM_WAIT_SEC", "35.0") or 35.0)
+            if self._multi_lobby_mode and self._is_multi_table_ws:
+                if self._multi_bet_transport == "click":
+                    _lpbet_wait = float(os.getenv("BACOPY_LPBET_CONFIRM_WAIT_SEC", "55.0") or 55.0)
+                    _confirm_label = "click ok"
+                    _notify_label = "BETクリック実行済みだがWS未確認"
+                else:
+                    _lpbet_wait = float(os.getenv("BACOPY_WS_LPBET_CONFIRM_WAIT_SEC", "70.0") or 70.0)
+                    _confirm_label = "ws send ok"
+                    _notify_label = "BET WS送信済みだが受理未確認"
                 _lpbet_deadline = time.time() + _lpbet_wait
                 while time.time() < _lpbet_deadline:
                     if self._last_lpbet_at > lpbet_before_at and (
@@ -2346,13 +2542,17 @@ class LiveBetExecutor:
                     ):
                         lpbet_confirmed = True
                         break
+                    now_wait = time.time()
+                    if now_wait - self._last_bet_modal_recover_at >= 0.4:
+                        self._last_bet_modal_recover_at = now_wait
+                        self._auto_recover_idle_dialogs("lpbet-wait")
                     time.sleep(0.1)
                 if not lpbet_confirmed:
                     logger.warning(
-                        f"[LIVE] click ok but NO lpbet WS received (game={game_id}) — "
+                        f"[LIVE] {_confirm_label} but NO lpbet WS received (game={game_id}) — "
                         f"bet may not have been placed; skipping _sent_bet_ids"
                     )
-                    self._notify(f"⚠️ BETクリック実行済みだがWS未確認\n{tname}\n{side_name} ${amount:.2f}")
+                    self._notify(f"⚠️ {_notify_label}\n{tname}\n{side_name} ${amount:.2f}")
                 else:
                     logger.info(f"[LIVE] bet sent OK + lpbet confirmed ck={ck} gId={self._last_lpbet_gid!r}")
             else:
@@ -2363,6 +2563,7 @@ class LiveBetExecutor:
             if lpbet_confirmed and bet_id:
                 self._sent_bet_ids.add(bet_id)
                 self._last_bet_sent_at = time.time()
+                self._start_visible_bet_hold(bet_id, bet_table_id, tname)
             # lpbet WS確認済みの場合のみ「BET送信」を通知（空振りクリックは通知しない）
             if lpbet_confirmed:
                 self._notify(f"📤 BET送信確定\n{tname}\n{side_name} ${amount:.2f}\n(結果待ち)")
@@ -2433,6 +2634,12 @@ class LiveBetExecutor:
   const qpid = args.qpid || '';
   const tableName = String(args.tableName || '');
   const sideClass = args.sideClass || 'ym_yP';
+  const sideCode = String(args.sideCode || '').toUpperCase();
+  const sideClasses = [sideClass];
+  // Pragmatic multi-baccarat uses different class names on the compact tile
+  // buttons than on the larger wager panel.
+  if (sideClass === 'ym_yP') sideClasses.push('ym_yp');
+  if (sideClass === 'ym_yQ') sideClasses.push('ym_yr');
   const activeClass = 'ym_yn';
   const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, '').trim();
   const tableCandidates = new Set([norm(tableName)].filter(Boolean));
@@ -2458,23 +2665,91 @@ class LiveBetExecutor:
             wasActive: wasActive, source: src, btnW: r.width, btnH: r.height};
   }
 
+  function tryOrderedTileButtons(tile, src) {
+    if (!tile) return null;
+    const raw = Array.from(tile.querySelectorAll('.ym_qA'))
+      .filter((btn) => {
+        const r = btn.getBoundingClientRect();
+        return rectOk(r) && r.x >= 0 && r.y >= 0;
+      })
+      .map((btn) => {
+        const r = btn.getBoundingClientRect();
+        const txt = norm(btn.innerText || btn.textContent || '');
+        const cls = String(btn.className || '');
+        return {btn, x: r.left, y: r.top, w: r.width, h: r.height, txt, cls};
+      })
+      .sort((a, b) => (a.y - b.y) || (a.x - b.x));
+    if (raw.length < 3) return null;
+
+    function explicitRole(item) {
+      const t = item.txt || '';
+      const c = item.cls || '';
+      if (c.includes('ym_yp') || t.includes('ペア') && (t.includes('プ') || t.includes('p'))) return 'PP';
+      if (c.includes('ym_yr') || t.includes('ペア') && (t.includes('バ') || t.includes('b'))) return 'BP';
+      if (c.includes('ym_yP') || t.includes('プレイヤー') || t === 'player') return 'P';
+      if (c.includes('ym_yQ') || t.includes('バンカー') || t === 'banker') return 'B';
+      if (c.includes('ym_yB') || t.includes('タイ') || t === 'tie') return 'T';
+      return '';
+    }
+
+    const explicit = raw.filter((item) => explicitRole(item) === sideCode);
+    if (explicit.length === 1) {
+      return btnCoords(explicit[0].btn, explicit[0].btn.classList.contains(activeClass), src + '_explicit');
+    }
+
+    const rows = [];
+    for (const item of raw) {
+      let bucket = rows.find((row) => Math.abs(row.y - item.y) < Math.max(8, item.h * 0.35));
+      if (!bucket) {
+        bucket = {y: item.y, items: []};
+        rows.push(bucket);
+      }
+      bucket.items.push(item);
+    }
+    const row = rows
+      .map((bucket) => bucket.items.sort((a, b) => a.x - b.x))
+      .sort((a, b) => {
+        const scoreA = (a.length >= 5 ? 100 : a.length >= 3 ? 50 : 0) + a.length;
+        const scoreB = (b.length >= 5 ? 100 : b.length >= 3 ? 50 : 0) + b.length;
+        return scoreB - scoreA;
+      })[0] || [];
+    let idx = -1;
+    if (row.length >= 5) {
+      // Visual order in multi-baccarat tiles:
+      // P Pair, Player, Tie, Banker, B Pair.
+      idx = ({PP: 0, P: 1, T: 2, B: 3, BP: 4})[sideCode] ?? -1;
+    } else if (row.length >= 3) {
+      // Three visible buttons can also be only side bets: P Pair / Tie / B Pair.
+      // Do not map P/B to the outer buttons unless the row actually contains
+      // main Player/Banker controls; this caused PLAYER bets to hit P Pair.
+      const rowRoles = row.map(explicitRole);
+      if ((sideCode === 'P' || sideCode === 'B') && !rowRoles.includes(sideCode)) {
+        return null;
+      }
+      idx = ({P: 0, T: 1, B: 2})[sideCode] ?? -1;
+    }
+    if (idx < 0 || idx >= row.length) return null;
+    return btnCoords(row[idx].btn, row[idx].btn.classList.contains(activeClass), src);
+  }
+
   function tryWithinTile(tile, src) {
     if (!tile) return null;
-    const allBtns = Array.from(tile.querySelectorAll('.' + sideClass));
+    const allBtns = sideClasses.flatMap((cls) => Array.from(tile.querySelectorAll('.' + cls)));
     const visibleBtns = allBtns.filter((b) => {
       const r = b.getBoundingClientRect();
       return rectOk(r) && r.x >= 0 && r.y >= 0;
     });
-    if (visibleBtns.length !== 1) return null;
-    const btn = visibleBtns[0];
+    const uniq = Array.from(new Set(visibleBtns));
+    if (uniq.length !== 1) return null;
+    const btn = uniq[0];
     return btnCoords(btn, btn.classList.contains(activeClass), src);
   }
   function tryActivePanelAfterTargetTile(tile) {
     if (!tile) return null;
     // In multi-baccarat the selected tile and the actual wager panel can be
     // rendered as separate DOM islands. Once the exact qpid tile is mounted,
-    // accept the active side button in the shared panel, but avoid buttons
-    // nested under a different TileHeight-* card.
+    // prefer the large active wager-panel button. Compact tile buttons can
+    // select/focus a card without placing a real wager.
     const candidates = Array.from(document.querySelectorAll('.' + sideClass + '.' + activeClass))
       .filter((btn) => {
         const r = btn.getBoundingClientRect();
@@ -2503,8 +2778,8 @@ class LiveBetExecutor:
   if (qpid) {
     targetTile = document.getElementById('TileHeight-' + qpid);
     if (targetTile) {
-      const result = tryWithinTile(targetTile, 'qpid_tile');
-      if (result) return result;
+      const orderedResult = tryOrderedTileButtons(targetTile, 'qpid_tile_ordered');
+      if (orderedResult) return orderedResult;
       const activePanelResult = tryActivePanelAfterTargetTile(targetTile);
       if (activePanelResult) return activePanelResult;
     }
@@ -2522,6 +2797,8 @@ class LiveBetExecutor:
         }
         if (hasExactChild) continue;
         const tile = enclosingTile(el);
+        const orderedResult = tryOrderedTileButtons(tile, 'table_name_tile_ordered');
+        if (orderedResult) return orderedResult;
         const result = tryWithinTile(tile, 'table_name_tile');
         if (result) return result;
         const activePanelResult = tryActivePanelAfterTargetTile(tile);
@@ -2532,10 +2809,10 @@ class LiveBetExecutor:
 
   // Ambiguous button counts are diagnostic only. Never click a shared-frame
   // button unless it was bound to the requested table above.
-  const activeBtns = Array.from(document.querySelectorAll('.' + sideClass + '.' + activeClass))
+  const activeBtns = sideClasses.flatMap((cls) => Array.from(document.querySelectorAll('.' + cls + '.' + activeClass)))
     .filter(b => rectOk(b.getBoundingClientRect()));
 
-  const visibleBtns = Array.from(document.querySelectorAll('.' + sideClass))
+  const visibleBtns = sideClasses.flatMap((cls) => Array.from(document.querySelectorAll('.' + cls)))
     .filter(b => { const r = b.getBoundingClientRect(); return rectOk(r) && r.x >= 0 && r.y >= 0; });
   const buttonSamples = visibleBtns.slice(0, 12).map((btn, idx) => {
     const r = btn.getBoundingClientRect();
@@ -2586,8 +2863,9 @@ class LiveBetExecutor:
 
   return {ok: false, reason: 'not_found',
           tableName: tableName, tableCandidates: Array.from(tableCandidates),
-          sideBtnCount: document.querySelectorAll('.' + sideClass).length,
-          activeBtnCount: document.querySelectorAll('.' + sideClass + '.' + activeClass).length,
+          sideClasses: sideClasses,
+          sideBtnCount: sideClasses.reduce((n, cls) => n + document.querySelectorAll('.' + cls).length, 0),
+          activeBtnCount: sideClasses.reduce((n, cls) => n + document.querySelectorAll('.' + cls + '.' + activeClass).length, 0),
           visibleCount: visibleBtns.length, buttonSamples: buttonSamples,
           targetTileFound: !!targetTile, targetDiag: targetDiag};
 }
@@ -2607,12 +2885,97 @@ class LiveBetExecutor:
             logger.warning(f"[ML-HOVER] exact tile hover failed table={tid}: {ex}")
             return False
 
-    def _js_click_bet_in_container(self, frame, qpid: str, table_name: str, side_class: str) -> bool:
+    def _center_multi_tile(self, qpid: str, table_name: str = "", *, click: bool = False) -> bool:
+        """Keep a multi-play tile visible near the screen center."""
+        tid = str(qpid or "").strip()
+        if not tid:
+            return False
+        frame = self._find_pragmatic_frame(target_qpid=tid)
+        if not frame:
+            logger.info(f"[VISIBLE-HOLD] frame not found for center target={tid!r}")
+            return False
+        try:
+            res = frame.evaluate(
+                _MULTI_LOBBY_FOCUS_JS,
+                {
+                    "qpid": tid,
+                    "click": bool(click),
+                    "maxScroll": int(os.getenv("BACOPY_VISIBLE_HOLD_SCROLL_MAX", "18") or "18"),
+                    "candidates": [str(table_name or ""), tid],
+                    "hintIndex": -1,
+                    "hintTotal": 0,
+                },
+            )
+            ok = bool(isinstance(res, dict) and res.get("found"))
+            logger.info(f"[VISIBLE-HOLD] center target={tid!r} ok={ok} result={res}")
+            return ok
+        except Exception as ex:
+            logger.warning(f"[VISIBLE-HOLD] center failed target={tid!r}: {ex}")
+            return False
+
+    def _start_visible_bet_hold(self, bet_id: str, table_id: str, table_name: str = "") -> None:
+        if not self._multi_lobby_mode:
+            return
+        if os.getenv("BACOPY_KEEP_BET_VISIBLE_UNTIL_RESULT", "1").strip() == "0":
+            return
+        tid = str(table_id or "").strip()
+        if not tid:
+            return
+        hold_sec = float(os.getenv("BACOPY_VISIBLE_BET_HOLD_MAX_SEC", "180") or 180)
+        self._visible_bet_hold = {
+            "bet_id": str(bet_id or "").strip(),
+            "table_id": tid,
+            "table_name": str(table_name or tid),
+            "started_at": time.time(),
+            "until": time.time() + max(15.0, hold_sec),
+        }
+        self._last_visible_bet_center_at = 0.0
+        logger.info(
+            f"[VISIBLE-HOLD] start table={tid} name={table_name or tid!r} "
+            f"bet_id={str(bet_id or '')[:16]} max_sec={hold_sec:.0f}"
+        )
+        self._center_multi_tile(tid, table_name, click=False)
+
+    def _maintain_visible_bet_hold(self, now: float | None = None) -> None:
+        hold = self._visible_bet_hold or {}
+        if not hold:
+            return
+        now = time.time() if now is None else now
+        tid = str(hold.get("table_id") or "")
+        if not tid:
+            self._visible_bet_hold = {}
+            return
+        if now >= float(hold.get("until") or 0.0):
+            logger.info(f"[VISIBLE-HOLD] expired table={tid}")
+            self._visible_bet_hold = {}
+            return
+        interval = float(os.getenv("BACOPY_VISIBLE_BET_RECENTER_SEC", "4.0") or 4.0)
+        if now - self._last_visible_bet_center_at < max(1.0, interval):
+            return
+        self._last_visible_bet_center_at = now
+        self._center_multi_tile(tid, str(hold.get("table_name") or tid), click=False)
+
+    def mark_bet_resolved(self, bet_id: str = "", table_id: str = "") -> None:
+        """Called by the live bot when the watched bet has an outcome."""
+        hold = self._visible_bet_hold or {}
+        if not hold:
+            return
+        bid = str(bet_id or "").strip()
+        tid = str(table_id or "").strip()
+        hold_bid = str(hold.get("bet_id") or "")
+        hold_tid = str(hold.get("table_id") or "")
+        if (bid and hold_bid and bid != hold_bid) or (tid and hold_tid and tid != hold_tid):
+            return
+        logger.info(f"[VISIBLE-HOLD] resolved; release table={hold_tid} bet_id={hold_bid[:16]}")
+        self._center_multi_tile(hold_tid, str(hold.get("table_name") or hold_tid), click=False)
+        self._visible_bet_hold = {}
+
+    def _js_click_bet_in_container(self, frame, qpid: str, table_name: str, side_class: str, side: str = "") -> bool:
         """BET ボタンの座標を JS で取得し、page.mouse.click() で isTrusted=true クリックする"""
         try:
             res = frame.evaluate(
                 self._JS_BET_COORDS,
-                {"qpid": qpid, "tableName": table_name, "sideClass": side_class},
+                {"qpid": qpid, "tableName": table_name, "sideClass": side_class, "sideCode": side},
             )
             logger.info(f"[CLICK-BET-JS] qpid={qpid!r} table={table_name!r} coords={res}")
             if not (isinstance(res, dict) and res.get("ok")):
@@ -2688,6 +3051,137 @@ class LiveBetExecutor:
 
     _CHIP_DENOMS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 500, 1000]
 
+    @staticmethod
+    def _fmt_chip_denom(value: float) -> str:
+        return str(int(value)) if float(value).is_integer() else str(value)
+
+    def _available_chip_denoms(self, frame) -> list[float]:
+        """Read currently rendered chip denominations from the Pragmatic frame."""
+        try:
+            vals = frame.evaluate(
+                r"""
+() => Array.from(document.querySelectorAll('[data-testid^="chip-stack-value-"]'))
+  .map(el => String(el.getAttribute('data-testid') || '').replace('chip-stack-value-', ''))
+  .map(v => Number(v))
+  .filter(v => Number.isFinite(v) && v > 0)
+"""
+            )
+            if isinstance(vals, list):
+                denoms = sorted({float(v) for v in vals if float(v) > 0})
+                if denoms:
+                    return denoms
+        except Exception as ex:
+            logger.debug(f"[CLICK-BET] chip denom scan failed: {ex}")
+        return list(self._CHIP_DENOMS)
+
+    def _chip_plan(
+        self, amount: float, denoms: list[float] | None = None, *, log_failure: bool = True
+    ) -> list[float]:
+        """Decompose a bet amount into rendered chip denominations."""
+        choices = sorted({float(d) for d in (denoms or self._CHIP_DENOMS) if float(d) > 0}, reverse=True)
+        if not choices:
+            return []
+        denoms_key = tuple(sorted(choices))
+        amount_key = int((Decimal(str(amount)) * Decimal("10")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        cache_key = (denoms_key, amount_key)
+        cached = self._chip_plan_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+        scale = Decimal("10")
+        remaining = amount_key
+        plan: list[float] = []
+        for d in choices:
+            units = int((Decimal(str(d)) * scale).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            if units <= 0:
+                continue
+            count, remaining = divmod(remaining, units)
+            if count:
+                plan.extend([d] * int(count))
+        if remaining:
+            if log_failure:
+                logger.error(
+                    f"[CLICK-BET-PLAN] amount=${amount:.2f} cannot be exactly decomposed "
+                    f"with rendered chips {choices}; aborting to avoid wrong stake"
+                )
+            self._chip_plan_cache[cache_key] = []
+            return []
+        self._chip_plan_cache[cache_key] = list(plan)
+        return plan
+
+    def _prewarm_small_seq_chip_plans(self, denoms: list[float]) -> None:
+        """Precompute fixed SMALL SEQ chip click plans for the current chip set."""
+        denoms_key = tuple(sorted({float(d) for d in denoms if float(d) > 0}))
+        if not denoms_key or denoms_key in self._chip_plan_prewarmed_keys:
+            return
+        amounts: list[float] = []
+        try:
+            from dual_line_money import SEQ_SMALL02, SEQ_SMALL1, SEQ_SMALL3, SEQ_SMALL6
+
+            for seq in (SEQ_SMALL02, SEQ_SMALL1, SEQ_SMALL3, SEQ_SMALL6):
+                amounts.extend(float(v) for v in seq)
+        except Exception as ex:
+            logger.debug(f"[CLICK-BET-PLAN] SMALL SEQ import failed for prewarm: {ex}")
+            amounts.extend([
+                0.2, 0.4, 0.6, 0.8, 1, 2, 3, 4, 5, 6, 7, 10, 12, 14,
+                25, 50, 100, 200, 333, 500, 1000, 2000,
+            ])
+        for amt in sorted(set(amounts)):
+            self._chip_plan(amt, list(denoms_key), log_failure=False)
+        self._chip_plan_prewarmed_keys.add(denoms_key)
+        logger.info(
+            f"[CLICK-BET-PLAN] prewarmed SMALL SEQ plans: amounts={len(set(amounts))} "
+            f"denoms={list(denoms_key)} cache_size={len(self._chip_plan_cache)}"
+        )
+
+    def _select_chip_in_frame(self, frame, chip_value: float, log_prefix: str = "CLICK-BET") -> bool:
+        chip_str = self._fmt_chip_denom(chip_value)
+        chip_sel = f'[data-testid="chip-stack-value-{chip_str}"]'
+        try:
+            chip_timeout_ms = int(float(os.getenv("BACOPY_CHIP_SELECT_TIMEOUT_SEC", "0.8") or 0.8) * 1000)
+            frame.click(chip_sel, timeout=max(250, chip_timeout_ms))
+            logger.info(f"[{log_prefix}] chip selected: {chip_str} (selector={chip_sel})")
+            return True
+        except Exception as ce:
+            logger.warning(f"[{log_prefix}] chip select failed ({chip_sel}): {ce}")
+            if self._js_click_selector(frame, chip_sel, "CHIP"):
+                logger.info(f"[{log_prefix}] chip selected via JS mouse: {chip_str} (selector={chip_sel})")
+                try:
+                    frame.page.wait_for_timeout(120)
+                except Exception:
+                    pass
+                return True
+        return False
+
+    def _amount_key(self, amount: float) -> int:
+        return int((Decimal(str(amount)) * Decimal("10")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    def _preselect_first_chip(self, target_qpid: str, amount: float) -> bool:
+        """Select the first required chip while waiting for the target betsopen."""
+        frame = self._find_pragmatic_frame(target_qpid=target_qpid)
+        if not frame:
+            logger.info(f"[CHIP-PRESELECT] skip: frame not found target={target_qpid!r}")
+            return False
+        rendered_denoms = self._available_chip_denoms(frame)
+        self._prewarm_small_seq_chip_plans(rendered_denoms)
+        chip_plan = self._chip_plan(amount, rendered_denoms)
+        if not chip_plan:
+            logger.info(f"[CHIP-PRESELECT] skip: empty chip plan amount=${amount:.2f} target={target_qpid!r}")
+            return False
+        first = float(chip_plan[0])
+        if not self._select_chip_in_frame(frame, first, "CHIP-PRESELECT"):
+            return False
+        self._preselected_chip = {
+            "target": str(target_qpid or ""),
+            "amount_key": self._amount_key(amount),
+            "chip": first,
+            "at": time.time(),
+        }
+        logger.info(
+            f"[CHIP-PRESELECT] ready target={target_qpid!r} amount=${amount:.2f} "
+            f"first_chip={self._fmt_chip_denom(first)} plan_clicks={len(chip_plan)}"
+        )
+        return True
+
     def _pick_chip_denom(self, amount: float) -> str:
         """BET額に最も近い（超えない）チップ額の文字列を返す。"""
         best = self._CHIP_DENOMS[0]
@@ -2716,79 +3210,117 @@ class LiveBetExecutor:
         qpid_matched = bool(target_qpid and target_qpid in frame_url)
         logger.info(f"[CLICK-BET] frame selected: qpid_matched={qpid_matched} target={target_qpid!r} frame_url={frame_url[:80]}")
 
-        # チップ選択
-        chip_str = self._pick_chip_denom(amount)
-        chip_sel = f'[data-testid="chip-stack-value-{chip_str}"]'
-        try:
-            chip_timeout_ms = int(float(os.getenv("BACOPY_CHIP_SELECT_TIMEOUT_SEC", "0.8") or 0.8) * 1000)
-            frame.click(chip_sel, timeout=max(250, chip_timeout_ms))
-            logger.info(f"[CLICK-BET] chip selected: {chip_str} (selector={chip_sel})")
-        except Exception as ce:
-            logger.warning(f"[CLICK-BET] chip select failed ({chip_sel}): {ce}")
-            if self._js_click_selector(frame, chip_sel, "CHIP"):
-                logger.info(f"[CLICK-BET] chip selected via JS mouse: {chip_str} (selector={chip_sel})")
-                try:
-                    frame.page.wait_for_timeout(120)
-                except Exception:
-                    pass
-
-        self._hover_multi_tile(frame, target_qpid)
+        rendered_denoms = self._available_chip_denoms(frame)
+        self._prewarm_small_seq_chip_plans(rendered_denoms)
+        chip_plan = self._chip_plan(amount, rendered_denoms)
+        if not chip_plan:
+            logger.warning(f"[CLICK-BET-PLAN] empty plan amount=${amount:.2f} denoms={rendered_denoms}")
+            return False
+        plan_summary: dict[str, int] = {}
+        for d in chip_plan:
+            key = self._fmt_chip_denom(d)
+            plan_summary[key] = plan_summary.get(key, 0) + 1
+        logger.info(
+            f"[CLICK-BET-PLAN] amount=${amount:.2f} denoms={rendered_denoms} "
+            f"plan={plan_summary} clicks={len(chip_plan)}"
+        )
 
         # multi-baccarat モードはフレームURLにqpidが入らない（1フレーム共有）
         # → JSでフレーム内DOM検索して対象テーブルのボタンを特定してクリック
         # (qpid_matched=False でも JS は実行し、フォールバック含めて試みる)
-        if self._js_click_bet_in_container(frame, target_qpid, target_table_name, side_class):
-            logger.info(f"[CLICK-BET] JS click OK: side={side} qpid={target_qpid!r} qpid_matched={qpid_matched}")
-            return True
+        def click_side_once(click_index: int) -> bool:
+            self._hover_multi_tile(frame, target_qpid)
+            if self._js_click_bet_in_container(frame, target_qpid, target_table_name, side_class, side):
+                logger.info(
+                    f"[CLICK-BET] JS click OK: side={side} qpid={target_qpid!r} "
+                    f"qpid_matched={qpid_matched} click={click_index}/{len(chip_plan)}"
+                )
+                return True
 
-        if target_qpid and not qpid_matched:
-            try:
-                retry_sec = float(os.getenv("BACOPY_MULTI_BUTTON_WAIT_SEC", "3.5") or 3.5)
-                deadline = time.time() + max(0.5, retry_sec)
-                attempt = 0
-                while time.time() < deadline:
-                    attempt += 1
-                    reseek = frame.evaluate(
-                        _MULTI_LOBBY_FOCUS_JS,
-                        {
-                            "qpid": target_qpid,
-                            "click": True,
-                            "maxScroll": int(os.getenv("BACOPY_MULTI_SCROLL_MAX", "48") or "48"),
-                            "candidates": [target_table_name, target_qpid],
-                            "hintIndex": -1,
-                            "hintTotal": 0,
-                        },
+            if target_qpid and not qpid_matched:
+                try:
+                    retry_sec = float(os.getenv("BACOPY_MULTI_BUTTON_WAIT_SEC", "3.5") or 3.5)
+                    deadline = time.time() + max(0.5, retry_sec)
+                    attempt = 0
+                    while time.time() < deadline:
+                        attempt += 1
+                        reseek = frame.evaluate(
+                            _MULTI_LOBBY_FOCUS_JS,
+                            {
+                                "qpid": target_qpid,
+                                "click": True,
+                                "maxScroll": int(os.getenv("BACOPY_MULTI_SCROLL_MAX", "48") or "48"),
+                                "candidates": [target_table_name, target_qpid],
+                                "hintIndex": -1,
+                                "hintTotal": 0,
+                            },
+                        )
+                        logger.info(f"[CLICK-BET-RESEEK] qpid={target_qpid!r} attempt={attempt} result={reseek}")
+                        if isinstance(reseek, dict) and reseek.get("found"):
+                            try:
+                                frame.page.wait_for_timeout(350)
+                            except Exception:
+                                pass
+                            self._hover_multi_tile(frame, target_qpid)
+                            if self._js_click_bet_in_container(frame, target_qpid, target_table_name, side_class, side):
+                                logger.info(
+                                    f"[CLICK-BET] JS click OK after reseek: side={side} "
+                                    f"qpid={target_qpid!r} attempt={attempt} click={click_index}/{len(chip_plan)}"
+                                )
+                                return True
+                        frame.page.wait_for_timeout(250)
+                except Exception as ex:
+                    logger.warning(f"[CLICK-BET-RESEEK] failed qpid={target_qpid!r}: {ex}")
+
+            if not qpid_matched:
+                # マルチロビー共有フレームで JS 完全失敗 → no fallback (別テーブル誤クリックのリスク)
+                logger.warning(f"[CLICK-BET] JS failed for qpid={target_qpid!r} in multi-lobby — no selector fallback")
+                return False
+
+            # 単一テーブルフレーム (qpid_matched=True) のセレクターフォールバック
+            for sel in [f'.{side_class}.ym_yn', f'.{side_class}']:
+                try:
+                    frame.click(sel, timeout=2000)
+                    logger.info(
+                        f"[CLICK-BET] bet placed (selector fallback): side={side} "
+                        f"selector={sel} click={click_index}/{len(chip_plan)}"
                     )
-                    logger.info(f"[CLICK-BET-RESEEK] qpid={target_qpid!r} attempt={attempt} result={reseek}")
-                    if isinstance(reseek, dict) and reseek.get("found"):
-                        try:
-                            frame.page.wait_for_timeout(350)
-                        except Exception:
-                            pass
-                        self._hover_multi_tile(frame, target_qpid)
-                        if self._js_click_bet_in_container(frame, target_qpid, target_table_name, side_class):
-                            logger.info(f"[CLICK-BET] JS click OK after reseek: side={side} qpid={target_qpid!r} attempt={attempt}")
-                            return True
-                    frame.page.wait_for_timeout(250)
-            except Exception as ex:
-                logger.warning(f"[CLICK-BET-RESEEK] failed qpid={target_qpid!r}: {ex}")
+                    return True
+                except Exception as e:
+                    logger.debug(f"[CLICK-BET] frame.click({sel}) failed: {e}")
 
-        if not qpid_matched:
-            # マルチロビー共有フレームで JS 完全失敗 → no fallback (別テーブル誤クリックのリスク)
-            logger.warning(f"[CLICK-BET] JS failed for qpid={target_qpid!r} in multi-lobby — no selector fallback")
+            logger.warning(f"[CLICK-BET] all selectors failed for side={side}")
             return False
 
-        # 単一テーブルフレーム (qpid_matched=True) のセレクターフォールバック
-        for sel in [f'.{side_class}.ym_yn', f'.{side_class}']:
+        for idx, chip_value in enumerate(chip_plan, start=1):
+            pre = self._preselected_chip or {}
+            can_skip_preselect = (
+                idx == 1
+                and str(pre.get("target") or "") == str(target_qpid or "")
+                and int(pre.get("amount_key") or -1) == self._amount_key(amount)
+                and abs(float(pre.get("chip") or 0.0) - float(chip_value)) < 0.0001
+                and 0.0 <= time.time() - float(pre.get("at") or 0.0) <= float(os.getenv("BACOPY_CHIP_PRESELECT_MAX_AGE_SEC", "25") or 25)
+            )
+            if can_skip_preselect:
+                logger.info(
+                    f"[CLICK-BET] chip preselect reused: {self._fmt_chip_denom(chip_value)} "
+                    f"click={idx}/{len(chip_plan)}"
+                )
+            elif not self._select_chip_in_frame(frame, chip_value, "CLICK-BET"):
+                logger.warning(
+                    f"[CLICK-BET] abort: chip select failed value={self._fmt_chip_denom(chip_value)} "
+                    f"click={idx}/{len(chip_plan)}"
+                )
+                return False
+            if not click_side_once(idx):
+                return False
             try:
-                frame.click(sel, timeout=2000)
-                logger.info(f"[CLICK-BET] bet placed (selector fallback): side={side} selector={sel}")
-                return True
-            except Exception as e:
-                logger.debug(f"[CLICK-BET] frame.click({sel}) failed: {e}")
+                frame.page.wait_for_timeout(160)
+            except Exception:
+                pass
 
-        logger.warning(f"[CLICK-BET] all selectors failed for side={side}")
-        return False
+        logger.info(f"[CLICK-BET] all planned chip clicks completed: side={side} amount=${amount:.2f} clicks={len(chip_plan)}")
+        return True
 
     def _ws_send(self, table_id: str, payload: str) -> dict:
         """game WS にメッセージを送信。"""
@@ -2907,8 +3439,15 @@ class LiveBetExecutor:
                 return res_w
             logger.info(f"[WS-SEND] worker bridge result: {res_w} — falling back")
 
-        # 2. 並列 WS open_send（non-multi モードのみ / freeze 回避のため multi では使わない）
-        if ws_url and not self._multi_lobby_mode:
+        # 2. 並列 WS open_send
+        # In multi-lobby the Pragmatic socket often lives outside page JS
+        # (Playwright sees frames, but window/Worker bridges may have 0 sendable
+        # sockets). Use the captured game ws_url as a targeted fallback.
+        if ws_url:
+            logger.info(
+                f"[WS-SEND] trying open_send url fallback multi={self._multi_lobby_mode} "
+                f"channel={table_id}"
+            )
             res = _try_open_send(ws_url)
             if isinstance(res, dict) and res.get("ok"):
                 return res
@@ -3039,6 +3578,21 @@ class LiveBetExecutor:
         priorities = {"preposition": 10, "prepare": 20, "decision": 30, "bet": 30, "fallback_join": 40}
         new_intent = str(new_req["intent"])
         new_target = str(new_req["qpid"] or new_req["table_id"])
+        hold = self._visible_bet_hold or {}
+        hold_target = str(hold.get("table_id") or "")
+        hold_until = float(hold.get("until") or 0.0)
+        if (
+            self._multi_lobby_mode
+            and new_intent == "preposition"
+            and hold_target
+            and time.time() < hold_until
+            and new_target != hold_target
+        ):
+            logger.info(
+                f"[VISIBLE-HOLD] drop preposition while showing bet/result: "
+                f"keep={hold_target} drop={new_target or '-'}"
+            )
+            return
         current = self._switch_request or {}
         cur_intent = str(current.get("intent") or "")
         cur_target = str(current.get("qpid") or current.get("table_id") or "")
