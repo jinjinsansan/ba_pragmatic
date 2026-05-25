@@ -1075,9 +1075,31 @@ class LiveBetExecutor:
                         f"expected={expected_table} detail={detail}"
                     )
                     return None
+            actual_amount = 0.0
+            try:
+                raw_amount = (
+                    detail.get("amount")
+                    or detail.get("stake")
+                    or detail.get("betAmount")
+                    or detail.get("bet_amount")
+                    or 0
+                )
+                actual_amount = float(raw_amount or 0.0)
+            except Exception:
+                actual_amount = 0.0
+            if actual_amount <= 0:
+                actual_amount = float(amount)
+            partial = actual_amount > 0 and abs(actual_amount - float(amount)) > 0.01
+            if partial:
+                logger.warning(
+                    f"[LIVE] partial bet confirm: planned=${float(amount):.2f} "
+                    f"actual=${actual_amount:.2f} detail={detail}"
+                )
             return {
                 "confirm_type": "game_ws_bet",
-                "confirmed_amount": float(amount),
+                "confirmed_amount": actual_amount,
+                "planned_amount": float(amount),
+                "partial_bet": partial,
                 "game_id": str(game_id or ""),
                 "table_id": expected_table,
                 "confirm_table_id": detail_table,
@@ -3995,6 +4017,14 @@ class LiveBetExecutor:
             page.mouse.move(page_x, page_y)
             page.wait_for_timeout(80)
             page.mouse.click(page_x, page_y)
+            self._last_click_bet_page_coords = {
+                "x": page_x,
+                "y": page_y,
+                "qpid": str(qpid or ""),
+                "side": str(side or ""),
+                "expected_game_id": str(expected_game_id or ""),
+                "at": time.time(),
+            }
             logger.info(f"[CLICK-BET-JS] mouse.click at ({page_x:.1f}, {page_y:.1f}) wasActive={res.get('wasActive')}")
             return True
         except Exception as ex:
@@ -4362,6 +4392,37 @@ class LiveBetExecutor:
             logger.warning(f"[CLICK-BET] all selectors failed for side={side}")
             return False
 
+        current_selected_chip: float | None = None
+        cached_click_coords: dict[str, Any] | None = None
+
+        def click_cached_side_once(click_index: int) -> bool:
+            nonlocal cached_click_coords
+            coords = cached_click_coords or {}
+            if not coords:
+                return False
+            try:
+                if str(coords.get("qpid") or "") != str(target_qpid or ""):
+                    return False
+                if str(coords.get("side") or "") != str(side or ""):
+                    return False
+                if str(coords.get("expected_game_id") or "") != str(expected_game_id or ""):
+                    return False
+                if time.time() - float(coords.get("at") or 0.0) > 8.0:
+                    return False
+                x = float(coords.get("x") or 0.0)
+                y = float(coords.get("y") or 0.0)
+                if x <= 0 or y <= 0:
+                    return False
+                frame.page.mouse.click(x, y)
+                logger.info(
+                    f"[CLICK-BET] cached direct click OK: side={side} qpid={target_qpid!r} "
+                    f"click={click_index}/{len(chip_plan)} at=({x:.1f},{y:.1f})"
+                )
+                return True
+            except Exception as ex:
+                logger.debug(f"[CLICK-BET] cached direct click failed: {ex}")
+                return False
+
         for idx, chip_value in enumerate(chip_plan, start=1):
             pre = self._preselected_chip or {}
             can_skip_preselect = (
@@ -4376,16 +4437,31 @@ class LiveBetExecutor:
                     f"[CLICK-BET] chip preselect reused: {self._fmt_chip_denom(chip_value)} "
                     f"click={idx}/{len(chip_plan)}"
                 )
+                current_selected_chip = float(chip_value)
+            elif current_selected_chip is not None and abs(float(current_selected_chip) - float(chip_value)) < 0.0001:
+                logger.info(
+                    f"[CLICK-BET] chip selection kept: {self._fmt_chip_denom(chip_value)} "
+                    f"click={idx}/{len(chip_plan)}"
+                )
             elif not self._select_chip_in_frame(frame, chip_value, "CLICK-BET"):
                 logger.warning(
                     f"[CLICK-BET] abort: chip select failed value={self._fmt_chip_denom(chip_value)} "
                     f"click={idx}/{len(chip_plan)}"
                 )
                 return False
-            if not click_side_once(idx):
-                return False
+            else:
+                current_selected_chip = float(chip_value)
+            used_cached_click = False
+            if idx > 1 and cached_click_coords is not None:
+                used_cached_click = click_cached_side_once(idx)
+            if not used_cached_click:
+                if not click_side_once(idx):
+                    return False
+                coords = getattr(self, "_last_click_bet_page_coords", None)
+                cached_click_coords = dict(coords) if isinstance(coords, dict) else None
             try:
-                frame.page.wait_for_timeout(160)
+                delay_ms = int(os.getenv("BACOPY_CLICK_BET_INTER_CLICK_MS", "45") or 45)
+                frame.page.wait_for_timeout(max(0, delay_ms))
             except Exception:
                 pass
 

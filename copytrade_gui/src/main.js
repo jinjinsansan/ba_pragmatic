@@ -886,12 +886,22 @@ function _doStartBot(config, generation = _botGeneration) {
 
   sendToRenderer('agent-message', { type: 'log', message: `[spawn] exe=${spec.exe} cwd=${spec.cwd} args=${JSON.stringify(spec.args)}` });
 
-  botProcess = spawn(spec.exe, spec.args, {
-    cwd: spec.cwd,
-    env: spec.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
+  try {
+    botProcess = spawn(spec.exe, spec.args, {
+      cwd: spec.cwd,
+      env: spec.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  } catch (err) {
+    _botSpawning = false;
+    botProcess = null;
+    activeBotConfigSignature = '';
+    const msg = err && err.message ? err.message : String(err);
+    console.error('[Main] spawn failed:', msg);
+    sendToRenderer('agent-message', { type: 'error', message: `spawn failed: ${msg}` });
+    throw err;
+  }
   _botSpawning = false;
 
   if (process.platform === 'win32') {
@@ -943,6 +953,16 @@ function _doStartBot(config, generation = _botGeneration) {
 
       const ranDuration = Date.now() - thisSpawnAt;
       if (!userInitiatedStop && lastStartConfig) {
+        const isDualLine = lastStartConfig && lastStartConfig.mode === 'dual_line';
+        const envNow = loadDotEnv();
+        const dualLineAutoRestart = String(envNow.BACOPY_DUAL_LINE_AUTO_RESTART || '0').trim() === '1';
+        if (isDualLine && !dualLineAutoRestart) {
+          const msg = `⚠️ Dual-line engine stopped (code=${code}); auto-restart is disabled to avoid killing the live browser. Press START manually after checking the browser.`;
+          console.warn('[Main]', msg);
+          sendToRenderer('agent-message', { type: 'log', message: msg });
+          autoRestartCount = 0;
+          return;
+        }
         if (ranDuration > STABLE_RUN_THRESHOLD) {
           console.log(`[Main] Stable run detected (${Math.round(ranDuration/1000)}s) — reset auto-restart counter`);
           autoRestartCount = 0;
@@ -972,6 +992,11 @@ function _doStartBot(config, generation = _botGeneration) {
   });
 
   botProcess.on('error', (err) => {
+    _botSpawning = false;
+    if (botProcess === thisProcess) {
+      botProcess = null;
+      activeBotConfigSignature = '';
+    }
     sendToRenderer('agent-message', { type: 'error', message: err && err.message ? err.message : String(err) });
   });
 
