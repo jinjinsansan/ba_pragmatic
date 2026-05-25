@@ -2405,6 +2405,29 @@ class DualLinePragmaticBot(cp.Collector):
                             f"[DECISION] partial local bet amount: {did} "
                             f"planned=${planned_amount:.2f} actual=${confirmed_amount:.2f}"
                         )
+                        partial_release_sec = float(os.getenv("BACOPY_PARTIAL_BET_BIF_RELEASE_SEC", "20") or 20)
+                        if (
+                            age >= max(1.0, partial_release_sec)
+                            and not p.get("executor_bif_released")
+                            and isinstance(confirmed_info, dict)
+                            and confirmed_info.get("partial_bet")
+                        ):
+                            released = False
+                            try:
+                                if bet_id and hasattr(self.bet_executor, "consume_confirmed_bet"):
+                                    consumed = self.bet_executor.consume_confirmed_bet(bet_id)
+                                    released = bool(consumed)
+                                elif bet_id and hasattr(self.bet_executor, "consume_sent_bet"):
+                                    released = bool(self.bet_executor.consume_sent_bet(bet_id))
+                            except Exception as ex:
+                                logger.warning(f"[DECISION] partial BIF release failed: {did} err={ex}")
+                            p["executor_bif_released"] = True
+                            p["confirmed_bet"] = confirmed_info or {}
+                            logger.warning(
+                                f"[DECISION] partial bet released executor BIF: {did} "
+                                f"released={released} age={age:.1f}s "
+                                f"planned=${planned_amount:.2f} actual=${confirmed_amount:.2f}"
+                            )
                 if p.get("bet_sent_posted"):
                     if age > settlement_timeout:
                         res = self._api_post(

@@ -17,6 +17,34 @@ def _acquire_single_process_lock(name: str) -> bool:
     lock_dir = os.getenv("BACOPY_LOCK_DIR") or tempfile.gettempdir()
     lock_path = os.path.join(lock_dir, f"{name}.lockdir")
 
+    def _pid_is_same_engine(pid_text: str) -> bool:
+        try:
+            pid = int(str(pid_text or "").strip())
+        except Exception:
+            return False
+        if pid <= 0 or pid == os.getpid():
+            return False
+        if os.name != "nt":
+            return True
+        try:
+            import subprocess
+
+            cmd = [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "$p=Get-CimInstance Win32_Process -Filter "
+                    f"\"ProcessId={pid}\" -ErrorAction SilentlyContinue; "
+                    "if($p){$p.Name + ' ' + $p.CommandLine}"
+                ),
+            ]
+            out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=2)
+            low = str(out or "").lower()
+            return "bacopy_engine" in low and "dual-line" in low
+        except Exception:
+            return True
+
     def _pid_alive(pid_text: str) -> bool:
         try:
             pid = int(str(pid_text or "").strip())
@@ -75,7 +103,7 @@ def _acquire_single_process_lock(name: str) -> bool:
                     pid_text = f.read().strip()
             except Exception:
                 pid_text = ""
-            if _pid_alive(pid_text):
+            if _pid_alive(pid_text) and _pid_is_same_engine(pid_text):
                 return False
             try:
                 shutil.rmtree(lock_path)
@@ -85,7 +113,7 @@ def _acquire_single_process_lock(name: str) -> bool:
         except Exception:
             break
 
-    if os.name == "nt":
+    if os.name == "nt" and os.getenv("BACOPY_ENABLE_MUTEX_LOCK", "0").strip() == "1":
         try:
             import ctypes
             from ctypes import wintypes
