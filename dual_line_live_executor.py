@@ -879,7 +879,6 @@ class LiveBetExecutor:
         self._chip_plan_cache: dict[tuple[tuple[float, ...], int], list[float]] = {}
         self._chip_plan_prewarmed_keys: set[tuple[float, ...]] = set()
         self._preselected_chip: dict[str, Any] = {}
-        self._bet_click_coord_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._visible_bet_hold: dict[str, Any] = {}
         self._last_visible_bet_center_at: float = 0.0
         self._multi_tile_snapshot: dict[str, Any] = {}
@@ -2910,7 +2909,6 @@ class LiveBetExecutor:
                     pending_target = str((self._pending_bet or {}).get("table_id") or "")
                     pending_amount = float((self._pending_bet or {}).get("amount") or 0.0)
                 preselect_amount = float(req.get("preselect_amount") or req.get("amount") or 0.0)
-                req_side = str(req.get("side") or "").strip().upper()
                 if pending_target == target and self._is_table_bet_window_open(target):
                     st = self._table_states.get(target) or {}
                     gid = str(st.get("bets_open_game_id") or "")
@@ -2919,10 +2917,8 @@ class LiveBetExecutor:
                         self._try_execute_bet(gid, table_id=target)
                 elif pending_target == target and pending_amount > 0:
                     self._preselect_first_chip(target, pending_amount)
-                    self._cache_bet_side_coords(target, table_name, req_side)
                 elif intent == "preposition" and preselect_amount > 0:
                     self._preselect_first_chip(target, preselect_amount)
-                    self._cache_bet_side_coords(target, table_name, req_side)
             return
 
         try:
@@ -3073,7 +3069,6 @@ class LiveBetExecutor:
         logger.info(f"[BET-QUEUED] side={side} ${amount:.2f} table={target_table} known_tables={list(self._table_states.keys())[:6]}")
         if self._multi_lobby_mode and self._multi_bet_transport == "click" and on_owner_thread:
             self._preselect_first_chip(target_table, amount)
-            self._cache_bet_side_coords(target_table, self._table_name or target_table, side)
         elif self._multi_lobby_mode and self._multi_bet_transport == "click":
             logger.info("[CHIP-PRESELECT] deferred to owner thread")
 
@@ -3976,148 +3971,6 @@ class LiveBetExecutor:
         self._center_multi_tile(hold_tid, str(hold.get("table_name") or hold_tid), click=False)
         self._visible_bet_hold = {}
 
-    @staticmethod
-    def _side_class_for(side: str) -> str:
-        return {'P': 'ym_yP', 'B': 'ym_yQ', 'T': 'ym_yB',
-                'PP': 'ym_yT', 'BP': 'ym_yU'}.get(str(side or "").upper(), 'ym_yP')
-
-    def _frame_to_page_xy(self, frame: Any, x: float, y: float) -> tuple[float, float]:
-        page_x, page_y = float(x), float(y)
-        try:
-            frame_el = frame.frame_element()
-            bbox = frame_el.bounding_box()
-            if bbox:
-                page_x = float(bbox["x"]) + float(x)
-                page_y = float(bbox["y"]) + float(y)
-        except Exception as _fe:
-            logger.debug(f"[CLICK-BET-CACHE] frame offset failed: {_fe}")
-        return page_x, page_y
-
-    _BET_COORD_CACHE_VALIDATE_JS = r"""
-(args) => {
-  const x = Number(args.x || 0);
-  const y = Number(args.y || 0);
-  const qpid = String(args.qpid || '');
-  const expectedGameId = String(args.expectedGameId || '').replace(/\D+/g, '');
-  const el = document.elementFromPoint(x, y);
-  if (!el) return {ok:false, reason:'no_element'};
-  function enclosingTile(node) {
-    for (let depth = 0; depth < 12 && node; depth++, node = node.parentElement) {
-      if (String(node.id || '').startsWith('TileHeight-')) return node;
-    }
-    return null;
-  }
-  function tileGameId(tile) {
-    if (!tile) return '';
-    const text = String(tile.innerText || tile.textContent || '');
-    let m = text.match(/\bID:\s*(\d{6,})\b/i);
-    if (m) return m[1];
-    m = text.match(/\b(\d{8,})\b/);
-    return m ? m[1] : '';
-  }
-  const tile = enclosingTile(el);
-  if (!tile) return {ok:false, reason:'no_tile', tag:String(el.tagName || ''), cls:String(el.className || '').slice(0,80)};
-  const tileId = String(tile.id || '').replace(/^TileHeight-/, '');
-  if (qpid && tileId !== qpid) return {ok:false, reason:'qpid_mismatch', qpid, tileId};
-  const currentGameId = tileGameId(tile);
-  if (expectedGameId && currentGameId && currentGameId !== expectedGameId) {
-    return {ok:false, reason:'game_id_mismatch', expectedGameId, currentGameId};
-  }
-  return {ok:true, tileId, currentGameId, tag:String(el.tagName || ''), cls:String(el.className || '').slice(0,80)};
-}
-"""
-
-    def _cache_bet_side_coords(
-        self,
-        target_qpid: str,
-        target_table_name: str,
-        side: str,
-        expected_game_id: str = "",
-        stale_tile_game_id_ok: str = "",
-    ) -> bool:
-        """Cache a prepared tile's side-button coordinates for the first live click."""
-        tid = str(target_qpid or "").strip()
-        side_code = str(side or "").strip().upper()
-        if not tid or side_code not in ("P", "B", "T", "PP", "BP"):
-            return False
-        frame = self._find_pragmatic_frame(target_qpid=tid)
-        if not frame:
-            logger.info(f"[CLICK-BET-CACHE] skip: frame not found target={tid!r}")
-            return False
-        try:
-            self._hover_multi_tile(frame, tid)
-            res = frame.evaluate(
-                self._JS_BET_COORDS,
-                {
-                    "qpid": tid,
-                    "tableName": str(target_table_name or tid),
-                    "sideClass": self._side_class_for(side_code),
-                    "sideCode": side_code,
-                    "expectedGameId": str(expected_game_id or ""),
-                    "staleTileGameIdOk": str(stale_tile_game_id_ok or ""),
-                },
-            )
-            if not (isinstance(res, dict) and res.get("ok")):
-                logger.info(f"[CLICK-BET-CACHE] coord lookup failed target={tid!r} side={side_code} result={res}")
-                return False
-            fx = float(res.get("x") or 0.0)
-            fy = float(res.get("y") or 0.0)
-            page_x, page_y = self._frame_to_page_xy(frame, fx, fy)
-            cached = {
-                "frame_x": fx,
-                "frame_y": fy,
-                "x": page_x,
-                "y": page_y,
-                "qpid": tid,
-                "side": side_code,
-                "expected_game_id": str(expected_game_id or ""),
-                "source": str(res.get("source") or ""),
-                "at": time.time(),
-            }
-            self._bet_click_coord_cache[(tid, side_code)] = cached
-            logger.info(
-                f"[CLICK-BET-CACHE] cached target={tid!r} side={side_code} "
-                f"source={cached['source']} frame=({fx:.1f},{fy:.1f}) page=({page_x:.1f},{page_y:.1f})"
-            )
-            return True
-        except Exception as ex:
-            logger.warning(f"[CLICK-BET-CACHE] cache failed target={tid!r} side={side_code}: {ex}")
-            return False
-
-    def _get_cached_bet_side_coords(self, frame: Any, target_qpid: str, side: str, expected_game_id: str = "") -> dict[str, Any] | None:
-        tid = str(target_qpid or "").strip()
-        side_code = str(side or "").strip().upper()
-        cached = self._bet_click_coord_cache.get((tid, side_code))
-        if not cached:
-            return None
-        try:
-            max_age = float(os.getenv("BACOPY_BET_COORD_CACHE_MAX_AGE_SEC", "45") or 45)
-            age = time.time() - float(cached.get("at") or 0.0)
-            if age < 0.0 or age > max(1.0, max_age):
-                return None
-            cached_gid = str(cached.get("expected_game_id") or "")
-            current_gid = str(expected_game_id or "")
-            if cached_gid and current_gid and cached_gid != current_gid:
-                return None
-            valid = frame.evaluate(
-                self._BET_COORD_CACHE_VALIDATE_JS,
-                {
-                    "x": float(cached.get("frame_x") or 0.0),
-                    "y": float(cached.get("frame_y") or 0.0),
-                    "qpid": tid,
-                    "expectedGameId": current_gid,
-                },
-            )
-            if not (isinstance(valid, dict) and valid.get("ok")):
-                logger.info(f"[CLICK-BET-CACHE] cached coords invalid target={tid!r} side={side_code} result={valid}")
-                return None
-            out = dict(cached)
-            out["expected_game_id"] = current_gid
-            return out
-        except Exception as ex:
-            logger.debug(f"[CLICK-BET-CACHE] validate failed target={tid!r} side={side_code}: {ex}")
-            return None
-
     def _js_click_bet_in_container(
         self,
         frame,
@@ -4150,7 +4003,15 @@ class LiveBetExecutor:
             btn_x = float(res.get("x", 0))
             btn_y = float(res.get("y", 0))
 
-            page_x, page_y = self._frame_to_page_xy(frame, btn_x, btn_y)
+            page_x, page_y = btn_x, btn_y
+            try:
+                frame_el = frame.frame_element()
+                bbox = frame_el.bounding_box()
+                if bbox:
+                    page_x = bbox["x"] + btn_x
+                    page_y = bbox["y"] + btn_y
+            except Exception as _fe:
+                logger.debug(f"[CLICK-BET-JS] frame_element offset failed: {_fe}")
 
             page = frame.page
             page.mouse.move(page_x, page_y)
@@ -4379,7 +4240,8 @@ class LiveBetExecutor:
         target_qpid: 対象テーブルのqpid。指定するとそのテーブルのiframeを優先検索する。
         Returns True if click succeeded.
         """
-        side_class = self._side_class_for(side)
+        side_class = {'P': 'ym_yP', 'B': 'ym_yQ', 'T': 'ym_yB',
+                      'PP': 'ym_yT', 'BP': 'ym_yU'}.get(side, 'ym_yP')
 
         frame = self._find_pragmatic_frame(target_qpid=target_qpid)
         if not frame:
@@ -4531,14 +4393,7 @@ class LiveBetExecutor:
             return False
 
         current_selected_chip: float | None = None
-        cached_click_coords: dict[str, Any] | None = self._get_cached_bet_side_coords(
-            frame, target_qpid, side, expected_game_id
-        )
-        if cached_click_coords:
-            logger.info(
-                f"[CLICK-BET-CACHE] will use cached side coords for first click: "
-                f"side={side} qpid={target_qpid!r} source={cached_click_coords.get('source')}"
-            )
+        cached_click_coords: dict[str, Any] | None = None
 
         def click_cached_side_once(click_index: int) -> bool:
             nonlocal cached_click_coords
@@ -4550,18 +4405,15 @@ class LiveBetExecutor:
                     return False
                 if str(coords.get("side") or "") != str(side or ""):
                     return False
-                cached_gid = str(coords.get("expected_game_id") or "")
-                if cached_gid and cached_gid != str(expected_game_id or ""):
+                if str(coords.get("expected_game_id") or "") != str(expected_game_id or ""):
                     return False
-                max_age = float(os.getenv("BACOPY_BET_COORD_CACHE_MAX_AGE_SEC", "45") or 45)
-                if time.time() - float(coords.get("at") or 0.0) > max(1.0, max_age):
+                if time.time() - float(coords.get("at") or 0.0) > 8.0:
                     return False
                 x = float(coords.get("x") or 0.0)
                 y = float(coords.get("y") or 0.0)
                 if x <= 0 or y <= 0:
                     return False
                 frame.page.mouse.click(x, y)
-                self._last_click_bet_page_coords = dict(coords)
                 logger.info(
                     f"[CLICK-BET] cached direct click OK: side={side} qpid={target_qpid!r} "
                     f"click={click_index}/{len(chip_plan)} at=({x:.1f},{y:.1f})"
@@ -4600,7 +4452,7 @@ class LiveBetExecutor:
             else:
                 current_selected_chip = float(chip_value)
             used_cached_click = False
-            if cached_click_coords is not None:
+            if idx > 1 and cached_click_coords is not None:
                 used_cached_click = click_cached_side_once(idx)
             if not used_cached_click:
                 if not click_side_once(idx):
