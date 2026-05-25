@@ -69,6 +69,14 @@ _PREPOSITION_SNAPSHOT_FILE = os.getenv(
     "BACOPY_PREPOSITION_SNAPSHOT_FILE",
     _DEFAULT_PREPOSITION_SNAPSHOT_FILE,
 ).strip()
+_DEFAULT_PREPOSITION_HINT_FILE = (
+    r"C:\Users\Administrator\AppData\Local\Programs\bacopy-copytrade-gui\resources\engine\data\latest_preposition_pragmatic.json"
+    if os.name == "nt" else "data/latest_preposition_pragmatic.json"
+)
+_PREPOSITION_HINT_FILE = os.getenv(
+    "BACOPY_PREPOSITION_HINT_FILE",
+    _DEFAULT_PREPOSITION_HINT_FILE,
+).strip()
 
 # bafather approved-users cache (5 min TTL).
 _APPROVED_CACHE: dict[str, Any] = {"at": 0.0, "data": None, "error": ""}
@@ -736,9 +744,28 @@ def _collect_pragmatic_snapshots_for_preposition() -> dict[str, dict[str, Any]]:
 
 
 def _build_preposition_payload() -> dict[str, Any]:
+    now_iso = _now_iso()
+    direct = _load_json_file(_PREPOSITION_HINT_FILE)
+    if isinstance(direct, dict) and str(direct.get("table_id") or "").strip():
+        updated_at = str(direct.get("updated_at") or direct.get("server_updated_at") or "")
+        if not updated_at or _age_sec_from_iso(updated_at) <= _PREPOSITION_STALE_SEC:
+            table_name = str(direct.get("table_name") or "")
+            table_id = str(direct.get("table_id") or direct.get("qpid") or "").strip()
+            if table_id and not _is_unsupported_dual_line_table(f"{table_name} {table_id}"):
+                payload = dict(direct)
+                payload["table_id"] = table_id
+                payload["qpid"] = str(payload.get("qpid") or table_id)
+                payload["score"] = int(payload.get("score") or 0)
+                payload["steps_before"] = int(payload.get("steps_before") or 0)
+                payload["direction"] = str(payload.get("direction") or payload.get("side") or "")
+                payload["side"] = str(payload.get("side") or payload.get("direction") or "")
+                payload["pattern_keys"] = list(payload.get("pattern_keys") or [])
+                payload["candidates"] = list(payload.get("candidates") or [])
+                payload["server_updated_at"] = now_iso
+                return payload
+
     snaps = _collect_pragmatic_snapshots_for_preposition()
     best: Optional[tuple[tuple[Any, ...], dict[str, Any]]] = None
-    now_iso = _now_iso()
 
     for tid, snap in snaps.items():
         if not isinstance(snap, dict):

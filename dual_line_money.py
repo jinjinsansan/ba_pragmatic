@@ -273,6 +273,8 @@ class BetManager:
     def status_dict(self) -> dict:
         seq_turn = (len(self._seq7_tracker.current_turns) + 1) if self._seq7_tracker else None
         seq_overshoot = self._seq7_tracker.prev_overshoot if self._seq7_tracker else None
+        seq7_sets = [s.__dict__ for s in self._seq7_tracker.sets] if self._seq7_tracker else []
+        seq7_current_turns = list(self._seq7_tracker.current_turns) if self._seq7_tracker else []
         return {
             "mode": self.mode,
             "unit": self.unit,
@@ -288,6 +290,8 @@ class BetManager:
             "seq_level": self.seq_level,
             "seq_turn": seq_turn,
             "seq_overshoot": seq_overshoot,
+            "seq7_sets": seq7_sets,
+            "seq7_current_turns": seq7_current_turns,
             "loss_count": self.loss_count,
             "martingale_max_bet": self.martingale_max_bet,
             "limit_reached": self.limit_reached,
@@ -333,7 +337,7 @@ class BetManager:
         if not self.state_path or not self.state_path.exists():
             return
         try:
-            s = json.loads(self.state_path.read_text(encoding="utf-8"))
+            s = json.loads(self.state_path.read_text(encoding="utf-8-sig"))
             self.session_pnl = float(s.get("session_pnl", 0.0))
             self.total_bets = int(s.get("total_bets", 0))
             self.total_wins = int(s.get("total_wins", 0))

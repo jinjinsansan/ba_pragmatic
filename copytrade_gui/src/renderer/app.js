@@ -1289,6 +1289,7 @@ function _pushStreamMark(mark) {
 
 function updateDevPanel(msg) {
   if (!isDevMode()) return;
+  msg = msg || {};
   const sc = $('#sigCycle');
   const sr = $('#sigRatio');
   const sd = $('#sigDrift');
@@ -1344,6 +1345,18 @@ function renderDevSets(sets, current_turns) {
   }
   _streamSetIdx = list.length;
   _streamTurnsInSet = ct.length;
+}
+
+function applyMoneyStatusToSignalPanel(ms) {
+  if (!ms || typeof ms !== 'object') return;
+  const sets = Array.isArray(ms.seq7_sets) ? ms.seq7_sets : [];
+  const turns = Array.isArray(ms.seq7_current_turns) ? ms.seq7_current_turns : [];
+  renderDevSets(sets, turns);
+  updateDevPanel({
+    current_turn: ms.seq_turn,
+    overshoot: ms.seq_overshoot,
+    turns_display: turns.join(''),
+  });
 }
 
 $('#logToggle').addEventListener('click', () => {
@@ -1645,6 +1658,15 @@ window.valhalla.onAgentMessage((msg) => {
         _dailyOpenBalance = msg.daily_open_balance;
       }
       _persistBalanceSnapshot();
+      if (msg.money_status) {
+        applyMoneyStatusToSignalPanel(msg.money_status);
+      } else if (typeof msg.current_turn === 'number' || typeof msg.overshoot === 'number' || msg.turns_display) {
+        updateDevPanel({
+          current_turn: msg.current_turn,
+          overshoot: msg.overshoot,
+          turns_display: msg.turns_display || '',
+        });
+      }
       updateSessionDisplay();
       renderDailyPnl();
       scheduleGuiStateSync();
@@ -1728,7 +1750,13 @@ window.valhalla.onAgentMessage((msg) => {
       }
 
 
-      updateDevPanel(msg);
+      if (msg.money_status) applyMoneyStatusToSignalPanel(msg.money_status);
+      else updateDevPanel(msg);
+      break;
+    }
+
+    case 'money_status': {
+      applyMoneyStatusToSignalPanel(msg.money_status || msg);
       break;
     }
 
@@ -1818,8 +1846,7 @@ window.valhalla.onAgentMessage((msg) => {
       if (r.result !== 'TIE') _pushStreamMark(r.result === 'WIN' ? 'O' : 'X');
       // CYCLE / RATIO / DRIFT / ROUND
       const _ms = r.money_status || {};
-      const _turnsStr = Array.isArray(r.seq7_current_turns) ? r.seq7_current_turns.join('') : '';
-      updateDevPanel({ current_turn: _ms.seq_turn, overshoot: _ms.seq_overshoot, turns_display: _turnsStr });
+      applyMoneyStatusToSignalPanel(_ms);
       setAction(
         '[DL] ' + r.result + ' ' + r.table_name + ': ' + r.prediction + '\u2192' + r.outcome + ' ' +
         'pnl=' + ((r.pnl||0) >= 0 ? '+' : '') + '$' + (r.pnl||0).toFixed(2) + ' ' +

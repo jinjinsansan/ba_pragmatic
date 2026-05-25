@@ -22,6 +22,30 @@ const os = require('os');
 let mainWindow = null;
 let botProcess = null;
 let watchdogProcess = null;
+let activeBotConfigSignature = '';
+
+function _mainLogPath() {
+  try { return path.join(app.getPath('userData'), 'logs', 'main_cli_capture.log'); }
+  catch (_) { return path.join(os.tmpdir(), 'bacopy-main-cli-capture.log'); }
+}
+function _appendMainCapture(level, args) {
+  try {
+    const p = _mainLogPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const msg = (args || []).map((v) => {
+      if (typeof v === 'string') return v;
+      try { return JSON.stringify(v); } catch (_) { return String(v); }
+    }).join(' ');
+    fs.appendFileSync(p, `${new Date().toISOString()} [${level}] ${msg}\n`, 'utf8');
+  } catch (_) {}
+}
+for (const level of ['log', 'warn', 'error']) {
+  const orig = console[level].bind(console);
+  console[level] = (...args) => {
+    _appendMainCapture(level, args);
+    orig(...args);
+  };
+}
 
 function _pidFilePath() {
   try { return path.join(app.getPath('userData'), 'bacopy_process_tree.json'); }
@@ -54,6 +78,51 @@ function killAllByImage(imageName) {
     execSync(`taskkill /F /T /IM "${imageName}"`, { stdio: 'ignore' });
     console.log(`[Main] killAllByImage ${imageName}`);
   } catch (_) {  }
+}
+function listProcessesByImage(imageName) {
+  if (process.platform !== 'win32' || !imageName) return [];
+  try {
+    const out = execSync(`tasklist /FI "IMAGENAME eq ${imageName}" /FO CSV /NH`, { encoding: 'utf-8' });
+    return out.split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const cols = line.match(/("([^"]|"")*"|[^,]+)/g) || [];
+        const pidText = (cols[1] || '').replace(/^"|"$/g, '').trim();
+        return {
+          pid: parseInt(pidText, 10),
+          commandLine: '',
+        };
+      })
+      .filter((p) => Number.isFinite(p.pid) && p.pid > 0);
+  } catch (_) {
+    return [];
+  }
+}
+function killPidWin(pid) {
+  if (!pid) return;
+  try {
+    execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' });
+    console.log(`[Main] killPidWin pid=${pid}`);
+  } catch (_) {}
+}
+function waitNoProcessByImage(imageName, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (listProcessesByImage(imageName).length === 0) return true;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+  }
+  return listProcessesByImage(imageName).length === 0;
+}
+function enforceSingleEngineProcess(keepPid) {
+  if (process.platform !== 'win32') return;
+  const procs = listProcessesByImage('bacopy_engine.exe');
+  for (const p of procs) {
+    if (p.pid !== keepPid) {
+      console.warn(`[Main] duplicate bacopy_engine.exe detected pid=${p.pid}; keeping pid=${keepPid}`);
+      killPidWin(p.pid);
+    }
+  }
 }
 function ensureCamoufoxAssets() {
   if (process.platform !== 'win32') return;
@@ -527,8 +596,21 @@ function sendToRenderer(channel, payload) {
 }
 
 let _stdoutRemainder = '';
+function _appendEngineCapture(text) {
+  try {
+    const logDir = path.join(app.getPath('userData'), 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.appendFileSync(
+      path.join(logDir, 'engine_cli_capture.log'),
+      `${new Date().toISOString()} ${String(text || '')}`,
+      'utf8'
+    );
+  } catch (_) {}
+}
+
 function _emitStdoutLines(chunk) {
   const text = (_stdoutRemainder + String(chunk || '')).replace(/\r/g, '');
+  _appendEngineCapture(text);
   const parts = text.split('\n');
   _stdoutRemainder = parts.pop() || '';
 
@@ -547,6 +629,7 @@ function _emitStdoutLines(chunk) {
 function _emitStderr(chunk) {
   const text = String(chunk || '');
   if (!text) return;
+  _appendEngineCapture(text);
   sendToRenderer('agent-log', text);
 }
 
@@ -612,6 +695,10 @@ function buildSpawnSpec(config) {
 
   // dual-line 専用 args
   if (isDualLine) {
+    // GUI live runs must place real bets. Diagnostic-only is opt-in via .env/launcher.
+    if (!Object.prototype.hasOwnProperty.call(envFile, 'BACOPY_MULTI_DIAGNOSTIC_ONLY')) {
+      childEnv.BACOPY_MULTI_DIAGNOSTIC_ONLY = '0';
+    }
     if (config && config.live) args.push('--live');
     if (config && config.no_v2_filter) args.push('--no-v2-filter');
     if (config && config.money_mode) args.push('--money-mode', String(config.money_mode));
@@ -686,6 +773,11 @@ function startBot(config) {
     sendToRenderer('agent-message', { type: 'error', message: verr });
     return;
   }
+  const cfgSignature = JSON.stringify(cfg);
+  if (botProcess && activeBotConfigSignature === cfgSignature) {
+    sendToRenderer('agent-message', { type: 'log', message: '[spawn] ignored duplicate start request for active config' });
+    return;
+  }
   const generation = ++_botGeneration;
   if (autoRestartTimer) {
     clearTimeout(autoRestartTimer);
@@ -696,6 +788,7 @@ function startBot(config) {
 
 
     const old = botProcess;
+    const oldPid = old && old.pid;
     botProcess = null;
     try { old.removeAllListeners('exit'); } catch (_) {}
     try { old.removeAllListeners('error'); } catch (_) {}
@@ -707,7 +800,10 @@ function startBot(config) {
       started = true;
       _doStartBot(cfg, generation);
     });
-    try { old.kill(); } catch (_) {
+    try {
+      if (process.platform === 'win32' && oldPid) killTreeWin(oldPid);
+      else old.kill();
+    } catch (_) {
       if (!started && generation === _botGeneration) {
         started = true;
         _doStartBot(cfg, generation);
@@ -734,7 +830,14 @@ function _doStartBot(config, generation = _botGeneration) {
 
   try { cleanupOrphanCamoufox(); } catch (_) {}
   // Prevent orphan engine duplication (can happen after crash/restart races).
-  try { killAllByImage('bacopy_engine.exe'); } catch (_) {}
+  try {
+    killAllByImage('bacopy_engine.exe');
+    if (!waitNoProcessByImage('bacopy_engine.exe', 12000)) {
+      sendToRenderer('agent-message', { type: 'log', message: '[spawn] waiting for previous engine failed; start aborted to prevent duplicate engine' });
+      _botSpawning = false;
+      return;
+    }
+  } catch (_) {}
 
 
 
@@ -765,6 +868,7 @@ function _doStartBot(config, generation = _botGeneration) {
   }
 
   const cfg = config || {};
+  const cfgSignature = JSON.stringify(cfg);
   const verr = _validateConfigForSpawn(cfg);
   if (verr) {
     _botSpawning = false;
@@ -776,6 +880,7 @@ function _doStartBot(config, generation = _botGeneration) {
 
 
   lastStartConfig = cfg;
+  activeBotConfigSignature = cfgSignature;
   userInitiatedStop = false;
   lastSpawnAt = Date.now();
 
@@ -788,6 +893,14 @@ function _doStartBot(config, generation = _botGeneration) {
     windowsHide: true,
   });
   _botSpawning = false;
+
+  if (process.platform === 'win32') {
+    setTimeout(() => {
+      try {
+        if (botProcess && botProcess.pid) enforceSingleEngineProcess(botProcess.pid);
+      } catch (_) {}
+    }, 1500);
+  }
 
 
 
@@ -824,6 +937,7 @@ function _doStartBot(config, generation = _botGeneration) {
     if (botProcess === thisProcess && thisGeneration === _botGeneration) {
       sendToRenderer('agent-message', { type: 'stopped', code });
       botProcess = null;
+      activeBotConfigSignature = '';
 
 
 
@@ -1238,6 +1352,7 @@ async function billingStatus() {
 }
 
 function createWindow() {
+  console.log('[Main] createWindow');
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 820,
@@ -1250,9 +1365,14 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow.on('closed', () => {
+    console.log('[Main] mainWindow closed');
+    mainWindow = null;
+  });
 }
 
 app.whenReady().then(() => {
+  console.log('[Main] app ready packaged=' + app.isPackaged + ' resourcesPath=' + process.resourcesPath);
 
 
 
@@ -1282,11 +1402,13 @@ app.whenReady().then(() => {
   ipcMain.handle('open-external', (_evt, url) => shell.openExternal(String(url || '')));
 
   ipcMain.handle('start-bot', (_evt, config) => {
+    console.log('[Main] start-bot requested mode=' + (config && config.mode) + ' live=' + !!(config && config.live));
     startBot(config || {});
     return { ok: true };
   });
 
   ipcMain.handle('stop-bot', () => {
+    console.log('[Main] stop-bot requested');
     stopBot();
     return { ok: true };
   });
@@ -1448,11 +1570,13 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  console.log('[Main] window-all-closed');
   stopBot();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
+  console.log('[Main] before-quit');
   try {
     userInitiatedStop = true;
     stopWatchdog();
@@ -1462,4 +1586,8 @@ app.on('before-quit', () => {
     cleanupOrphanCamoufox();
     _telegramNotifyFromMain('🔴 bacopy GUI stopped');
   } catch (_) {}
+});
+
+process.on('exit', (code) => {
+  _appendMainCapture('log', ['[Main] process exit code=' + code]);
 });

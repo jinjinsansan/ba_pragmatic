@@ -271,13 +271,24 @@ def mark_ack(decision_id: str, ack: dict[str, Any], status: str = "acked") -> No
     conn = sqlite3.connect(_db_path())
     try:
         cur = conn.cursor()
+        final_status = status
+        if status == "processing":
+            cur.execute("SELECT result_json FROM decisions WHERE decision_id=?", (decision_id,))
+            row = cur.fetchone()
+            if row and row[0]:
+                try:
+                    existing_result = json.loads(row[0] or "{}")
+                except Exception:
+                    existing_result = {}
+                if isinstance(existing_result, dict) and existing_result.get("settled"):
+                    final_status = "done"
         cur.execute(
             """
             UPDATE decisions
             SET status = ?, ack_json = ?
             WHERE decision_id = ?
             """,
-            (status, json.dumps(ack, ensure_ascii=False), decision_id),
+            (final_status, json.dumps(ack, ensure_ascii=False), decision_id),
         )
         conn.commit()
     finally:
@@ -288,6 +299,56 @@ def mark_result(decision_id: str, result: dict[str, Any], status: str = "done") 
     conn = sqlite3.connect(_db_path())
     try:
         cur = conn.cursor()
+        cur.execute("SELECT status, result_json FROM decisions WHERE decision_id=?", (decision_id,))
+        row = cur.fetchone()
+        if row:
+            current_status = str(row[0] or "")
+            try:
+                current_result = json.loads(row[1] or "{}") if row[1] else {}
+            except Exception:
+                current_result = {}
+            incoming_phase = str((result or {}).get("phase") or "")
+            # A GUI-side execution failure is authoritative for money management.
+            # The VPS collector may later observe the baccarat hand outcome, but
+            # that must not turn a non-placed bet into a settled WIN/LOSE.
+            if (
+                current_status == "error"
+                and str(status or "") == "done"
+                and incoming_phase == "settled"
+                and isinstance(current_result, dict)
+                and current_result.get("error")
+            ):
+                return
+            if (
+                current_status.startswith("skipped")
+                and str(status or "") == "done"
+                and incoming_phase == "settled"
+            ):
+                return
+            if current_status == "pending" and str(status or "") == "done" and incoming_phase == "settled":
+                status = "pending"
+            if (
+                current_status == "processing"
+                and str(status or "") == "done"
+                and incoming_phase == "settled"
+            ):
+                incoming_bet = result.get("bet") if isinstance(result, dict) else {}
+                incoming_bet_id = ""
+                if isinstance(incoming_bet, dict):
+                    incoming_bet_id = str(incoming_bet.get("bet_id") or "").strip()
+                current_phase = str((current_result or {}).get("phase") or "")
+                current_bet = current_result.get("bet") if isinstance(current_result, dict) else {}
+                current_bet_id = ""
+                if isinstance(current_bet, dict):
+                    current_bet_id = str(current_bet.get("bet_id") or "").strip()
+                has_local_bet_sent = bool(
+                    current_phase == "bet_sent"
+                    or current_result.get("bet_confirm")
+                    or current_bet_id
+                    or incoming_bet_id
+                )
+                if not has_local_bet_sent:
+                    status = current_status
         cur.execute(
             """
             UPDATE decisions
