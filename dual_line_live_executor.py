@@ -3972,6 +3972,113 @@ class LiveBetExecutor:
             logger.warning(f"[ML-HOVER] exact tile hover failed table={tid}: {ex}")
             return False
 
+    _DECOY_CLICK_HEADER_JS = r"""
+(args) => {
+  const qpid = String((args && args.qpid) || '').trim();
+  if (!qpid) return {ok: false, reason: 'no_qpid'};
+  const tile = document.getElementById('TileHeight-' + qpid);
+  if (!tile) return {ok: false, reason: 'not_mounted', qpid};
+  try { tile.scrollIntoView({block: 'center', inline: 'center'}); } catch(_) {}
+  const r = tile.getBoundingClientRect();
+  if (!r || r.width < 20 || r.height < 20) return {ok: false, reason: 'no_rect', qpid};
+  // Click the tile HEADER strip (top ~16px) where the table name lives.
+  // The player/banker bet cells (.ym_qA) sit lower in the tile, so a header
+  // click activates the tile selection without registering as a wager.
+  const cx = r.left + Math.min(40, Math.max(8, r.width * 0.15));
+  const cy = r.top + Math.min(14, Math.max(4, r.height * 0.05));
+  const base = {bubbles: true, cancelable: true, composed: true, view: window, clientX: cx, clientY: cy};
+  try {
+    if (window.PointerEvent) {
+      tile.dispatchEvent(new PointerEvent('pointerdown', base));
+      tile.dispatchEvent(new PointerEvent('pointerup', base));
+    }
+    tile.dispatchEvent(new MouseEvent('mousedown', base));
+    tile.dispatchEvent(new MouseEvent('mouseup', base));
+    tile.dispatchEvent(new MouseEvent('click', base));
+  } catch(_) {}
+  // Read back tile text after click so the caller can see what game_id the
+  // clicked tile is presently subscribed to.
+  const tileText = String((tile.innerText || tile.textContent || '')).replace(/\s+/g, ' ').trim();
+  let gameId = '';
+  try {
+    let m = tileText.match(/(?:ID|GameId|Game)[^\d]{0,4}(\d{8,})/i);
+    if (m) gameId = m[1];
+    if (!gameId) {
+      m = tileText.match(/\b(\d{8,})\b/);
+      if (m) gameId = m[1];
+    }
+  } catch(_) {}
+  return {ok: true, qpid, x: Math.round(cx), y: Math.round(cy),
+          w: Math.round(r.width), h: Math.round(r.height),
+          gameId, tileText: tileText.slice(0, 220)};
+}
+"""
+
+    def _decoy_click_to_resubscribe(
+        self,
+        frame: Any,
+        target_qpid: str,
+        target_table_name: str = "",
+    ) -> bool:
+        """Force Pragmatic to re-subscribe the target tile to the latest round.
+
+        Re-clicking an already-active multi-baccarat tile is a no-op for the
+        Pragmatic React component: the panel keeps its previous game_id and
+        does not request the new round data. Selecting a different visible
+        tile first deactivates the target's subscription, and clicking the
+        target back triggers a fresh subscribe. This is the recovery path of
+        last resort when _focus_table_in_multi('prepare') has already been
+        retried but currentGameId is still stale.
+
+        Returns True iff both clicks dispatched (does not imply the game_id
+        actually caught up; the caller must re-check the guard).
+        """
+        tid = str(target_qpid or "").strip()
+        if not tid:
+            return False
+        snap = self._refresh_multi_tile_snapshot(force=True) or {}
+        tiles = snap.get("tiles") or []
+        decoy_qpid = ""
+        for t in tiles:
+            if not isinstance(t, dict):
+                continue
+            q = str(t.get("qpid") or "").strip()
+            if not q or q == tid:
+                continue
+            if not bool(t.get("visible")):
+                continue
+            if not (bool(t.get("hasP")) or bool(t.get("hasB"))):
+                continue
+            decoy_qpid = q
+            break
+        if not decoy_qpid:
+            logger.info(f"[DECOY] no eligible decoy tile found target={tid}")
+            return False
+        try:
+            decoy_res = frame.evaluate(self._DECOY_CLICK_HEADER_JS, {"qpid": decoy_qpid})
+        except Exception as ex:
+            logger.warning(f"[DECOY] decoy click failed decoy={decoy_qpid} err={ex}")
+            return False
+        logger.info(
+            f"[DECOY] clicked decoy={decoy_qpid} for target={tid} "
+            f"result={decoy_res}"
+        )
+        try:
+            frame.page.wait_for_timeout(280)
+        except Exception:
+            time.sleep(0.28)
+        try:
+            target_res = frame.evaluate(self._DECOY_CLICK_HEADER_JS, {"qpid": tid})
+        except Exception as ex:
+            logger.warning(f"[DECOY] target reclick failed target={tid} err={ex}")
+            return False
+        logger.info(f"[DECOY] target reclick target={tid} result={target_res}")
+        try:
+            frame.page.wait_for_timeout(380)
+        except Exception:
+            time.sleep(0.38)
+        return True
+
     def _center_multi_tile(self, qpid: str, table_name: str = "", *, click: bool = False) -> bool:
         """Keep a multi-play tile visible near the screen center."""
         tid = str(qpid or "").strip()
@@ -4364,10 +4471,13 @@ class LiveBetExecutor:
             wait_sec = float(os.getenv("BACOPY_TILE_GAME_ID_WAIT_SEC", "8.0") or 8.0)
             refocus_after = float(os.getenv("BACOPY_TILE_GAME_ID_REFOCUS_AFTER_SEC", "2.0") or 2.0)
             refocus_max = int(os.getenv("BACOPY_TILE_GAME_ID_REFOCUS_MAX", "2") or 2)
+            decoy_after = float(os.getenv("BACOPY_TILE_GAME_ID_DECOY_AFTER_SEC", "4.5") or 4.5)
+            decoy_enabled = os.getenv("BACOPY_TILE_GAME_ID_DECOY", "1") != "0"
             started_at = time.time()
             deadline = started_at + max(0.0, wait_sec)
-            last_refocus_at = 0.0
+            last_recovery_at = 0.0
             refocus_count = 0
+            decoy_done = False
             attempt = 0
             while time.time() < deadline:
                 attempt += 1
@@ -4388,44 +4498,62 @@ class LiveBetExecutor:
                     logger.info(
                         f"[CLICK-BET] JS click OK after tile game-id wait: "
                         f"side={side} qpid={target_qpid!r} attempt={attempt} "
-                        f"click={click_index}/{len(chip_plan)} refocus={refocus_count}"
+                        f"click={click_index}/{len(chip_plan)} refocus={refocus_count} "
+                        f"decoy={'1' if decoy_done else '0'}"
                     )
                     return True
                 if not is_tile_game_id_mismatch():
                     return False
-                # Stuck on game_id_mismatch: hover alone does not refresh the
-                # tile's WS-driven data subscription. Periodically re-focus the
-                # target via the same prepare path used at decision time, which
-                # scrolls into view and clicks the tile body to force Pragmatic
-                # to re-subscribe / re-render with the latest round data.
-                # Guard is unchanged: js_click_bet_in_container still rejects
-                # any click while currentGameId != expectedGameId.
-                if refocus_count < refocus_max:
-                    elapsed = time.time() - started_at
-                    since_refocus = time.time() - last_refocus_at if last_refocus_at else 9999.0
-                    if elapsed >= refocus_after and since_refocus >= refocus_after:
-                        try:
-                            logger.info(
-                                f"[CLICK-BET] active-panel refresh: "
-                                f"qpid={target_qpid!r} attempt={attempt} elapsed={elapsed:.1f}s "
-                                f"refocus={refocus_count + 1}/{refocus_max} "
-                                f"expected={expected_game_id!r}"
-                            )
-                            self._focus_table_in_multi({
-                                "table_id": str(target_qpid or ""),
-                                "table_name": str(target_table_name or ""),
-                                "qpid": str(target_qpid or ""),
-                                "intent": "prepare",
-                                "side": str(side or ""),
-                            })
-                        except Exception as ex:
-                            logger.debug(f"[CLICK-BET] active-panel refresh failed: {ex}")
-                        last_refocus_at = time.time()
-                        refocus_count += 1
+                # Stuck on game_id_mismatch. Hover alone does not refresh the
+                # tile's WS-driven data subscription. Two-tier recovery:
+                # 1) Refocus via _focus_table_in_multi(intent='prepare') —
+                #    re-scrolls and re-clicks the same tile (cheap).
+                # 2) Decoy resubscribe — Pragmatic ignores reselecting an
+                #    already-active tile, so click a different visible tile
+                #    first to force deactivation, then click target back to
+                #    trigger a fresh subscribe (heavy, used as last resort).
+                # The hand/game-id guard is unchanged: every retry below goes
+                # through _js_click_bet_in_container which still rejects any
+                # click while currentGameId != expectedGameId.
+                elapsed = time.time() - started_at
+                since_recovery = time.time() - last_recovery_at if last_recovery_at else 9999.0
+                if refocus_count < refocus_max and elapsed >= refocus_after and since_recovery >= refocus_after:
+                    try:
+                        logger.info(
+                            f"[CLICK-BET] active-panel refresh: "
+                            f"qpid={target_qpid!r} attempt={attempt} elapsed={elapsed:.1f}s "
+                            f"refocus={refocus_count + 1}/{refocus_max} "
+                            f"expected={expected_game_id!r}"
+                        )
+                        self._focus_table_in_multi({
+                            "table_id": str(target_qpid or ""),
+                            "table_name": str(target_table_name or ""),
+                            "qpid": str(target_qpid or ""),
+                            "intent": "prepare",
+                            "side": str(side or ""),
+                        })
+                    except Exception as ex:
+                        logger.debug(f"[CLICK-BET] active-panel refresh failed: {ex}")
+                    last_recovery_at = time.time()
+                    refocus_count += 1
+                    continue
+                if decoy_enabled and not decoy_done and refocus_count >= refocus_max and elapsed >= decoy_after and since_recovery >= 1.0:
+                    try:
+                        logger.info(
+                            f"[CLICK-BET] decoy resubscribe: "
+                            f"qpid={target_qpid!r} attempt={attempt} elapsed={elapsed:.1f}s "
+                            f"expected={expected_game_id!r} "
+                            f"current={(self._last_click_bet_error or {}).get('currentGameId') or '-'}"
+                        )
+                        self._decoy_click_to_resubscribe(frame, target_qpid, target_table_name)
+                    except Exception as ex:
+                        logger.debug(f"[CLICK-BET] decoy resubscribe failed: {ex}")
+                    decoy_done = True
+                    last_recovery_at = time.time()
             logger.warning(
                 f"[CLICK-BET] tile game-id did not catch up: qpid={target_qpid!r} "
                 f"expected={expected_game_id!r} refocus={refocus_count} "
-                f"last={self._last_click_bet_error}"
+                f"decoy={'1' if decoy_done else '0'} last={self._last_click_bet_error}"
             )
             return False
 
