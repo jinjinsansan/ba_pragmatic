@@ -240,6 +240,9 @@ async (args) => {
   const candidates = Array.isArray(args && args.candidates) ? args.candidates : [];
   const norm = (s) => String(s || '').replace(/\s+/g, '').replace(/[$￥¥]/g, '').toLowerCase();
   const candNorm = candidates.map(norm).filter(Boolean);
+  const maxMsRaw = Number(args && args.maxMs);
+  const maxMs = Number.isFinite(maxMsRaw) && maxMsRaw > 0 ? maxMsRaw : 6000;
+  const deadline = Date.now() + Math.max(500, maxMs);
   const href = String(location.href || '');
   const isMultiBaccaratDom =
     href.includes('/desktop/multibaccarat') || !!document.querySelector('[id^="TileHeight-"]');
@@ -338,6 +341,14 @@ async (args) => {
     return out;
   }
   function findTarget() {
+    if (qpid) {
+      try {
+        const tile = document.getElementById('TileHeight-' + qpid);
+        if (tile && hasBetCells(tile)) {
+          return { el: clickableAncestor(tile), idx: 0, total: 1 };
+        }
+      } catch(_) {}
+    }
     const sels = '[id^="TileHeight-"], [role="button"], button, a, div[role="button"], [data-testid*="table"], [data-testid*="lobby"]';
     const nodes = document.querySelectorAll(sels);
     let idx = 0;
@@ -430,28 +441,35 @@ async (args) => {
     } catch(_) {}
   }
 
-  for (let i = 0; i < maxScroll; i++) {
+  const cachedScroller = initScroller || pickScroller();
+  for (let i = 0; i < maxScroll && Date.now() < deadline; i++) {
     const t = findTarget();
     if (t && t.el) {
       try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
       if (click) clickEl(t.el);
-      return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(pickScroller()), diag: diagOf(t.el) };
+      return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
     }
-    scrollStep(pickScroller(), true);
+    scrollStep(cachedScroller, true);
     await sleep(70);
   }
-  for (let i = 0; i < maxScroll; i++) {
+  for (let i = 0; i < maxScroll && Date.now() < deadline; i++) {
     const t = findTarget();
     if (t && t.el) {
       try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
       if (click) clickEl(t.el);
-      return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(pickScroller()), diag: diagOf(t.el) };
+      return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
     }
-    scrollStep(pickScroller(), false);
+    scrollStep(cachedScroller, false);
     await sleep(70);
   }
+  const timedOut = Date.now() >= deadline;
   const finalTarget = findTarget();
-  return { ok:true, found:false, clicked:false, matchIndex:-1, totalNodes:Number(finalTarget.total || 0), scroll: scrollMeta(pickScroller()) };
+  if (finalTarget && finalTarget.el) {
+    try { finalTarget.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+    if (click) clickEl(finalTarget.el);
+    return { ok:true, found:true, clicked: !!click, matchIndex: Number(finalTarget.idx), totalNodes: Number(finalTarget.total), scroll: scrollMeta(cachedScroller), diag: diagOf(finalTarget.el), reason: timedOut ? 'deadline_late_match' : undefined };
+  }
+  return { ok:true, found:false, clicked:false, matchIndex:-1, totalNodes:Number(finalTarget.total || 0), scroll: scrollMeta(cachedScroller), reason: timedOut ? 'deadline' : undefined };
 }
 """
 
@@ -1568,6 +1586,13 @@ class LiveBetExecutor:
             "hintTotal": 0,
             "hintScrollTop": -1,
             "hintScrollRatio": -1,
+            "maxMs": int(
+                os.getenv(
+                    "BACOPY_MULTI_PREPOSITION_FOCUS_MS" if intent == "preposition" else "BACOPY_MULTI_FOCUS_MS",
+                    "6000" if intent == "preposition" else "12000",
+                )
+                or ("6000" if intent == "preposition" else "12000")
+            ),
         }
         cache_key = str(qpid or table_id or "").strip()
         cached = self._table_focus_cache.get(cache_key) if cache_key else None
@@ -1768,7 +1793,20 @@ class LiveBetExecutor:
                 return
         if not found_tab:
             logger.warning(f"[MULTI-AREA] multi-play tab NOT FOUND in page — may be on wrong page or UI changed")
-            should_fallback_join = bool(force or (self._multi_lobby_mode and not self._is_multi_table_ws))
+            allow_fallback_join = os.getenv("BACOPY_MULTI_ALLOW_BLOCKING_FALLBACK_JOIN", "0").strip() == "1"
+            should_fallback_join = bool(
+                force or (
+                    allow_fallback_join
+                    and self._multi_lobby_mode
+                    and not self._is_multi_table_ws
+                )
+            )
+            if not should_fallback_join and not force and not self._is_multi_table_ws:
+                logger.warning(
+                    "[MULTI-AREA] skip blocking fallback join; keep owner tick alive "
+                    "(set BACOPY_MULTI_ALLOW_BLOCKING_FALLBACK_JOIN=1 to re-enable)"
+                )
+                return
             fallback_cooldown = float(os.getenv("BACOPY_MULTI_FALLBACK_JOIN_COOLDOWN_SEC", "45") or 45)
             if should_fallback_join and (now - self._last_multi_fallback_join_at < max(5.0, fallback_cooldown)):
                 logger.info(
@@ -2416,6 +2454,14 @@ class LiveBetExecutor:
                 logger.warning(f"[TICK] priority pending BET failed: {ex}")
 
         # switch 要求があれば先に処理（テーブル入場）
+        if self._switch_request and self._switch_in_progress:
+            req = self._switch_request
+            logger.warning(
+                f"[TICK-DIAG] switch_request blocked by in_progress: "
+                f"target={req.get('qpid') or req.get('table_id')} "
+                f"intent={req.get('intent')} active={self._active_switch_request}"
+            )
+
         if self._switch_request and not self._switch_in_progress:
             req = self._switch_request
             logger.info(f"[TICK] processing switch_request: intent={req.get('intent')} table={req.get('table_id')} pending_bet={bool(self._pending_bet)}")
@@ -4425,6 +4471,7 @@ class LiveBetExecutor:
 
         for idx, chip_value in enumerate(chip_plan, start=1):
             pre = self._preselected_chip or {}
+            chip_changed_this_click = False
             can_skip_preselect = (
                 idx == 1
                 and str(pre.get("target") or "") == str(target_qpid or "")
@@ -4451,8 +4498,9 @@ class LiveBetExecutor:
                 return False
             else:
                 current_selected_chip = float(chip_value)
+                chip_changed_this_click = True
             used_cached_click = False
-            if idx > 1 and cached_click_coords is not None:
+            if idx > 1 and cached_click_coords is not None and not chip_changed_this_click:
                 used_cached_click = click_cached_side_once(idx)
             if not used_cached_click:
                 if not click_side_once(idx):
