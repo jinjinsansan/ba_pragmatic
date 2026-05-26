@@ -1290,19 +1290,6 @@ class DualLinePragmaticBot(cp.Collector):
         )
         send_msg(
             {
-                "type": "round_result",
-                "result": "tie" if tie else str(outcome or "").lower(),
-                "won": None if tie else bool(won),
-                "bet_amount": actual_amount,
-                "planned_bet_amount": planned_amount,
-                "bet_side": side.lower(),
-                "current_turn": ms.get("seq_turn"),
-                "turns_display": "".join(ms.get("seq7_current_turns") or []),
-                "overshoot": ms.get("seq_overshoot"),
-            }
-        )
-        send_msg(
-            {
                 "type": "resolution",
                 "table_id": str(pending.get("table_id") or table_id),
                 "table_name": table_name,
@@ -1320,6 +1307,7 @@ class DualLinePragmaticBot(cp.Collector):
                 "total_resolved": self.total_resolved,
                 "money_status": ms,
                 "bet_amount": actual_amount,
+                "planned_bet_amount": planned_amount,
             }
         )
         self._send_gui_money_status()
@@ -2761,15 +2749,24 @@ class DualLinePragmaticBot(cp.Collector):
             )
             send_msg(
                 {
-                    "type": "round_result",
-                    "result": "tie" if tie else str(outcome or "").lower(),
-                    "won": None if tie else bool(won),
+                    "type": "resolution",
+                    "table_id": str(pending.get("table_id") or d.get("table_id") or ""),
+                    "table_name": str(pending.get("table_name") or d.get("table_name") or ""),
+                    "prediction": str(pending.get("side") or "").upper(),
+                    "outcome": str(outcome or ""),
+                    "result": normalized_result,
+                    "pattern_key": str(pending.get("pattern_key") or ""),
+                    "pnl": pnl_delta,
+                    "cumulative_pnl": self.virtual_pnl,
+                    "wins": self.wins,
+                    "losses": self.losses,
+                    "ties": self.ties,
+                    "win_rate": round((self.wins / (self.wins + self.losses) * 100) if (self.wins + self.losses) else 0, 1),
+                    "total_signals": self.total_signals,
+                    "total_resolved": self.total_resolved,
+                    "money_status": ms,
                     "bet_amount": actual_amount,
                     "planned_bet_amount": float(pending.get("amount") or 0),
-                    "bet_side": str(pending.get("side") or "").lower(),
-                    "current_turn": ms.get("seq_turn"),
-                    "turns_display": "".join(ms.get("seq7_current_turns") or []),
-                    "overshoot": ms.get("seq_overshoot"),
                 }
             )
             self._send_gui_money_status()
