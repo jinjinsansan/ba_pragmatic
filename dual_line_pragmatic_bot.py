@@ -926,10 +926,29 @@ class DualLinePragmaticBot(cp.Collector):
 
         # LIVE: 実BET送信が確認できないシグナルは資金管理/勝敗に反映しない
         if self.bet_executor.is_live and bet_id:
-            consume_sent = getattr(self.bet_executor, "consume_sent_bet", None)
-            if callable(consume_sent):
+            confirmed_bet = None
+            consume_confirmed = getattr(self.bet_executor, "consume_confirmed_bet", None)
+            if callable(consume_confirmed):
                 try:
-                    sent = bool(consume_sent(bet_id))
+                    confirmed_bet = consume_confirmed(bet_id)
+                except Exception:
+                    confirmed_bet = None
+            if isinstance(confirmed_bet, dict) and confirmed_bet:
+                pending["confirmed_bet"] = confirmed_bet
+                try:
+                    confirmed_amount = float(confirmed_bet.get("confirmed_amount") or 0.0)
+                except Exception:
+                    confirmed_amount = 0.0
+                if confirmed_amount > 0:
+                    pending["actual_amount"] = confirmed_amount
+                    try:
+                        self.money._last_bet_amount = confirmed_amount
+                    except Exception:
+                        pass
+            else:
+                consume_sent = getattr(self.bet_executor, "consume_sent_bet", None)
+                try:
+                    sent = bool(consume_sent(bet_id)) if callable(consume_sent) else False
                 except Exception:
                     sent = False
                 if not sent:
@@ -954,6 +973,13 @@ class DualLinePragmaticBot(cp.Collector):
         self.total_resolved += 1
         pstats = self.per_pattern[pkey]
         pstats["pred"] += 1
+        actual_amount = float(pending.get("actual_amount") or pending.get("bet_amount") or 0.0)
+        planned_amount = float(pending.get("bet_amount") or actual_amount or 0.0)
+        if actual_amount > 0:
+            try:
+                self.money._last_bet_amount = actual_amount
+            except Exception:
+                pass
 
         if outcome == "T":
             self.ties += 1
@@ -964,13 +990,13 @@ class DualLinePragmaticBot(cp.Collector):
         elif outcome == side:
             self.wins += 1
             pstats["wins"] += 1
-            pnl = pending.get("bet_amount", 0) * (COMMISSION_BANKER if side == "B" else 1.0)
+            pnl = actual_amount * (COMMISSION_BANKER if side == "B" else 1.0)
             result = "WIN"
             self.money.apply_result(won=True, side=side)
         else:
             self.losses += 1
             pstats["losses"] += 1
-            pnl = -pending.get("bet_amount", 0)
+            pnl = -actual_amount
             result = "LOSE"
             self.money.apply_result(won=False, side=side)
 
@@ -1016,7 +1042,8 @@ class DualLinePragmaticBot(cp.Collector):
             "total_resolved": self.total_resolved,
             "predicting_n": pending.get("predicting_n"),
             "money_status": ms,
-            "bet_amount": pending.get("bet_amount", 0),
+            "bet_amount": actual_amount,
+            "planned_bet_amount": planned_amount,
         })
         self._send_gui_money_status()
         status_icon = "✅" if result == "WIN" else ("🔵" if result == "TIE" else "❌")
@@ -1733,14 +1760,20 @@ class DualLinePragmaticBot(cp.Collector):
         except Exception:
             has_pb = False
         try:
-            bif_fn = getattr(self.bet_executor, "is_bet_in_flight", None)
-            is_bif = bool(bif_fn()) if callable(bif_fn) else bool(bif_fn)
+            send_busy = bool(getattr(self.bet_executor, "_bet_send_in_progress", False))
         except Exception:
-            is_bif = False
-        if has_pb or is_bif:
+            send_busy = False
+        if has_pb or send_busy:
             last = float(getattr(self, "_last_preposition_skip_log_at", 0.0) or 0.0)
             if now_ts - last >= 15.0:
-                logger.info(f"[PREPOS] skip: pending_bet={has_pb} is_bet_in_flight={is_bif}")
+                try:
+                    sent_count = len(getattr(self.bet_executor, "_sent_bet_ids", set()) or set())
+                except Exception:
+                    sent_count = -1
+                logger.info(
+                    f"[PREPOS] skip: pending_bet={has_pb} "
+                    f"send_busy={send_busy} sent_waiting={sent_count}"
+                )
                 self._last_preposition_skip_log_at = now_ts
             return
 
@@ -3054,6 +3087,8 @@ class DualLinePragmaticBot(cp.Collector):
             last_result_flush_check = time.time()
             last_remote_signal_poll = time.time() - 5
             last_decision_fallback_poll = time.time() - 5
+            last_tick_diag = 0.0
+            last_loop_wait_diag = 0.0
             input_stale_restart_sec = float(
                 os.getenv("BACOPY_DRY_INPUT_STALE_RESTART_SEC", "180") or 180
             )
@@ -3071,7 +3106,22 @@ class DualLinePragmaticBot(cp.Collector):
             while not self.stop_flag:
                 # ── bet_page 死活チェック ─────────────────────────
                 try:
+                    _wait_start = time.time()
+                    _wait_switch_req = getattr(self.bet_executor, "_switch_request", None)
+                    if _wait_switch_req and _wait_start - last_loop_wait_diag >= 5.0:
+                        logger.warning(
+                            f"[BOT-LOOP-DIAG] before page wait "
+                            f"switch_in_progress={getattr(self.bet_executor, '_switch_in_progress', None)} "
+                            f"switch_request={_wait_switch_req}"
+                        )
+                        last_loop_wait_diag = _wait_start
                     bet_page.wait_for_timeout(1000)
+                    _wait_elapsed = time.time() - _wait_start
+                    if _wait_elapsed > 2.0:
+                        logger.warning(
+                            f"[BOT-LOOP-DIAG] page wait slow elapsed={_wait_elapsed:.1f}s "
+                            f"switch_request={getattr(self.bet_executor, '_switch_request', None)}"
+                        )
                 except Exception as _page_err:
                     err_str = str(_page_err).lower()
                     if "closed" in err_str or "target" in err_str:
@@ -3108,23 +3158,33 @@ class DualLinePragmaticBot(cp.Collector):
                     )
                     break
 
+                # ── executor tick ──────────────────────────────────
+                if self.bet_executor.is_live:
+                    # idle 時は 5 秒に 1 回のみ tick（keep-alive は lobby では不要）
+                    tick_interval = 1.0 if _executor_is_idle() else 0.5
+                    switch_req = getattr(self.bet_executor, "_switch_request", None)
+                    if switch_req and now - last_tick_diag >= 5.0:
+                        logger.warning(
+                            f"[BOT-TICK-DIAG] before executor.tick "
+                            f"is_live={self.bet_executor.is_live} idle={_executor_is_idle()} "
+                            f"dt={now - last_executor_tick:.1f}s interval={tick_interval:.1f}s "
+                            f"switch_in_progress={getattr(self.bet_executor, '_switch_in_progress', None)} "
+                            f"switch_request={switch_req}"
+                        )
+                        last_tick_diag = now
+                    if now - last_executor_tick >= tick_interval:
+                        try:
+                            self.bet_executor.tick()
+                        except Exception as e:
+                            logger.warning(f"[BOT] executor tick error: {e!r}")
+                        last_executor_tick = now
+
                 # ── lobby URL ガード（TOPページ固定を自己回復） ─────
                 if now - _last_lobby_recover_at >= 15.0:
                     try:
                         _ensure_pragmatic_lobby(force=False)
                     except Exception as e:
                         logger.debug(f"[BOT] lobby guard error: {e}")
-
-                # ── executor tick ──────────────────────────────────
-                if self.bet_executor.is_live:
-                    # idle 時は 5 秒に 1 回のみ tick（keep-alive は lobby では不要）
-                    tick_interval = 1.0 if _executor_is_idle() else 0.5
-                    if now - last_executor_tick >= tick_interval:
-                        try:
-                            self.bet_executor.tick()
-                        except Exception as e:
-                            logger.debug(f"[BOT] executor tick error: {e}")
-                        last_executor_tick = now
 
                 # ── テーブル入場時刻トラッキング + タイムアウト ──
                 curr_table = str(getattr(self.bet_executor, "current_table_id", "") or "")
