@@ -2834,6 +2834,12 @@ class LiveBetExecutor:
                     self._last_bets_open_at = 0.0
                     self._switch_request = None
                     self._switch_target_table_id = ""
+                    if self._prepared_table_id:
+                        logger.warning(
+                            f"[PREPARED-CLEAR] reason=session_ended_modal "
+                            f"prev_target={self._prepared_table_id!r} "
+                            f"age={time.time() - (self._prepared_at or 0.0):.1f}s"
+                        )
                     self._prepared_table_id = ""
                     self._prepared_at = 0.0
                     self._table_states.clear()
@@ -4321,7 +4327,12 @@ class LiveBetExecutor:
 
         def wait_for_matching_tile(click_index: int) -> bool:
             wait_sec = float(os.getenv("BACOPY_TILE_GAME_ID_WAIT_SEC", "8.0") or 8.0)
-            deadline = time.time() + max(0.0, wait_sec)
+            refocus_after = float(os.getenv("BACOPY_TILE_GAME_ID_REFOCUS_AFTER_SEC", "2.0") or 2.0)
+            refocus_max = int(os.getenv("BACOPY_TILE_GAME_ID_REFOCUS_MAX", "2") or 2)
+            started_at = time.time()
+            deadline = started_at + max(0.0, wait_sec)
+            last_refocus_at = 0.0
+            refocus_count = 0
             attempt = 0
             while time.time() < deadline:
                 attempt += 1
@@ -4342,14 +4353,44 @@ class LiveBetExecutor:
                     logger.info(
                         f"[CLICK-BET] JS click OK after tile game-id wait: "
                         f"side={side} qpid={target_qpid!r} attempt={attempt} "
-                        f"click={click_index}/{len(chip_plan)}"
+                        f"click={click_index}/{len(chip_plan)} refocus={refocus_count}"
                     )
                     return True
                 if not is_tile_game_id_mismatch():
                     return False
+                # Stuck on game_id_mismatch: hover alone does not refresh the
+                # tile's WS-driven data subscription. Periodically re-focus the
+                # target via the same prepare path used at decision time, which
+                # scrolls into view and clicks the tile body to force Pragmatic
+                # to re-subscribe / re-render with the latest round data.
+                # Guard is unchanged: js_click_bet_in_container still rejects
+                # any click while currentGameId != expectedGameId.
+                if refocus_count < refocus_max:
+                    elapsed = time.time() - started_at
+                    since_refocus = time.time() - last_refocus_at if last_refocus_at else 9999.0
+                    if elapsed >= refocus_after and since_refocus >= refocus_after:
+                        try:
+                            logger.info(
+                                f"[CLICK-BET] active-panel refresh: "
+                                f"qpid={target_qpid!r} attempt={attempt} elapsed={elapsed:.1f}s "
+                                f"refocus={refocus_count + 1}/{refocus_max} "
+                                f"expected={expected_game_id!r}"
+                            )
+                            self._focus_table_in_multi({
+                                "table_id": str(target_qpid or ""),
+                                "table_name": str(target_table_name or ""),
+                                "qpid": str(target_qpid or ""),
+                                "intent": "prepare",
+                                "side": str(side or ""),
+                            })
+                        except Exception as ex:
+                            logger.debug(f"[CLICK-BET] active-panel refresh failed: {ex}")
+                        last_refocus_at = time.time()
+                        refocus_count += 1
             logger.warning(
                 f"[CLICK-BET] tile game-id did not catch up: qpid={target_qpid!r} "
-                f"expected={expected_game_id!r} last={self._last_click_bet_error}"
+                f"expected={expected_game_id!r} refocus={refocus_count} "
+                f"last={self._last_click_bet_error}"
             )
             return False
 
@@ -4764,6 +4805,12 @@ class LiveBetExecutor:
         self._last_bets_open_at = 0.0
         self._switch_request = None
         self._switch_target_table_id = ""
+        if self._prepared_table_id:
+            logger.warning(
+                f"[PREPARED-CLEAR] reason=return_to_lobby "
+                f"prev_target={self._prepared_table_id!r} "
+                f"age={time.time() - (self._prepared_at or 0.0):.1f}s"
+            )
         self._prepared_table_id = ""
         self._prepared_at = 0.0
         self._pending_bet = None
