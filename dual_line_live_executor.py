@@ -381,6 +381,29 @@ async (args) => {
     return { el: null, idx: -1, total: nodes.length };
   }
   function pickScroller() {
+    // Prefer the closest scrollable ancestor of a real TileHeight- tile.
+    // The multi-baccarat lobby contains several nested scrollable wrappers,
+    // and the largest one (picked by the previous "biggest delta" heuristic)
+    // is not necessarily the virtualizer's parent. Scrolling the wrong element
+    // moves nothing in the virtual list, the off-screen tiles never mount,
+    // and findTarget keeps returning null until the deadline expires.
+    try {
+      const samples = document.querySelectorAll('[id^="TileHeight-"]');
+      for (const sample of samples) {
+        let cur = sample.parentElement;
+        while (cur && cur !== document.body) {
+          try {
+            const cs = getComputedStyle(cur);
+            if (/(auto|scroll)/.test(cs.overflowY || '')) {
+              const delta = (cur.scrollHeight || 0) - (cur.clientHeight || 0);
+              if (delta > 50) return cur;
+            }
+          } catch(_) {}
+          cur = cur.parentElement;
+        }
+        if (sample) break;
+      }
+    } catch(_) {}
     let best = document.scrollingElement || document.documentElement || document.body;
     let bestDelta = (best && best.scrollHeight ? (best.scrollHeight - best.clientHeight) : 0);
     const all = document.querySelectorAll('*');
@@ -396,6 +419,18 @@ async (args) => {
       } catch(_) {}
     }
     return best;
+  }
+  function mountedQpidSample(limit) {
+    const out = [];
+    try {
+      const tiles = document.querySelectorAll('[id^="TileHeight-"]');
+      const max = Math.min(tiles.length, Math.max(1, Number(limit) || 8));
+      for (let i = 0; i < max; i++) {
+        const id = String((tiles[i] && tiles[i].id) || '');
+        if (id) out.push(id.replace(/^TileHeight-/, ''));
+      }
+    } catch(_) {}
+    return out;
   }
   function scrollMeta(sc) {
     if (!sc) return {scrollTop: 0, scrollHeight: 0, clientHeight: 0, scrollRatio: 0};
@@ -469,7 +504,7 @@ async (args) => {
     if (click) clickEl(finalTarget.el);
     return { ok:true, found:true, clicked: !!click, matchIndex: Number(finalTarget.idx), totalNodes: Number(finalTarget.total), scroll: scrollMeta(cachedScroller), diag: diagOf(finalTarget.el), reason: timedOut ? 'deadline_late_match' : undefined };
   }
-  return { ok:true, found:false, clicked:false, matchIndex:-1, totalNodes:Number(finalTarget.total || 0), scroll: scrollMeta(cachedScroller), reason: timedOut ? 'deadline' : undefined };
+  return { ok:true, found:false, clicked:false, matchIndex:-1, totalNodes:Number(finalTarget.total || 0), scroll: scrollMeta(cachedScroller), mountedQpids: mountedQpidSample(8), reason: timedOut ? 'deadline' : undefined };
 }
 """
 
