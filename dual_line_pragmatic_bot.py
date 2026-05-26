@@ -1900,15 +1900,23 @@ class DualLinePragmaticBot(cp.Collector):
             target = str(qpid or table_id or "").strip()
             prepared = str(getattr(self.bet_executor, "_prepared_table_id", "") or "")
             switch_req = getattr(self.bet_executor, "_switch_request", None) or {}
+            switch_active = getattr(self.bet_executor, "_active_switch_request", None) or {}
             req_target = str(switch_req.get("qpid") or switch_req.get("table_id") or "").strip()
             req_age = now_retry - float(switch_req.get("requested_at") or 0.0) if switch_req else 999.0
+            active_target = str(switch_active.get("qpid") or switch_active.get("table_id") or "").strip()
             last_req_age = now_retry - float(getattr(self, "_prepos_switch_at", 0.0) or 0.0)
-            if prepared == target or (req_target == target and req_age < 8.0) or last_req_age < 8.0:
+            already_handling = (
+                (prepared == target)
+                or (req_target == target and req_age < 8.0)
+                or (active_target == target)
+            )
+            if already_handling:
                 logger.info(f"[PREPOS] dedup skip (same key): {current_key[:80]}")
                 return
             logger.info(
                 f"[PREPOS] retry same key after focus miss: target={target or '-'} "
-                f"last_req_age={last_req_age:.1f}s prepared={prepared or '-'}"
+                f"last_req_age={last_req_age:.1f}s prepared={prepared or '-'} "
+                f"req_target={req_target or '-'} active={active_target or '-'}"
             )
         self._last_preposition_key = current_key
         logger.info(
