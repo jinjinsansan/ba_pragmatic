@@ -4793,8 +4793,28 @@ class LiveBetExecutor:
         return bool(bid and bid in self._failed_bet_ids)
 
     def return_to_lobby(self) -> None:
-        """テーブルを離れてロビーへ戻る。内部stateをリセットし実際にナビゲートする。"""
+        """テーブルを離れてロビーへ戻る。内部stateをリセットし実際にナビゲートする。
+
+        Multi-lobby mode never leaves the lobby page (the engine lives in the
+        multi-baccarat grid the entire session), so the bot's table-timeout
+        watchdog calling this path was structurally a no-op for navigation
+        but still wiped _prepared_table_id, throwing away a perfectly valid
+        focused tile and forcing a costly re-focus on the next decision.
+        Preserve the prepared tile in multi-lobby; only abandon the pending
+        bet and any queued switch_request so a stale signal cannot survive.
+        """
         logger.info(f"[RETURN-LOBBY] called: phase={self._phase} table={self._table_id!r} pending_bet={bool(self._pending_bet)} multi={self._multi_lobby_mode}")
+        if self._multi_lobby_mode:
+            with self._lock:
+                self._pending_bet = None
+            self._switch_request = None
+            self._switch_target_table_id = ""
+            logger.info(
+                f"[RETURN-LOBBY] multi-lobby: prepared preserved "
+                f"target={self._prepared_table_id or '-'!r} "
+                f"age={time.time() - (self._prepared_at or 0.0):.1f}s"
+            )
+            return
         self._phase = "waiting"
         self._table_id = ""
         self._game_ws_url = ""
@@ -4814,9 +4834,6 @@ class LiveBetExecutor:
         self._prepared_table_id = ""
         self._prepared_at = 0.0
         self._pending_bet = None
-        if self._multi_lobby_mode:
-            logger.info("[RETURN-LOBBY] multi-lobby: state reset only (no navigation)")
-            return
         page = self._bet_page or self._lobby_page
         if page is not None:
             try:
