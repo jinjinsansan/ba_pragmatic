@@ -183,6 +183,23 @@ function cleanupOrphanCamoufox() {
   killAllByImage('camoufox.exe');
   try { fs.unlinkSync(_pidFilePath()); } catch (_) {}
 }
+
+function cleanupStaleProfileLocks(profileDir) {
+
+  if (!profileDir) return;
+  const lockNames = ['parent.lock', 'lock', '.parentlock', 'lockfile'];
+  for (const name of lockNames) {
+    const p = path.join(profileDir, name);
+    try {
+      if (fs.existsSync(p)) {
+        fs.unlinkSync(p);
+        console.log(`[Main] removed stale profile lock: ${p}`);
+      }
+    } catch (e) {
+      console.warn(`[Main] cleanupStaleProfileLocks failed for ${p}: ${e && e.message}`);
+    }
+  }
+}
 function listCamoufoxPids() {
   if (process.platform !== 'win32') return [];
   try {
@@ -840,6 +857,15 @@ function _doStartBot(config, generation = _botGeneration) {
       return;
     }
   } catch (_) {}
+  // After confirming no engine/camoufox processes are alive, remove any
+  // Firefox/Camoufox profile lock files left behind by a hard kill so the
+  // next browser launch is not blocked by a stale parent.lock.
+  try {
+    const profileDir = path.join(app.getPath('userData'), 'profiles', 'executor_pragmatic');
+    cleanupStaleProfileLocks(profileDir);
+  } catch (e) {
+    console.warn('[Main] profile lock cleanup failed:', e && e.message);
+  }
 
 
 
