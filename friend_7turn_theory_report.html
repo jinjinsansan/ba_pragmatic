@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>7ターン理論 バックテスト検証レポート</title>
+<style>
+:root{
+  --green:#16a34a;--green-bg:#dcfce7;--green-light:#f0fdf4;
+  --red:#dc2626;--red-bg:#fee2e2;--red-light:#fff5f5;
+  --yellow:#ca8a04;--yellow-bg:#fef9c3;
+  --blue:#2563eb;--blue-bg:#dbeafe;
+  --gray:#6b7280;--gray-bg:#f3f4f6;
+  --dark:#111827;--border:#e5e7eb;
+  --banker:#7c3aed;--banker-bg:#ede9fe;
+  --player:#0891b2;--player-bg:#cffafe;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Helvetica Neue',Arial,'Hiragino Sans',Meiryo,sans-serif;
+  background:#f8fafc;color:var(--dark);line-height:1.7;padding:24px 16px;}
+.container{max-width:860px;margin:0 auto;}
+
+.header{background:linear-gradient(135deg,#1e3a5f,#7c3aed);color:white;
+  border-radius:12px;padding:28px 32px;margin-bottom:20px;text-align:center;}
+.header h1{font-size:1.7em;font-weight:700;margin-bottom:6px;}
+.header p{font-size:.9em;opacity:.85;}
+.badge{display:inline-block;background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);
+  border-radius:20px;padding:4px 14px;font-size:.82em;margin-top:8px;}
+
+.section{background:white;border-radius:10px;border:1px solid var(--border);
+  margin-bottom:18px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06);}
+.section-header{padding:14px 20px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:8px;}
+.section-header h2{font-size:1em;font-weight:700;}
+.section-header .meta{font-size:.78em;color:var(--gray);margin-left:auto;}
+.section-body{padding:18px 22px;}
+
+/* Theory box */
+.theory-box{background:var(--blue-bg);border:2px solid #93c5fd;border-radius:10px;
+  padding:20px 22px;margin-bottom:18px;}
+.theory-box h3{font-size:1em;font-weight:700;color:var(--blue);margin-bottom:12px;}
+.theory-step{display:flex;gap:12px;margin-bottom:10px;align-items:flex-start;}
+.step-num{background:var(--blue);color:white;border-radius:50%;width:24px;height:24px;
+  display:flex;align-items:center;justify-content:center;font-size:.78em;font-weight:700;flex-shrink:0;margin-top:2px;}
+.theory-table{width:100%;border-collapse:collapse;margin-top:12px;}
+.theory-table th{background:rgba(37,99,235,.15);padding:8px 12px;font-size:.8em;text-align:center;font-weight:700;}
+.theory-table td{padding:8px 12px;font-size:.85em;text-align:center;border-bottom:1px solid rgba(37,99,235,.15);}
+.theory-table tr:last-child td{border-bottom:none;}
+
+/* Cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px;}
+.card{background:white;border-radius:10px;border:1px solid var(--border);padding:16px;
+  text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.06);}
+.card .label{font-size:.72em;color:var(--gray);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;}
+.card .value{font-size:1.8em;font-weight:700;}
+.card .sub{font-size:.78em;color:var(--gray);margin-top:3px;}
+.card.gray .value{color:var(--gray);}
+.card.red  .value{color:var(--red);}
+.card.zero .value{color:var(--gray);}
+
+/* Distribution chart */
+.dist-chart{padding:8px 0;}
+.dist-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:.84em;}
+.dist-label{width:70px;text-align:right;font-weight:600;flex-shrink:0;}
+.dist-bar-outer{flex:1;height:28px;background:#f1f5f9;border-radius:6px;overflow:hidden;position:relative;}
+.dist-bar-inner{height:28px;border-radius:6px;display:flex;align-items:center;
+  padding:0 10px;font-size:.78em;font-weight:700;color:white;}
+.dist-pct{width:52px;text-align:right;font-weight:700;flex-shrink:0;}
+.dist-note{width:80px;font-size:.75em;flex-shrink:0;}
+
+/* Result table */
+table{width:100%;border-collapse:collapse;}
+th{background:var(--gray-bg);padding:9px 14px;font-size:.76em;font-weight:600;
+  color:var(--gray);text-align:right;letter-spacing:.03em;}
+th:first-child{text-align:left;}
+td{padding:10px 14px;border-bottom:1px solid var(--border);font-size:.85em;text-align:right;}
+td:first-child{text-align:left;font-weight:600;}
+tr:last-child td{border-bottom:none;}
+tr.total-row td{background:var(--gray-bg);font-weight:700;}
+
+/* Comparison bar */
+.comp-wrap{display:flex;align-items:center;gap:8px;}
+.comp-bar-outer{flex:1;height:10px;background:#e5e7eb;border-radius:5px;overflow:hidden;position:relative;}
+.comp-bar-inner{height:10px;border-radius:5px;}
+.comp-natural{position:absolute;top:-3px;bottom:-3px;width:2px;background:#f59e0b;border-radius:1px;}
+
+/* Verdict */
+.verdict{background:#fef2f2;border:2px solid #fca5a5;border-radius:10px;padding:20px 22px;margin-bottom:18px;}
+.verdict h3{font-size:1.1em;font-weight:700;color:var(--red);margin-bottom:10px;}
+.verdict p{font-size:.88em;margin-bottom:8px;}
+.verdict ul{font-size:.88em;padding-left:20px;}
+.verdict ul li{margin-bottom:6px;}
+
+/* Math box */
+.math-box{background:var(--gray-bg);border-radius:8px;padding:14px 16px;font-size:.82em;
+  font-family:'Courier New',monospace;line-height:1.8;margin-top:10px;}
+
+.note-box{background:var(--yellow-bg);border-left:4px solid #f59e0b;
+  border-radius:0 6px 6px 0;padding:12px 14px;font-size:.84em;margin:14px 0;}
+
+.zbadge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.8em;font-weight:700;}
+.zbadge.zero{background:var(--gray-bg);color:var(--gray);}
+.zbadge.neg{background:var(--red-bg);color:var(--red);}
+
+.footer{text-align:center;font-size:.76em;color:var(--gray);margin-top:20px;
+  padding-top:14px;border-top:1px solid var(--border);}
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Header -->
+<div class="header">
+  <h1>🃏 7ターン理論 バックテスト検証レポート</h1>
+  <p>「7手の偏りは均衡に向かう」仮説を 77,569シューで検証</p>
+  <div class="badge">DB: analytics_pragmatic.sqlite3 ／ 2026-05-26 実施</div>
+</div>
+
+<!-- 理論の説明 -->
+<div class="section">
+  <div class="section-header"><span>💡</span><h2>検証した理論（友人の仮説）</h2></div>
+  <div class="section-body">
+    <div class="theory-box">
+      <h3>理論の前提：7ターン制の分布</h3>
+      <div class="theory-step">
+        <div class="step-num">1</div>
+        <div>バカラの結果（P/B）を 7手ずつのグループに分けると、<br>
+        <strong>3勝4負（27.0%）と 4勝3負（27.6%）が最も多く出現する</strong>（合計約55%）。<br>
+        これは二項分布の数学的必然であり、実際のデータとも一致する。</div>
+      </div>
+      <div class="theory-step">
+        <div class="step-num">2</div>
+        <div>この事実から友人は以下を主張する：<br>
+        <strong>「7手グループの最初の6手を見て、片方が多く出ていれば、7手目は少ない方が出やすい」</strong></div>
+      </div>
+      <div class="theory-step">
+        <div class="step-num">3</div>
+        <div>具体的なBETルール：
+        <table class="theory-table" style="margin-top:10px">
+          <thead><tr><th>最初の6手の内訳</th><th>7手目の賭け先</th><th>根拠</th></tr></thead>
+          <tbody>
+            <tr><td>P=4、B=2</td><td><strong style="color:var(--banker)">BANKER</strong></td><td>Pが多い → Bで均衡</td></tr>
+            <tr><td>B=4、P=2</td><td><strong style="color:var(--player)">PLAYER</strong></td><td>Bが多い → Pで均衡</td></tr>
+            <tr><td>P=5、B=1</td><td><strong style="color:var(--banker)">BANKER</strong></td><td>Pが多い → Bで均衡</td></tr>
+            <tr><td>B=5、P=1</td><td><strong style="color:var(--player)">PLAYER</strong></td><td>Bが多い → Pで均衡</td></tr>
+            <tr><td>それ以外（3:3 / 6:0 等）</td><td>見送り</td><td></td></tr>
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 出現確率分布 -->
+    <div style="margin-top:4px"><strong>7ターン制の理論分布（勝率50.53%の場合）</strong></div>
+    <div class="dist-chart" style="margin-top:12px">
+      <div class="dist-row">
+        <div class="dist-label">7勝0負</div>
+        <div class="dist-bar-outer"><div class="dist-bar-inner" style="width:6.5%;background:#94a3b8">0.84%</div></div>
+        <div class="dist-pct" style="color:var(--gray)">0.84%</div>
+        <div class="dist-note" style="color:var(--gray)"></div>
+      </div>
+      <div class="dist-row">
+        <div class="dist-label">6勝1負</div>
+        <div class="dist-bar-outer"><div class="dist-bar-inner" style="width:44%;background:#64748b">5.76%</div></div>
+        <div class="dist-pct" style="color:var(--gray)">5.76%</div>
+        <div class="dist-note" style="color:var(--gray)"></div>
+      </div>
+      <div class="dist-row">
+        <div class="dist-label">5勝2負</div>
+        <div class="dist-bar-outer"><div class="dist-bar-inner" style="width:100%;max-width:100%;background:#4ade80">16.93%</div></div>
+        <div class="dist-pct" style="color:var(--gray)">16.93%</div>
+        <div class="dist-note" style="color:var(--gray)"></div>
+      </div>
+      <div class="dist-row">
+        <div class="dist-label" style="color:var(--blue);font-weight:800">4勝3負</div>
+        <div class="dist-bar-outer"><div class="dist-bar-inner" style="width:100%;background:linear-gradient(90deg,#2563eb,#3b82f6)">27.62% ← 最多</div></div>
+        <div class="dist-pct" style="color:var(--blue);font-weight:800">27.62%</div>
+        <div class="dist-note" style="color:var(--blue);font-weight:700">★ 最多</div>
+      </div>
+      <div class="dist-row">
+        <div class="dist-label" style="color:var(--blue);font-weight:800">3勝4負</div>
+        <div class="dist-bar-outer"><div class="dist-bar-inner" style="width:97.8%;background:linear-gradient(90deg,#2563eb,#6366f1)">27.04% ← 2位</div></div>
+        <div class="dist-pct" style="color:var(--blue);font-weight:800">27.04%</div>
+        <div class="dist-note" style="color:var(--blue);font-weight:700">★ 2位</div>
+      </div>
+      <div class="dist-row">
+        <div class="dist-label">2勝5負</div>
+        <div class="dist-bar-outer"><div class="dist-bar-inner" style="width:94%;background:#f87171">15.89%</div></div>
+        <div class="dist-pct" style="color:var(--gray)">15.89%</div>
+        <div class="dist-note" style="color:var(--gray)"></div>
+      </div>
+      <div class="dist-row">
+        <div class="dist-label">1勝6負</div>
+        <div class="dist-bar-outer"><div class="dist-bar-inner" style="width:38%;background:#ef4444">5.18%</div></div>
+        <div class="dist-pct" style="color:var(--gray)">5.18%</div>
+        <div class="dist-note" style="color:var(--gray)"></div>
+      </div>
+      <div class="dist-row">
+        <div class="dist-label">0勝7負</div>
+        <div class="dist-bar-outer"><div class="dist-bar-inner" style="width:5.5%;background:#dc2626">0.73%</div></div>
+        <div class="dist-pct" style="color:var(--gray)">0.73%</div>
+        <div class="dist-note" style="color:var(--gray)"></div>
+      </div>
+    </div>
+    <div class="note-box">
+      4勝3負 + 3勝4負 = <strong>54.66%</strong>。確かに2回に1回以上はこの2パターン。
+      友人の仮説はこの事実から「均衡への引力が働く」と結論づけているが、これが誤りかどうかを次章で検証する。
+    </div>
+  </div>
+</div>
+
+<!-- バックテスト結果 -->
+<div class="section">
+  <div class="section-header">
+    <span>📊</span>
+    <h2>バックテスト結果</h2>
+    <span class="meta">77,569シュー ／ 431,440 BET</span>
+  </div>
+  <div class="section-body">
+    <div class="cards">
+      <div class="card gray">
+        <div class="label">総BET数</div>
+        <div class="value">431,440</div>
+        <div class="sub">4条件の合計</div>
+      </div>
+      <div class="card gray">
+        <div class="label">全体勝率</div>
+        <div class="value">49.92%</div>
+        <div class="sub">W:215,390 / L:216,050</div>
+      </div>
+      <div class="card zero">
+        <div class="label">正しいZ値</div>
+        <div class="value">−0.69</div>
+        <div class="sub">期待値より僅かに下</div>
+      </div>
+      <div class="card gray">
+        <div class="label">期待値との差</div>
+        <div class="value">−228</div>
+        <div class="sub">勝利数が期待より少ない</div>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>条件（6手目までの内訳）</th>
+          <th>賭け先</th>
+          <th>BET数</th>
+          <th>勝率</th>
+          <th>自然勝率</th>
+          <th>差</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>P=4、B=2 → B賭け</td>
+          <td style="color:var(--banker);font-weight:700">BANKER</td>
+          <td>149,999</td>
+          <td>
+            <div class="comp-wrap">
+              <div class="comp-bar-outer">
+                <div class="comp-bar-inner" style="width:72.5%;height:10px;background:#7c3aed;border-radius:5px"></div>
+                <div class="comp-natural" style="left:72.4%"></div>
+              </div>
+              <span style="font-weight:700;color:var(--gray)">50.69%</span>
+            </div>
+          </td>
+          <td style="color:var(--gray)">50.68%</td>
+          <td style="color:var(--gray)"><strong>+0.01%</strong></td>
+        </tr>
+        <tr>
+          <td>P=5、B=1 → B賭け</td>
+          <td style="color:var(--banker);font-weight:700">BANKER</td>
+          <td>58,223</td>
+          <td>
+            <div class="comp-wrap">
+              <div class="comp-bar-outer">
+                <div class="comp-bar-inner" style="width:72.2%;height:10px;background:#7c3aed;border-radius:5px"></div>
+                <div class="comp-natural" style="left:72.4%"></div>
+              </div>
+              <span style="font-weight:700;color:var(--red)">50.54%</span>
+            </div>
+          </td>
+          <td style="color:var(--gray)">50.68%</td>
+          <td style="color:var(--red)"><strong>−0.14%</strong></td>
+        </tr>
+        <tr>
+          <td>B=4、P=2 → P賭け</td>
+          <td style="color:var(--player);font-weight:700">PLAYER</td>
+          <td>157,990</td>
+          <td>
+            <div class="comp-wrap">
+              <div class="comp-bar-outer">
+                <div class="comp-bar-inner" style="width:70.3%;height:10px;background:#0891b2;border-radius:5px"></div>
+                <div class="comp-natural" style="left:70.5%"></div>
+              </div>
+              <span style="font-weight:700;color:var(--red)">49.18%</span>
+            </div>
+          </td>
+          <td style="color:var(--gray)">49.32%</td>
+          <td style="color:var(--red)"><strong>−0.14%</strong></td>
+        </tr>
+        <tr>
+          <td>B=5、P=1 → P賭け</td>
+          <td style="color:var(--player);font-weight:700">PLAYER</td>
+          <td>65,228</td>
+          <td>
+            <div class="comp-wrap">
+              <div class="comp-bar-outer">
+                <div class="comp-bar-inner" style="width:70.6%;height:10px;background:#0891b2;border-radius:5px"></div>
+                <div class="comp-natural" style="left:70.5%"></div>
+              </div>
+              <span style="font-weight:700;color:var(--gray)">49.41%</span>
+            </div>
+          </td>
+          <td style="color:var(--gray)">49.32%</td>
+          <td style="color:var(--green)"><strong>+0.09%</strong></td>
+        </tr>
+        <tr class="total-row">
+          <td colspan="2">合計</td>
+          <td>431,440</td>
+          <td colspan="2">期待値との差 −228 勝利</td>
+          <td><span class="zbadge zero">Z = −0.69</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div style="font-size:.76em;color:var(--gray);margin-top:8px;padding:0 2px">
+      ▲ 黄色マーカー = 各サイドの自然勝率。バーがマーカーとほぼ重なっているのが確認できる。
+    </div>
+  </div>
+</div>
+
+<!-- 結論 -->
+<div class="verdict">
+  <h3>🔬 結論：理論は統計的に支持されない</h3>
+  <p><strong>431,440 BET（77,569シュー）の検証で、4条件すべてが「何もしなかった場合の自然勝率」と誤差0.14%以内に収まった。</strong></p>
+  <ul>
+    <li>BANKER賭けの勝率 → BANKER自然勝率（50.68%）とほぼ同じ</li>
+    <li>PLAYER賭けの勝率 → PLAYER自然勝率（49.32%）とほぼ同じ</li>
+    <li>Z値 = −0.69（統計的ゼロ。有意とみなされる±1.96に全く届かない）</li>
+    <li>期待値より228勝利分 <strong>下回っている</strong>（わずかにマイナス方向）</li>
+  </ul>
+  <div class="note-box" style="margin-top:12px;margin-bottom:0">
+    <strong>なぜ理論は間違いなのか：</strong><br>
+    バカラの各ハンドは<strong>完全に独立したイベント</strong>。前の6手に何が出ていようと、
+    次の手の確率は変わらない。「3勝4負が多い」のは数学的事実だが、
+    それは過去の偏りが「均衡しようとする力」があるからではなく、
+    単純に確率計算上7手中3〜4勝が最も起こりやすいだけ。<br><br>
+    コインを6回投げて表が4回出ても、7回目に裏が出る確率は依然として50%のまま。
+    これを<strong>「ギャンブラーの誤謬（Gambler's Fallacy）」</strong>と呼ぶ。
+  </div>
+</div>
+
+<!-- 補足：正しいZ値の計算 -->
+<div class="section">
+  <div class="section-header"><span>🧮</span><h2>補足：Z値の正しい計算方法</h2></div>
+  <div class="section-body" style="font-size:.85em;">
+    <p>BANKER賭けとPLAYER賭けが混在するため、単純な勝率比較ではなく「ブレンド期待値」で評価する必要がある。</p>
+    <div class="math-box">
+BANKER賭けBET数 : 208,222<br>
+PLAYER賭けBET数 : 223,218<br>
+<br>
+期待勝利数 = 208,222 × 50.68% + 223,218 × 49.32%<br>
+         = 105,525 + 110,093 = 215,618<br>
+<br>
+実際の勝利数    = 215,390<br>
+差             = 215,390 − 215,618 = <strong>−228</strong>（期待より少ない）<br>
+<br>
+Z値 = −228 ÷ √(431,440 × 0.4998 × 0.5002)<br>
+   = −228 ÷ 328.4<br>
+   = <strong>−0.69</strong>（統計的にゼロ）
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  DB: /opt/laplace2/analytics_pragmatic.sqlite3（77,569シュー）／ 検証実施: 2026-05-26<br>
+  逐次リプレイ実装。各7ハンドグループの最初の6手（TIE除く）を条件判定し、7手目の結果と照合。
+</div>
+
+</div>
+</body>
+</html>

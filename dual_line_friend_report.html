@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>デュアルライン戦略 — 検証レポート (2026-05-26)</title>
+<style>
+  :root {
+    --green:  #16a34a;
+    --green-bg: #dcfce7;
+    --red:    #dc2626;
+    --red-bg: #fee2e2;
+    --yellow: #ca8a04;
+    --yellow-bg: #fef9c3;
+    --blue:   #2563eb;
+    --blue-bg: #dbeafe;
+    --gray:   #6b7280;
+    --gray-bg: #f3f4f6;
+    --dark:   #111827;
+    --border: #e5e7eb;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Helvetica Neue', Arial, 'Hiragino Sans', 'Meiryo', sans-serif;
+    background: #f8fafc;
+    color: var(--dark);
+    line-height: 1.6;
+    padding: 24px 16px;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+
+  /* Header */
+  .header {
+    background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
+    color: white;
+    border-radius: 12px;
+    padding: 32px;
+    margin-bottom: 28px;
+    text-align: center;
+  }
+  .header h1 { font-size: 1.8em; font-weight: 700; margin-bottom: 8px; }
+  .header p  { font-size: 0.95em; opacity: 0.85; }
+  .header .badge {
+    display: inline-block;
+    background: rgba(255,255,255,0.2);
+    border: 1px solid rgba(255,255,255,0.4);
+    border-radius: 20px;
+    padding: 4px 14px;
+    font-size: 0.82em;
+    margin-top: 10px;
+  }
+
+  /* Summary cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 28px; }
+  .card {
+    background: white;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    padding: 20px;
+    text-align: center;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .card .label { font-size: 0.78em; color: var(--gray); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+  .card .value { font-size: 2em; font-weight: 700; }
+  .card .sub   { font-size: 0.82em; color: var(--gray); margin-top: 4px; }
+  .card.green .value { color: var(--green); }
+  .card.red   .value { color: var(--red); }
+  .card.blue  .value { color: var(--blue); }
+
+  /* Section */
+  .section {
+    background: white;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    margin-bottom: 24px;
+    overflow: hidden;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .section-header {
+    padding: 16px 22px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-header .icon { font-size: 1.3em; }
+  .section-header h2 { font-size: 1.05em; font-weight: 700; }
+  .section-header .meta { font-size: 0.8em; color: var(--gray); margin-left: auto; }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    background: var(--gray-bg);
+    padding: 10px 14px;
+    font-size: 0.78em;
+    font-weight: 600;
+    color: var(--gray);
+    text-align: right;
+    letter-spacing: 0.03em;
+  }
+  th:first-child { text-align: left; }
+  td {
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.88em;
+    text-align: right;
+  }
+  td:first-child { text-align: left; font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  tr.highlight td { background: #fffbeb; }
+  tr.removed td   { background: #fef2f2; opacity: 0.75; }
+  tr.total td     { background: var(--gray-bg); font-weight: 700; }
+
+  /* Pattern chip */
+  .chip {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 5px;
+    font-size: 0.78em;
+    font-weight: 600;
+  }
+  .chip.P  { background: var(--blue-bg);   color: var(--blue); }
+  .chip.B  { background: var(--red-bg);    color: var(--red);  }
+  .chip.rm { background: var(--gray-bg);   color: var(--gray); }
+
+  /* Win rate bar */
+  .bar-wrap { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+  .bar-outer { width: 80px; height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
+  .bar-inner { height: 100%; border-radius: 4px; }
+  .bar-green  { background: var(--green); }
+  .bar-yellow { background: var(--yellow); }
+  .bar-red    { background: var(--red); }
+  .bar-gray   { background: var(--gray); }
+
+  /* Z badge */
+  .zbadge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.8em;
+    font-weight: 700;
+  }
+  .zbadge.sig    { background: var(--green-bg);  color: var(--green); }
+  .zbadge.near   { background: var(--yellow-bg); color: var(--yellow); }
+  .zbadge.weak   { background: var(--blue-bg);   color: var(--blue); }
+  .zbadge.neg    { background: var(--red-bg);    color: var(--red); }
+  .zbadge.none   { background: var(--gray-bg);   color: var(--gray); }
+
+  /* Comparison */
+  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 20px; }
+  .compare-box {
+    border-radius: 8px;
+    padding: 20px;
+    text-align: center;
+  }
+  .compare-box h3 { font-size: 1em; font-weight: 700; margin-bottom: 14px; }
+  .compare-box .big { font-size: 2.2em; font-weight: 800; margin: 6px 0; }
+  .compare-box .row { display: flex; justify-content: space-between; font-size: 0.85em; padding: 3px 0; border-bottom: 1px solid rgba(0,0,0,0.06); }
+  .compare-box.box6 { background: var(--blue-bg); border: 2px solid #93c5fd; }
+  .compare-box.box5 { background: var(--green-bg); border: 2px solid #86efac; }
+  .compare-box.box6 .big { color: var(--blue); }
+  .compare-box.box5 .big { color: var(--green); }
+
+  /* Note box */
+  .note {
+    background: var(--yellow-bg);
+    border-left: 4px solid #f59e0b;
+    border-radius: 0 6px 6px 0;
+    padding: 14px 16px;
+    font-size: 0.85em;
+    margin: 16px 20px;
+  }
+  .note strong { color: var(--yellow); }
+
+  /* Explanation */
+  .explain { padding: 16px 22px; font-size: 0.82em; color: var(--gray); line-height: 1.7; }
+  .explain dt { font-weight: 700; color: var(--dark); margin-top: 8px; }
+  .explain dd { margin-left: 12px; }
+
+  /* Footer */
+  .footer { text-align: center; font-size: 0.78em; color: var(--gray); margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+  @media (max-width: 600px) {
+    .compare-grid { grid-template-columns: 1fr; }
+    .bar-outer { width: 50px; }
+    .header h1 { font-size: 1.3em; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>🃏 デュアルライン戦略 — 検証レポート</h1>
+    <p>珠盤路（中国罫線）× 大路 の2軸マッチングシグナル<br>バックテスト（過去データ）と Forward OOS（未来データ）の突き合わせ</p>
+    <div class="badge">2026-05-26 現在 ／ 作成: 仁</div>
+  </div>
+
+  <!-- Summary cards -->
+  <div class="cards">
+    <div class="card green">
+      <div class="label">Forward OOS 有効BET</div>
+      <div class="value">1,286</div>
+      <div class="sub">6パターン合計 (タイ除く)</div>
+    </div>
+    <div class="card green">
+      <div class="label">Forward 勝率</div>
+      <div class="value">53.0%</div>
+      <div class="sub">ハウスエッジ = 50.68%</div>
+    </div>
+    <div class="card green">
+      <div class="label">Forward Z値</div>
+      <div class="value">+2.18</div>
+      <div class="sub">有意水準 1.96 超え ✓</div>
+    </div>
+    <div class="card blue">
+      <div class="label">仮想損益 ($100/BET)</div>
+      <div class="value">+$6,160</div>
+      <div class="sub">1,405 シグナル解決済</div>
+    </div>
+  </div>
+
+  <!-- Section 1: Backtest -->
+  <div class="section">
+    <div class="section-header">
+      <span class="icon">📊</span>
+      <h2>バックテスト結果（過去データ）</h2>
+      <span class="meta">64,779 シュー ／ DB: analytics_pragmatic.sqlite3</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>パターン (珠盤路 ｜ 大路 ｜ 予想)</th>
+          <th>BET数</th>
+          <th>$/BET</th>
+          <th>Z値</th>
+          <th>判定</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="chip P">P</span>&nbsp; sansan ｜ telecho ｜ Player</td>
+          <td>177</td>
+          <td style="color:var(--green);font-weight:700">+$0.130</td>
+          <td><span class="zbadge sig">Z=+1.99 ★</span></td>
+          <td style="color:var(--green)">✓ 採用</td>
+        </tr>
+        <tr>
+          <td><span class="chip B">B</span>&nbsp; niconico ｜ niconico ｜ Banker</td>
+          <td>263</td>
+          <td style="color:var(--green);font-weight:700">+$0.097</td>
+          <td><span class="zbadge near">Z=+1.92 ★</span></td>
+          <td style="color:var(--green)">✓ 採用</td>
+        </tr>
+        <tr>
+          <td><span class="chip P">P</span>&nbsp; telecho ｜ nikoichi ｜ Player</td>
+          <td>1,672</td>
+          <td style="color:var(--green);font-weight:700">+$0.028</td>
+          <td><span class="zbadge near">Z=+1.74 ★</span></td>
+          <td style="color:var(--green)">✓ 採用</td>
+        </tr>
+        <tr class="highlight">
+          <td><span class="chip rm">P</span>&nbsp; telecho ｜ niconico ｜ Player</td>
+          <td>766</td>
+          <td style="color:var(--yellow);font-weight:700">+$0.033</td>
+          <td><span class="zbadge weak">Z=+1.31</span></td>
+          <td style="color:var(--yellow)">⚠ 採用 (弱)</td>
+        </tr>
+        <tr>
+          <td><span class="chip B">B</span>&nbsp; telecho ｜ telecho ｜ Banker</td>
+          <td>2,574</td>
+          <td style="color:var(--green);font-weight:700">+$0.014</td>
+          <td><span class="zbadge weak">Z=+1.36</span></td>
+          <td style="color:var(--green)">✓ 採用</td>
+        </tr>
+        <tr>
+          <td><span class="chip P">P</span>&nbsp; niconico ｜ dragon ｜ Player</td>
+          <td>1,120</td>
+          <td style="color:var(--green);font-weight:700">+$0.014</td>
+          <td><span class="zbadge none">Z=+0.94</span></td>
+          <td style="color:var(--green)">✓ 採用</td>
+        </tr>
+        <tr class="total">
+          <td>合計（6パターン）</td>
+          <td>6,572</td>
+          <td style="color:var(--green)">+$0.026</td>
+          <td><span class="zbadge near">全体 Z ≈+3.0</span></td>
+          <td style="color:var(--green)">✓ 採用</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="note">
+      <strong>⚠ 注意:</strong>
+      telecho｜niconico｜P はバックテストでもZ=+1.31と6パターン中最も根拠が弱い。
+      有意水準(Z=1.96)には届いていない。Forward OOS での継続観察が必要。
+    </div>
+  </div>
+
+  <!-- Section 2: Forward OOS -->
+  <div class="section">
+    <div class="section-header">
+      <span class="icon">🚀</span>
+      <h2>Forward OOS 結果（未来データ・リアル検証）</h2>
+      <span class="meta">2026-05-26 現在 ／ 1,405 シグナル解決済</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>パターン</th>
+          <th>有効BET</th>
+          <th>勝/負/タイ</th>
+          <th>勝率</th>
+          <th>$/BET</th>
+          <th>Z値</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="chip P">P</span>&nbsp; sansan ｜ telecho ｜ Player</td>
+          <td>41</td>
+          <td>29 / 12 / 4</td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-outer"><div class="bar-inner bar-green" style="width:70.7%"></div></div>
+              <span style="color:var(--green);font-weight:700">70.7%</span>
+            </div>
+          </td>
+          <td style="color:var(--green);font-weight:700">+$0.415</td>
+          <td><span class="zbadge sig">Z=+2.66 ★★</span></td>
+        </tr>
+        <tr>
+          <td><span class="chip B">B</span>&nbsp; telecho ｜ telecho ｜ Banker</td>
+          <td>517</td>
+          <td>281 / 236 / 51</td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-outer"><div class="bar-inner bar-green" style="width:54.4%"></div></div>
+              <span style="color:var(--green);font-weight:700">54.4%</span>
+            </div>
+          </td>
+          <td style="color:var(--green);font-weight:700">+$0.087</td>
+          <td><span class="zbadge near">Z=+1.98 ★</span></td>
+        </tr>
+        <tr>
+          <td><span class="chip P">P</span>&nbsp; telecho ｜ nikoichi ｜ Player</td>
+          <td>104</td>
+          <td>57 / 47 / 9</td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-outer"><div class="bar-inner bar-green" style="width:54.8%"></div></div>
+              <span style="color:var(--green);font-weight:700">54.8%</span>
+            </div>
+          </td>
+          <td style="color:var(--green);font-weight:700">+$0.096</td>
+          <td><span class="zbadge none">Z=+0.98</span></td>
+        </tr>
+        <tr>
+          <td><span class="chip B">B</span>&nbsp; niconico ｜ niconico ｜ Banker</td>
+          <td>70</td>
+          <td>39 / 31 / 4</td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-outer"><div class="bar-inner bar-green" style="width:55.7%"></div></div>
+              <span style="color:var(--green);font-weight:700">55.7%</span>
+            </div>
+          </td>
+          <td style="color:var(--green);font-weight:700">+$0.114</td>
+          <td><span class="zbadge none">Z=+0.96</span></td>
+        </tr>
+        <tr>
+          <td><span class="chip P">P</span>&nbsp; niconico ｜ dragon ｜ Player</td>
+          <td>306</td>
+          <td>155 / 151 / 32</td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-outer"><div class="bar-inner bar-yellow" style="width:50.7%"></div></div>
+              <span style="color:var(--gray)">50.7%</span>
+            </div>
+          </td>
+          <td style="color:var(--gray)">+$0.013</td>
+          <td><span class="zbadge none">Z=+0.23</span></td>
+        </tr>
+        <tr class="highlight">
+          <td><span class="chip rm">P</span>&nbsp; telecho ｜ niconico ｜ Player &nbsp;<span style="font-size:0.75em;color:var(--red)">← 要検討</span></td>
+          <td>248</td>
+          <td>121 / 127 / 19</td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-outer"><div class="bar-inner bar-red" style="width:48.8%"></div></div>
+              <span style="color:var(--red);font-weight:700">48.8%</span>
+            </div>
+          </td>
+          <td style="color:var(--red);font-weight:700">−$0.024</td>
+          <td><span class="zbadge neg">Z=−0.38</span></td>
+        </tr>
+        <tr class="total">
+          <td>合計（6パターン）</td>
+          <td>1,286</td>
+          <td>682 / 604 / 119</td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-outer"><div class="bar-inner bar-green" style="width:53%"></div></div>
+              <span style="color:var(--green);font-weight:700">53.0%</span>
+            </div>
+          </td>
+          <td style="color:var(--green);font-weight:700">+$0.061</td>
+          <td><span class="zbadge near">Z=+2.18 ★</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Section 3: 6P vs 5P comparison -->
+  <div class="section">
+    <div class="section-header">
+      <span class="icon">⚖️</span>
+      <h2>もし telecho｜niconico｜P を外したら？（6パターン vs 5パターン比較）</h2>
+    </div>
+    <div class="compare-grid">
+      <div class="compare-box box6">
+        <h3>🔵 現行: 6パターン</h3>
+        <div class="big">Z = +2.18</div>
+        <div class="row"><span>有効BET</span><span><strong>1,286</strong></span></div>
+        <div class="row"><span>勝率</span><span><strong>53.0%</strong></span></div>
+        <div class="row"><span>$/BET</span><span><strong>+$0.061</strong></span></div>
+        <div class="row"><span>仮想損益</span><span><strong>+$6,160</strong></span></div>
+      </div>
+      <div class="compare-box box5">
+        <h3>🟢 案: 5パターン (要検討パターン除外)</h3>
+        <div class="big">Z = +2.61</div>
+        <div class="row"><span>有効BET</span><span><strong>1,038</strong></span></div>
+        <div class="row"><span>勝率</span><span><strong>54.1%</strong></span></div>
+        <div class="row"><span>$/BET</span><span><strong>+$0.081</strong></span></div>
+        <div class="row"><span>仮想損益</span><span><strong>+$8,400</strong></span></div>
+      </div>
+    </div>
+    <div class="note" style="margin-bottom:16px">
+      <strong>読み方:</strong>
+      telecho｜niconico｜P を外すと BET数は減るが、勝率・$/BET・Z値が全て改善する。
+      ただし除外判断は「現在のサンプルだけ」の観察。友人の感覚や追加データも踏まえて最終判断すること。
+    </div>
+  </div>
+
+  <!-- Section 4: パターン説明 -->
+  <div class="section">
+    <div class="section-header">
+      <span class="icon">📖</span>
+      <h2>パターン用語説明</h2>
+    </div>
+    <dl class="explain">
+      <dt>珠盤路（中国罫線）のパターン</dt>
+      <dd><strong>テレコ (telecho)</strong> — 行が P/B の完全交互。次は逆を予想</dd>
+      <dd><strong>ニコニコ (niconico)</strong> — 行が PP/BB の2個ずつ交互。次もパターン継続を予想</dd>
+      <dd><strong>サンサン (sansan)</strong> — 行が PPPBB または BBBPP の形。3連3連を完成させる方向を予想</dd>
+      <dt style="margin-top:12px">大路のパターン</dt>
+      <dd><strong>テレコ (telecho)</strong> — 直近4手以上が1個ずつ交互</dd>
+      <dd><strong>ニコニコ (niconico)</strong> — 直近8手以上が2個ずつ交互</dd>
+      <dd><strong>ニコイチ (nikoichi)</strong> — 直近6手以上が2-1の繰り返し</dd>
+      <dd><strong>ドラゴン (dragon)</strong> — 最新列が4連以上</dd>
+      <dt style="margin-top:12px">統計</dt>
+      <dd><strong>Z値</strong> — 統計的有意さの指標。1.96以上で95%信頼水準（偶然ではない可能性が高い）</dd>
+      <dd><strong>$/BET</strong> — 1BETあたりの期待損益。+$0.05 = 1回BETするたびに平均5セントのプラス</dd>
+      <dd><strong>Forward OOS</strong> — バックテストに使っていない「未来のデータ」での実際の成績。これが本当の実力</dd>
+    </dl>
+  </div>
+
+  <div class="footer">
+    データソース: VPS /opt/laplace2/dual_line_pragmatic_state.json ／ analytics_pragmatic.sqlite3 (64,779 shoes)<br>
+    バックテスト実施: 2026-05-20 ／ Forward OOS 開始: 2026-05-18 ／ レポート生成: 2026-05-26
+  </div>
+
+</div>
+</body>
+</html>

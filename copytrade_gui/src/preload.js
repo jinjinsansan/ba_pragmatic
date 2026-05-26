@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('valhalla', {
   // Bot control
   startBot: (config) => ipcRenderer.invoke('start-bot', config),
   stopBot: () => ipcRenderer.invoke('stop-bot'),
+  manualAssistCommand: (payload) => ipcRenderer.invoke('manual-assist-command', payload),
 
   // Auth / billing
   authSignIn: (email, password) => ipcRenderer.invoke('auth-signin', { email, password }),

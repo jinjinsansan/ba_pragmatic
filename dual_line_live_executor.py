@@ -455,6 +455,51 @@ async (args) => {
       sc.dispatchEvent(ev);
     } catch(_) {}
   }
+  function setScrollTop(sc, top) {
+    if (!sc) return;
+    try {
+      const span = Math.max(0, (sc.scrollHeight || 0) - (sc.clientHeight || 0));
+      sc.scrollTop = Math.max(0, Math.min(span, Math.floor(top)));
+    } catch(_) {}
+    try {
+      const r = sc.getBoundingClientRect ? sc.getBoundingClientRect() : {left:0, top:0, width:0, height:0};
+      const ev = new WheelEvent('wheel', {deltaY: 1, bubbles:true, cancelable:true, composed:true, clientX:r.left+r.width/2, clientY:r.top+r.height/2});
+      sc.dispatchEvent(ev);
+    } catch(_) {}
+  }
+  function scanPositions(sc, steps) {
+    if (!sc) return [0];
+    let span = 0;
+    let cur = 0;
+    try {
+      span = Math.max(0, (sc.scrollHeight || 0) - (sc.clientHeight || 0));
+      cur = Math.max(0, Math.min(span, Number(sc.scrollTop || 0)));
+    } catch(_) {}
+    if (span <= 0) return [0];
+    const n = Math.max(4, Number(steps) || 16);
+    const positions = [];
+    const add = (v) => {
+      const x = Math.max(0, Math.min(span, Math.floor(v)));
+      if (!positions.some((p) => Math.abs(p - x) < 8)) positions.push(x);
+    };
+    add(cur);
+    // Sweep from the current area to the bottom first; preposition normally
+    // follows the latest visible lobby area, so this keeps nearby targets fast.
+    const startRatio = cur / Math.max(1, span);
+    for (let i = 1; i <= n; i++) {
+      const ratio = startRatio + (1 - startRatio) * (i / n);
+      add(span * ratio);
+    }
+    // Then cover the top-to-current range. This makes qpid search deterministic
+    // for virtualized lists whose target tile is not mounted yet.
+    for (let i = 0; i <= n; i++) {
+      const ratio = startRatio * (i / n);
+      add(span * ratio);
+    }
+    add(span);
+    add(0);
+    return positions;
+  }
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const initScroller = pickScroller();
   if (initScroller && hintScrollTop >= 0) {
@@ -477,17 +522,46 @@ async (args) => {
   }
 
   const cachedScroller = initScroller || pickScroller();
-  for (let i = 0; i < maxScroll && Date.now() < deadline; i++) {
-    const t = findTarget();
-    if (t && t.el) {
-      try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
-      if (click) clickEl(t.el);
-      return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
+  if (qpid) {
+    const positions = scanPositions(cachedScroller, maxScroll);
+    for (let i = 0; i < positions.length && Date.now() < deadline; i++) {
+      setScrollTop(cachedScroller, positions[i]);
+      await sleep(90);
+      const t = findTarget();
+      if (t && t.el) {
+        try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+        if (click) clickEl(t.el);
+        return {
+          ok:true, found:true, clicked: !!click,
+          matchIndex: Number(t.idx), totalNodes: Number(t.total),
+          scroll: scrollMeta(cachedScroller), diag: diagOf(t.el),
+          scanMode: 'absolute_qpid', scanStep: i, scanTotal: positions.length
+        };
+      }
     }
-    scrollStep(cachedScroller, true);
-    await sleep(70);
+  } else {
+    for (let i = 0; i < maxScroll && Date.now() < deadline; i++) {
+      const t = findTarget();
+      if (t && t.el) {
+        try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+        if (click) clickEl(t.el);
+        return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
+      }
+      scrollStep(cachedScroller, true);
+      await sleep(70);
+    }
+    for (let i = 0; i < maxScroll && Date.now() < deadline; i++) {
+      const t = findTarget();
+      if (t && t.el) {
+        try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+        if (click) clickEl(t.el);
+        return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
+      }
+      scrollStep(cachedScroller, false);
+      await sleep(70);
+    }
   }
-  for (let i = 0; i < maxScroll && Date.now() < deadline; i++) {
+  for (let i = 0; i < Math.max(3, Math.floor(maxScroll / 4)) && Date.now() < deadline; i++) {
     const t = findTarget();
     if (t && t.el) {
       try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
@@ -1474,7 +1548,7 @@ class LiveBetExecutor:
         # the target disappear during the short betting window.
         self._ensure_multi_area(force=False)
         preposition_click = os.getenv("BACOPY_PREPOSITION_CLICK_TILE", "1") != "0"
-        click = intent in ("prepare", "decision", "bet") or (intent == "preposition" and preposition_click)
+        click = intent in ("prepare", "decision", "bet", "manual_assist") or (intent == "preposition" and preposition_click)
         side = str(req.get("side") or "").upper()
         candidates = [x for x in [table_name, table_id, qpid] if x]
         # 英日テーブル名の差分を吸収（例: "Baccarat 5" <-> "バカラ 5"）
@@ -1612,9 +1686,9 @@ class LiveBetExecutor:
             "maxScroll": int(
                 os.getenv(
                     "BACOPY_MULTI_PREPOSITION_SCROLL_MAX" if intent == "preposition" else "BACOPY_MULTI_SCROLL_MAX",
-                    "18" if intent == "preposition" else "18",
+                    "48" if intent == "preposition" else "18",
                 )
-                or ("18" if intent == "preposition" else "18")
+                or ("48" if intent == "preposition" else "18")
             ),
             "candidates": candidates,
             "hintIndex": -1,
@@ -1624,9 +1698,9 @@ class LiveBetExecutor:
             "maxMs": int(
                 os.getenv(
                     "BACOPY_MULTI_PREPOSITION_FOCUS_MS" if intent == "preposition" else "BACOPY_MULTI_FOCUS_MS",
-                    "6000" if intent == "preposition" else "12000",
+                    "9000" if intent == "preposition" else "12000",
                 )
-                or ("6000" if intent == "preposition" else "12000")
+                or ("9000" if intent == "preposition" else "12000")
             ),
         }
         cache_key = str(qpid or table_id or "").strip()
@@ -1828,18 +1902,31 @@ class LiveBetExecutor:
                 return
         if not found_tab:
             logger.warning(f"[MULTI-AREA] multi-play tab NOT FOUND in page — may be on wrong page or UI changed")
-            allow_fallback_join = os.getenv("BACOPY_MULTI_ALLOW_BLOCKING_FALLBACK_JOIN", "0").strip() == "1"
+            allow_fallback_join = os.getenv("BACOPY_MULTI_ALLOW_BLOCKING_FALLBACK_JOIN", "1").strip() != "0"
+            try:
+                busy = bool(
+                    self._switch_request
+                    or self._pending_bet
+                    or self._switch_in_progress
+                    or self.is_bet_in_flight()
+                )
+            except Exception:
+                busy = bool(self._switch_request or self._pending_bet or self._switch_in_progress)
             should_fallback_join = bool(
                 force or (
                     allow_fallback_join
                     and self._multi_lobby_mode
                     and not self._is_multi_table_ws
+                    and not busy
                 )
             )
+            if busy and not force and not self._is_multi_table_ws:
+                logger.warning("[MULTI-AREA] fallback join deferred while switch/BET is active")
+                return
             if not should_fallback_join and not force and not self._is_multi_table_ws:
                 logger.warning(
                     "[MULTI-AREA] skip blocking fallback join; keep owner tick alive "
-                    "(set BACOPY_MULTI_ALLOW_BLOCKING_FALLBACK_JOIN=1 to re-enable)"
+                    "(set BACOPY_MULTI_ALLOW_BLOCKING_FALLBACK_JOIN=0 to disable)"
                 )
                 return
             fallback_cooldown = float(os.getenv("BACOPY_MULTI_FALLBACK_JOIN_COOLDOWN_SEC", "45") or 45)
@@ -1860,7 +1947,7 @@ class LiveBetExecutor:
                     _join_table(
                         page,
                         table_substr="BACCARAT_MULTIPLAY",
-                        auto_click_wait_sec=int(os.getenv("BACOPY_MULTI_JOIN_WAIT_SEC", "25") or "25"),
+                        auto_click_wait_sec=int(os.getenv("BACOPY_MULTI_JOIN_WAIT_SEC", "18") or "18"),
                         state=None,
                         on_tick=None,
                         is_initial=False,
@@ -2471,20 +2558,33 @@ class LiveBetExecutor:
                     req = self._switch_request or {}
                     req_target = str(req.get("qpid") or req.get("table_id") or "")
                     req_intent = str(req.get("intent") or "").lower()
-                    if req_target == pending_target_first and req_intent in ("decision", "prepare", "preposition"):
-                        logger.info(
-                            f"[TICK] clear queued {req_intent} switch because exact BET window is open: "
-                            f"table={pending_target_first}"
-                        )
-                        self._switch_request = None
                     st_first = self._table_states.get(pending_target_first) or {}
                     gid_first = str(st_first.get("bets_open_game_id") or "")
-                    if gid_first:
+                    target_ready = (
+                        self._prepared_table_id == pending_target_first
+                        or self.is_table_in_antenna_zone(
+                            pending_target_first,
+                            str((self._pending_bet or {}).get("side") or ""),
+                        )
+                    )
+                    if gid_first and target_ready:
+                        if req_target == pending_target_first and req_intent in ("decision", "prepare", "preposition"):
+                            logger.info(
+                                f"[TICK] clear queued {req_intent} switch because target is ready and exact BET window is open: "
+                                f"table={pending_target_first}"
+                            )
+                            self._switch_request = None
                         logger.info(
                             f"[TICK] owner-thread priority BET before switch: "
                             f"table={pending_target_first} game={gid_first}"
                         )
                         self._try_execute_bet(gid_first, table_id=pending_target_first)
+                    elif gid_first:
+                        logger.info(
+                            f"[TICK] exact BET window open but target not ready; keep switch first: "
+                            f"table={pending_target_first} prepared={self._prepared_table_id or '-'} "
+                            f"queued={req_intent or '-'}"
+                        )
             except Exception as ex:
                 logger.warning(f"[TICK] priority pending BET failed: {ex}")
 
@@ -3004,7 +3104,7 @@ class LiveBetExecutor:
                         self._try_execute_bet(gid, table_id=target)
                 elif pending_target == target and pending_amount > 0:
                     self._preselect_first_chip(target, pending_amount)
-                elif intent == "preposition" and preselect_amount > 0:
+                elif intent in ("preposition", "manual_assist") and preselect_amount > 0:
                     self._preselect_first_chip(target, preselect_amount)
             return
 
@@ -3244,12 +3344,6 @@ class LiveBetExecutor:
             prepared = str(self._prepared_table_id or "")
             active_window = self._is_table_bet_window_open(bet_table_id)
             antenna_ok = self.is_table_in_antenna_zone(bet_table_id, str(side or ""))
-            if active_window and prepared != bet_table_id and not antenna_ok:
-                logger.info(
-                    f"[TRY-BET] exact BET window is open; skip slow prepare focus "
-                    f"and click directly table={bet_table_id} prepared={prepared or '-'}"
-                )
-                antenna_ok = True
             if prepared != bet_table_id and not antenna_ok:
                 age_before_focus = self._bet_signal_age(bet)
                 max_age_before_focus = self._max_bet_signal_age_sec()
@@ -4469,9 +4563,9 @@ class LiveBetExecutor:
 
         def wait_for_matching_tile(click_index: int) -> bool:
             wait_sec = float(os.getenv("BACOPY_TILE_GAME_ID_WAIT_SEC", "8.0") or 8.0)
-            refocus_after = float(os.getenv("BACOPY_TILE_GAME_ID_REFOCUS_AFTER_SEC", "2.0") or 2.0)
-            refocus_max = int(os.getenv("BACOPY_TILE_GAME_ID_REFOCUS_MAX", "2") or 2)
-            decoy_after = float(os.getenv("BACOPY_TILE_GAME_ID_DECOY_AFTER_SEC", "4.5") or 4.5)
+            refocus_after = float(os.getenv("BACOPY_TILE_GAME_ID_REFOCUS_AFTER_SEC", "3.0") or 3.0)
+            refocus_max = int(os.getenv("BACOPY_TILE_GAME_ID_REFOCUS_MAX", "0") or 0)
+            decoy_after = float(os.getenv("BACOPY_TILE_GAME_ID_DECOY_AFTER_SEC", "2.0") or 2.0)
             decoy_enabled = os.getenv("BACOPY_TILE_GAME_ID_DECOY", "1") != "0"
             started_at = time.time()
             deadline = started_at + max(0.0, wait_sec)
@@ -4517,6 +4611,20 @@ class LiveBetExecutor:
                 # click while currentGameId != expectedGameId.
                 elapsed = time.time() - started_at
                 since_recovery = time.time() - last_recovery_at if last_recovery_at else 9999.0
+                if decoy_enabled and not decoy_done and elapsed >= decoy_after and since_recovery >= 1.0:
+                    try:
+                        logger.info(
+                            f"[CLICK-BET] decoy resubscribe: "
+                            f"qpid={target_qpid!r} attempt={attempt} elapsed={elapsed:.1f}s "
+                            f"expected={expected_game_id!r} "
+                            f"current={(self._last_click_bet_error or {}).get('currentGameId') or '-'}"
+                        )
+                        self._decoy_click_to_resubscribe(frame, target_qpid, target_table_name)
+                    except Exception as ex:
+                        logger.debug(f"[CLICK-BET] decoy resubscribe failed: {ex}")
+                    decoy_done = True
+                    last_recovery_at = time.time()
+                    continue
                 if refocus_count < refocus_max and elapsed >= refocus_after and since_recovery >= refocus_after:
                     try:
                         logger.info(
@@ -4537,19 +4645,6 @@ class LiveBetExecutor:
                     last_recovery_at = time.time()
                     refocus_count += 1
                     continue
-                if decoy_enabled and not decoy_done and refocus_count >= refocus_max and elapsed >= decoy_after and since_recovery >= 1.0:
-                    try:
-                        logger.info(
-                            f"[CLICK-BET] decoy resubscribe: "
-                            f"qpid={target_qpid!r} attempt={attempt} elapsed={elapsed:.1f}s "
-                            f"expected={expected_game_id!r} "
-                            f"current={(self._last_click_bet_error or {}).get('currentGameId') or '-'}"
-                        )
-                        self._decoy_click_to_resubscribe(frame, target_qpid, target_table_name)
-                    except Exception as ex:
-                        logger.debug(f"[CLICK-BET] decoy resubscribe failed: {ex}")
-                    decoy_done = True
-                    last_recovery_at = time.time()
             logger.warning(
                 f"[CLICK-BET] tile game-id did not catch up: qpid={target_qpid!r} "
                 f"expected={expected_game_id!r} refocus={refocus_count} "
@@ -5035,7 +5130,7 @@ class LiveBetExecutor:
             "steps_before": int(steps_before or 0),
             "requested_at": time.time(),
         }
-        priorities = {"preposition": 10, "prepare": 20, "decision": 30, "bet": 30, "fallback_join": 40}
+        priorities = {"preposition": 10, "prepare": 20, "manual_assist": 25, "decision": 30, "bet": 30, "fallback_join": 40}
         new_intent = str(new_req["intent"])
         new_target = str(new_req["qpid"] or new_req["table_id"])
         now = time.time()

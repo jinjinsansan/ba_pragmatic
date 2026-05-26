@@ -328,7 +328,7 @@ function startWatchdog() {
     watchdogProcess = spawn(py, ['-X', 'utf8', '-u', script], {
       cwd: root,
       env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
     console.log('[Main] watchdog spawned pid=' + watchdogProcess.pid);
@@ -655,7 +655,10 @@ function buildSpawnSpec(config) {
   const envFile = loadDotEnv();
   const childEnv = { ...process.env, ...envFile, PYTHONIOENCODING: 'utf-8' };
 
-  const isDualLine = (config && config.mode === 'dual_line');
+  const modeName = config && config.mode;
+  const isDualLineAssist = modeName === 'dual_line_assist' || modeName === 'dual_line_manual';
+  const isDualLineAuto = modeName === 'dual_line' || modeName === 'dual_line_auto';
+  const isDualLine = isDualLineAssist || isDualLineAuto;
 
   // dual-line モード: dev 時はスクリプトパスを上書き
   if (isDualLine && engine.mode === 'dev') {
@@ -717,6 +720,7 @@ function buildSpawnSpec(config) {
       childEnv.BACOPY_MULTI_DIAGNOSTIC_ONLY = '0';
     }
     if (config && config.live) args.push('--live');
+    if (isDualLineAssist) args.push('--manual-assist');
     if (config && config.no_v2_filter) args.push('--no-v2-filter');
     if (config && config.money_mode) args.push('--money-mode', String(config.money_mode));
     // money_unit 未設定時は chip_base にフォールバック
@@ -828,6 +832,13 @@ function startBot(config) {
         _doStartBot(cfg, generation);
       }
     }
+    setTimeout(() => {
+      if (!started && generation === _botGeneration) {
+        started = true;
+        console.log('[Main] old engine exit not observed; starting replacement');
+        _doStartBot(cfg, generation);
+      }
+    }, 2500);
     return;
   }
   _doStartBot(cfg, generation);
@@ -876,18 +887,21 @@ function _doStartBot(config, generation = _botGeneration) {
   if (config && config.resume === false) {
     try {
       const profileDir = path.join(app.getPath('userData'), 'profiles', 'executor_pragmatic');
-      const stateFile = path.join(profileDir, 'seq7_state.json');
-      const lastTableFile = path.join(profileDir, 'last_table.json');
-      if (fs.existsSync(stateFile)) {
-        fs.unlinkSync(stateFile);
-        console.log('[Main] NEW SESSION — removed seq7_state.json');
-      }
-      if (fs.existsSync(lastTableFile)) {
-        fs.unlinkSync(lastTableFile);
-        console.log('[Main] NEW SESSION — removed last_table.json');
+      const resetFiles = [
+        'seq7_state.json',
+        'last_table.json',
+        'dual_line_pragmatic_state.json',
+        'dual_line_money_state.json',
+      ];
+      for (const name of resetFiles) {
+        const p = path.join(profileDir, name);
+        if (fs.existsSync(p)) {
+          fs.unlinkSync(p);
+          console.log(`[Main] NEW SESSION — removed ${name}`);
+        }
       }
     } catch (e) {
-      console.warn('[Main] seq7 state reset failed:', e.message);
+      console.warn('[Main] new session state reset failed:', e.message);
     }
   }
   if (autoRestartTimer) {
@@ -981,7 +995,9 @@ function _doStartBot(config, generation = _botGeneration) {
 
       const ranDuration = Date.now() - thisSpawnAt;
       if (!userInitiatedStop && lastStartConfig) {
-        const isDualLine = lastStartConfig && lastStartConfig.mode === 'dual_line';
+        const lastMode = lastStartConfig && lastStartConfig.mode;
+        const isDualLine = lastMode === 'dual_line' || lastMode === 'dual_line_auto'
+          || lastMode === 'dual_line_assist' || lastMode === 'dual_line_manual';
         const envNow = loadDotEnv();
         const dualLineAutoRestart = String(envNow.BACOPY_DUAL_LINE_AUTO_RESTART || '0').trim() === '1';
         if (isDualLine && !dualLineAutoRestart) {
@@ -1464,6 +1480,19 @@ app.whenReady().then(() => {
     console.log('[Main] stop-bot requested');
     stopBot();
     return { ok: true };
+  });
+
+  ipcMain.handle('manual-assist-command', (_evt, payload) => {
+    try {
+      if (!botProcess || !botProcess.stdin || botProcess.killed) {
+        return { ok: false, error: 'engine_not_running' };
+      }
+      const msg = { ...(payload || {}), type: 'manual_assist_command' };
+      botProcess.stdin.write(JSON.stringify(msg) + '\n', 'utf-8');
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : String(e) };
+    }
   });
 
   ipcMain.handle('auth-signin', async (_evt, payload) => {

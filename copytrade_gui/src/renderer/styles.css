@@ -514,6 +514,155 @@ html[data-variant="user"] .os-tag { display: none !important; }
 }
 
 /* ============================================================
+   DUAL-LINE MANUAL ASSIST
+   ============================================================ */
+.manual-assist-panel {
+  border-color: rgba(0,255,136,0.22) !important;
+  background: rgba(7, 18, 22, 0.88) !important;
+}
+.manual-assist-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.manual-assist-title {
+  color: rgba(0,255,136,0.78);
+  margin-bottom: 4px;
+}
+.manual-assist-summary {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.manual-assist-mode {
+  font-family: var(--font-hud);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: var(--win);
+  border: 1px solid rgba(0,255,136,0.35);
+  background: rgba(0,255,136,0.08);
+  border-radius: 6px;
+  padding: 5px 7px;
+}
+.manual-assist-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 230px;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0,255,136,0.18) transparent;
+}
+.manual-assist-empty {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px 0;
+}
+.manual-assist-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 9px;
+  align-items: center;
+  min-height: 58px;
+  padding: 9px;
+  border: 1px solid rgba(0,229,255,0.14);
+  border-radius: 8px;
+  background: rgba(0,0,0,0.24);
+}
+.manual-assist-item.now {
+  border-color: rgba(0,255,136,0.58);
+  background: rgba(0,255,136,0.10);
+  box-shadow: 0 0 18px rgba(0,255,136,0.12);
+}
+.manual-assist-item.ready {
+  border-color: rgba(255,204,0,0.32);
+  background: rgba(255,204,0,0.06);
+}
+.manual-assist-item.taken {
+  border-color: rgba(0,229,255,0.46);
+  background: rgba(0,229,255,0.09);
+}
+.manual-assist-item.expired,
+.manual-assist-item.missed {
+  opacity: 0.62;
+  border-color: rgba(120,136,160,0.24);
+}
+.manual-status {
+  min-width: 52px;
+  text-align: center;
+  font-family: var(--font-hud);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 5px 6px;
+  border-radius: 6px;
+  color: var(--text);
+  background: rgba(255,255,255,0.07);
+}
+.manual-assist-item.now .manual-status { color: #00130a; background: var(--win); }
+.manual-assist-item.ready .manual-status { color: #171000; background: var(--tie); }
+.manual-assist-item.taken .manual-status { color: #001018; background: var(--accent); }
+.manual-main {
+  min-width: 0;
+}
+.manual-table {
+  font-family: var(--font-hud);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.manual-meta {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.manual-side {
+  font-weight: 800;
+}
+.manual-side.p { color: #4ea0ff; }
+.manual-side.b { color: #ff5570; }
+.manual-item-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.manual-mini-btn,
+.manual-result-btn {
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+  color: var(--text);
+  border-radius: 6px;
+  font-family: var(--font-hud);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.manual-mini-btn:disabled,
+.manual-result-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.manual-result-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+.manual-result-btn.win:not(:disabled) { border-color: rgba(0,255,136,0.48); color: var(--win); }
+.manual-result-btn.lose:not(:disabled) { border-color: rgba(255,51,102,0.48); color: var(--lose); }
+.manual-result-btn.tie:not(:disabled) { border-color: rgba(255,204,0,0.48); color: var(--tie); }
+
+/* ============================================================
    DAILY P&L
    ============================================================ */
 .daily-section { padding: 14px 16px; }

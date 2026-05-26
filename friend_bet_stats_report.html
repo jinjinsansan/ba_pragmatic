@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>友人 実運用 BET 統計レポート (2026-04-23〜05-17)</title>
+<style>
+:root{
+  --green:#16a34a;--green-bg:#dcfce7;--green-light:#f0fdf4;
+  --red:#dc2626;--red-bg:#fee2e2;--red-light:#fff5f5;
+  --yellow:#ca8a04;--yellow-bg:#fef9c3;
+  --blue:#2563eb;--blue-bg:#dbeafe;
+  --gray:#6b7280;--gray-bg:#f3f4f6;
+  --dark:#111827;--border:#e5e7eb;
+  --banker:#7c3aed;--banker-bg:#ede9fe;
+  --player:#0891b2;--player-bg:#cffafe;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Helvetica Neue',Arial,'Hiragino Sans',Meiryo,sans-serif;
+  background:#f8fafc;color:var(--dark);line-height:1.6;padding:24px 16px;}
+.container{max-width:960px;margin:0 auto;}
+
+/* Header */
+.header{background:linear-gradient(135deg,#1e3a5f,#0891b2);color:white;
+  border-radius:12px;padding:28px 32px;margin-bottom:20px;text-align:center;}
+.header h1{font-size:1.7em;font-weight:700;margin-bottom:6px;}
+.header p{font-size:.9em;opacity:.85;}
+.badge{display:inline-block;background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);
+  border-radius:20px;padding:4px 14px;font-size:.82em;margin-top:8px;}
+
+/* Cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px;}
+.card{background:white;border-radius:10px;border:1px solid var(--border);padding:16px;
+  text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.06);}
+.card .label{font-size:.72em;color:var(--gray);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;}
+.card .value{font-size:1.8em;font-weight:700;}
+.card .sub{font-size:.78em;color:var(--gray);margin-top:3px;}
+.card.green .value{color:var(--green);}
+.card.red   .value{color:var(--red);}
+.card.blue  .value{color:var(--blue);}
+.card.gray  .value{color:var(--gray);}
+.card.banker .value{color:var(--banker);}
+.card.player .value{color:var(--player);}
+
+/* Section */
+.section{background:white;border-radius:10px;border:1px solid var(--border);
+  margin-bottom:18px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06);}
+.section-header{padding:13px 20px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:8px;}
+.section-header h2{font-size:1em;font-weight:700;}
+.section-header .meta{font-size:.78em;color:var(--gray);margin-left:auto;}
+.section-body{padding:16px 20px;}
+
+/* Win rate gauge */
+.gauge-wrap{display:flex;align-items:center;gap:14px;margin:12px 0;}
+.gauge-label{font-size:.82em;color:var(--gray);width:120px;text-align:right;flex-shrink:0;}
+.gauge-bar-outer{flex:1;height:22px;background:#f1f5f9;border-radius:11px;overflow:visible;position:relative;}
+.gauge-bar-inner{height:22px;border-radius:11px;display:flex;align-items:center;justify-content:flex-end;
+  padding-right:8px;font-size:.75em;font-weight:700;color:white;min-width:40px;position:relative;transition:width .3s;}
+.gauge-marker{position:absolute;top:-4px;bottom:-4px;width:2px;background:#94a3b8;border-radius:1px;}
+.gauge-marker::after{content:attr(data-label);position:absolute;top:-18px;left:50%;transform:translateX(-50%);
+  font-size:.68em;color:var(--gray);white-space:nowrap;}
+.gauge-val{font-size:.9em;font-weight:700;width:60px;flex-shrink:0;}
+
+/* Daily chart */
+.daily-chart{padding:0 20px 16px;}
+.day-row{display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:.78em;}
+.day-label{width:78px;color:var(--gray);flex-shrink:0;text-align:right;}
+.day-bar-outer{flex:1;height:16px;background:#f1f5f9;border-radius:8px;overflow:hidden;position:relative;}
+.day-bar-inner{height:16px;border-radius:8px;display:flex;align-items:center;padding-left:6px;
+  font-size:.72em;font-weight:600;color:white;}
+.day-bets{width:50px;text-align:right;color:var(--gray);flex-shrink:0;}
+.day-wr{width:46px;font-weight:700;flex-shrink:0;}
+
+/* Equity curve */
+.equity-chart{padding:0 20px 16px;}
+.eq-row{display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:.78em;}
+.eq-label{width:78px;color:var(--gray);flex-shrink:0;text-align:right;}
+.eq-zero{width:1px;background:#94a3b8;flex-shrink:0;align-self:stretch;}
+.eq-bar-wrap{flex:1;display:flex;align-items:center;}
+.eq-bar{height:14px;border-radius:3px;min-width:2px;}
+.eq-val{width:60px;font-weight:700;flex-shrink:0;}
+.eq-axis{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:.7em;color:var(--gray);}
+.eq-axis-spacer{width:78px;}
+
+/* Side comparison */
+.side-compare{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:16px 20px;}
+.side-box{border-radius:8px;padding:16px;text-align:center;}
+.side-box.banker{background:var(--banker-bg);border:2px solid #c4b5fd;}
+.side-box.player{background:var(--player-bg);border:2px solid #a5f3fc;}
+.side-box h3{font-size:.95em;font-weight:700;margin-bottom:10px;}
+.side-box .big{font-size:2em;font-weight:800;margin:4px 0;}
+.side-box.banker .big{color:var(--banker);}
+.side-box.player .big{color:var(--player);}
+.side-box .row{display:flex;justify-content:space-between;font-size:.83em;
+  padding:3px 0;border-bottom:1px solid rgba(0,0,0,.06);}
+.side-box .note{font-size:.74em;margin-top:8px;color:var(--gray);}
+
+/* Table stats */
+table{width:100%;border-collapse:collapse;}
+th{background:var(--gray-bg);padding:8px 12px;font-size:.75em;font-weight:600;
+  color:var(--gray);text-align:right;letter-spacing:.03em;}
+th:first-child{text-align:left;}
+td{padding:8px 12px;border-bottom:1px solid var(--border);font-size:.84em;text-align:right;}
+td:first-child{text-align:left;font-weight:600;}
+tr:last-child td{border-bottom:none;}
+tr.best td{background:var(--green-light);}
+tr.worst td{background:var(--red-light);}
+
+/* Note */
+.note-box{background:var(--yellow-bg);border-left:4px solid #f59e0b;
+  border-radius:0 6px 6px 0;padding:12px 14px;font-size:.83em;margin:14px 20px;}
+.note-box strong{color:var(--yellow);}
+
+/* Zbadge */
+.zbadge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:.78em;font-weight:700;}
+.zbadge.pos{background:var(--green-bg);color:var(--green);}
+.zbadge.neg{background:var(--red-bg);color:var(--red);}
+.zbadge.neu{background:var(--gray-bg);color:var(--gray);}
+.zbadge.warn{background:var(--yellow-bg);color:var(--yellow);}
+
+.footer{text-align:center;font-size:.76em;color:var(--gray);margin-top:20px;
+  padding-top:14px;border-top:1px solid var(--border);}
+@media(max-width:600px){
+  .side-compare{grid-template-columns:1fr;}
+  .cards{grid-template-columns:repeat(2,1fr);}
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Header -->
+<div class="header">
+  <h1>🎴 友人 実運用 BET 統計レポート</h1>
+  <p>AI学習システム (decisions.jsonl) に記録された友人の実際のBET結果</p>
+  <div class="badge">2026-04-23〜05-17 ／ 24日間 ／ 16,323 BET</div>
+</div>
+
+<!-- Summary Cards -->
+<div class="cards">
+  <div class="card blue">
+    <div class="label">総BET数</div>
+    <div class="value">16,323</div>
+    <div class="sub">TIE含む</div>
+  </div>
+  <div class="card green">
+    <div class="label">勝率 (TIE除)</div>
+    <div class="value">50.53%</div>
+    <div class="sub">W:7,465 / L:7,307</div>
+  </div>
+  <div class="card gray">
+    <div class="label">Z値</div>
+    <div class="value">+1.30</div>
+    <div class="sub">有意水準 1.96 未達</div>
+  </div>
+  <div class="card gray">
+    <div class="label">TIE数</div>
+    <div class="value">1,551</div>
+    <div class="sub">全体の 9.5%</div>
+  </div>
+  <div class="card banker">
+    <div class="label">BANKER 比率</div>
+    <div class="value">87.2%</div>
+    <div class="sub">14,233 BET</div>
+  </div>
+  <div class="card player">
+    <div class="label">PLAYER 比率</div>
+    <div class="value">12.8%</div>
+    <div class="sub">2,090 BET</div>
+  </div>
+</div>
+
+<!-- 勝率ゲージ -->
+<div class="section">
+  <div class="section-header">
+    <span>📊</span>
+    <h2>勝率比較（ハウスエッジとの対比）</h2>
+  </div>
+  <div class="section-body">
+    <!-- Overall -->
+    <div class="gauge-wrap">
+      <div class="gauge-label">全体 (TIE除)</div>
+      <div class="gauge-bar-outer">
+        <div class="gauge-bar-inner" style="width:72.2%;background:linear-gradient(90deg,#0891b2,#06b6d4)">50.53%</div>
+        <!-- 50% marker -->
+        <div class="gauge-marker" style="left:71.4%" data-label="50.0%"></div>
+        <!-- house edge marker -->
+        <div class="gauge-marker" style="left:72.1%;background:#f59e0b" data-label="50.68%"></div>
+      </div>
+      <div class="gauge-val" style="color:var(--blue)">50.53%</div>
+    </div>
+    <!-- Banker -->
+    <div class="gauge-wrap">
+      <div class="gauge-label">BANKER のみ</div>
+      <div class="gauge-bar-outer">
+        <div class="gauge-bar-inner" style="width:72.8%;background:linear-gradient(90deg,#7c3aed,#9333ea)">50.93%</div>
+        <div class="gauge-marker" style="left:71.4%" data-label="50.0%"></div>
+        <div class="gauge-marker" style="left:72.4%;background:#f59e0b" data-label="期待値 50.68%"></div>
+      </div>
+      <div class="gauge-val" style="color:var(--banker)">50.93%</div>
+    </div>
+    <!-- Player -->
+    <div class="gauge-wrap">
+      <div class="gauge-label">PLAYER のみ</div>
+      <div class="gauge-bar-outer">
+        <div class="gauge-bar-inner" style="width:68.3%;background:linear-gradient(90deg,#dc2626,#ef4444)">47.83%</div>
+        <div class="gauge-marker" style="left:71.4%" data-label="50.0%"></div>
+        <div class="gauge-marker" style="left:70.5%;background:#f59e0b" data-label="期待値 49.32%"></div>
+      </div>
+      <div class="gauge-val" style="color:var(--red)">47.83%</div>
+    </div>
+    <div style="font-size:.78em;color:var(--gray);margin-top:8px;padding-left:128px">
+      ▲ 黄色マーカー = 各サイドの期待勝率（ハウスエッジ込み）。バーがマーカーを超えれば期待値超え。
+    </div>
+  </div>
+</div>
+
+<!-- BANKER vs PLAYER 詳細 -->
+<div class="section">
+  <div class="section-header">
+    <span>⚖️</span>
+    <h2>BANKER / PLAYER サイド別 詳細</h2>
+  </div>
+  <div class="side-compare">
+    <div class="side-box banker">
+      <h3>🟣 BANKER</h3>
+      <div class="big">50.93%</div>
+      <div class="row"><span>BET数</span><span><strong>14,233</strong> (87%)</span></div>
+      <div class="row"><span>WIN</span><span><strong>6,552</strong></span></div>
+      <div class="row"><span>LOSE</span><span><strong>6,311</strong></span></div>
+      <div class="row"><span>TIE</span><span><strong>1,370</strong></span></div>
+      <div class="row"><span>有効BET (TIE除)</span><span><strong>12,863</strong></span></div>
+      <div class="row"><span>期待勝率</span><span>50.68%</span></div>
+      <div class="row"><span>超過分</span><span style="color:var(--green)"><strong>+0.25%</strong></span></div>
+      <div class="row"><span>Z値</span><span><span class="zbadge neu">+0.57</span></span></div>
+      <div class="note">5%コミッション後の実質勝率 ≈ 43.7%。<br>期待値をわずかに上回るが統計的に有意ではない。</div>
+    </div>
+    <div class="side-box player">
+      <h3>🔵 PLAYER</h3>
+      <div class="big">47.83%</div>
+      <div class="row"><span>BET数</span><span><strong>2,090</strong> (13%)</span></div>
+      <div class="row"><span>WIN</span><span><strong>913</strong></span></div>
+      <div class="row"><span>LOSE</span><span><strong>996</strong></span></div>
+      <div class="row"><span>TIE</span><span><strong>181</strong></span></div>
+      <div class="row"><span>有効BET (TIE除)</span><span><strong>1,909</strong></span></div>
+      <div class="row"><span>期待勝率</span><span>49.32%</span></div>
+      <div class="row"><span>超過分</span><span style="color:var(--red)"><strong>−1.49%</strong></span></div>
+      <div class="row"><span>Z値</span><span><span class="zbadge neg">−1.31</span></span></div>
+      <div class="note">期待値を1.49%下回っている。<br>ただしサンプル数が少なく断定は難しい。</div>
+    </div>
+  </div>
+  <div class="note-box">
+    <strong>⚠ 重要な観察:</strong>
+    友人は BET の87%を BANKER 側に集中させている。
+    BANKER 自体は期待値とほぼ同等 (Z=+0.57) だが、
+    PLAYER は期待値を 1.49% 下回っている (Z=−1.31)。
+    全体の勝率が低いのは PLAYER BET の不振が一因。
+  </div>
+</div>
+
+<!-- 日別勝率チャート -->
+<div class="section">
+  <div class="section-header">
+    <span>📅</span>
+    <h2>日別 勝率チャート</h2>
+    <span class="meta">24日間 ／ バー長 = BET数の相対量</span>
+  </div>
+  <div class="daily-chart">
+    <div style="display:flex;gap:8px;font-size:.72em;color:var(--gray);margin-bottom:8px;padding-left:86px">
+      <span>← 負け越し</span>
+      <span style="margin-left:auto">勝ち越し →</span>
+    </div>
+
+    <!-- 各日 -->
+    <script>
+    const daily = [
+      ["04-23",  3,  2, 0],
+      ["04-24",  2,  6, 0],
+      ["04-25",  0,  2, 0],
+      ["04-26", 86, 86,18],
+      ["04-27", 58, 59,16],
+      ["04-29",152,167,25],
+      ["04-30",277,268,62],
+      ["05-01",247,245,53],
+      ["05-02",425,365,99],
+      ["05-03",146,144,38],
+      ["05-04",516,491,101],
+      ["05-05",695,686,133],
+      ["05-06",324,209,58],
+      ["05-07",679,653,130],
+      ["05-08", 12, 13, 2],
+      ["05-09",887,909,199],
+      ["05-10",329,306,68],
+      ["05-11",498,586,114],
+      ["05-12",120,108,25],
+      ["05-13",  7,  3, 1],
+      ["05-14", 57, 57, 8],
+      ["05-15",400,361,99],
+      ["05-16",783,742,165],
+      ["05-17",762,839,137],
+    ];
+    const maxBets = Math.max(...daily.map(d=>d[1]+d[2]+d[3]));
+    let html = '';
+    daily.forEach(([day,w,l,t])=>{
+      const eff = w+l;
+      const wr = eff ? w/eff*100 : 0;
+      const total = w+l+t;
+      const widthPct = maxBets ? total/maxBets*80 : 0;
+      let color, label;
+      if(wr >= 55){ color='#16a34a'; label='✦';}
+      else if(wr >= 52){ color='#4ade80'; label='';}
+      else if(wr >= 50){ color='#86efac'; label='';}
+      else if(wr >= 48){ color='#fca5a5'; label='';}
+      else { color='#dc2626'; label='▼';}
+      const wrStr = eff ? wr.toFixed(1)+'%' : '-';
+      const wrColor = wr>=50.68?'var(--green)':(wr>=50?'var(--gray)':'var(--red)');
+      html += `<div class="day-row">
+        <div class="day-label">${day}</div>
+        <div class="day-bar-outer">
+          <div class="day-bar-inner" style="width:${widthPct}%;background:${color}">${label}</div>
+        </div>
+        <div class="day-bets">${total.toLocaleString()}</div>
+        <div class="day-wr" style="color:${wrColor}">${wrStr}</div>
+      </div>`;
+    });
+    document.write(html);
+    </script>
+
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;font-size:.75em;">
+      <span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;background:#16a34a;border-radius:2px;display:inline-block"></span>55%以上</span>
+      <span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;background:#4ade80;border-radius:2px;display:inline-block"></span>52〜55%</span>
+      <span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;background:#86efac;border-radius:2px;display:inline-block"></span>50〜52%</span>
+      <span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;background:#fca5a5;border-radius:2px;display:inline-block"></span>48〜50%</span>
+      <span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;background:#dc2626;border-radius:2px;display:inline-block"></span>48%未満</span>
+    </div>
+  </div>
+</div>
+
+<!-- 累積損益チャート -->
+<div class="section">
+  <div class="section-header">
+    <span>📈</span>
+    <h2>累積損益推移（フラット $1/BET 仮想）</h2>
+    <span class="meta">W=+1 / L=−1 / TIE=0</span>
+  </div>
+  <div class="equity-chart">
+    <script>
+    const dailyData = [
+      ["04-23",  3,  2],["04-24",  2,  6],["04-25",  0,  2],
+      ["04-26", 86, 86],["04-27", 58, 59],["04-29",152,167],
+      ["04-30",277,268],["05-01",247,245],["05-02",425,365],
+      ["05-03",146,144],["05-04",516,491],["05-05",695,686],
+      ["05-06",324,209],["05-07",679,653],["05-08", 12, 13],
+      ["05-09",887,909],["05-10",329,306],["05-11",498,586],
+      ["05-12",120,108],["05-13",  7,  3],["05-14", 57, 57],
+      ["05-15",400,361],["05-16",783,742],["05-17",762,839],
+    ];
+    let cum = 0;
+    const maxAbs = 250;
+    let eqHtml = '';
+    dailyData.forEach(([day,w,l])=>{
+      const daily = w - l;
+      cum += daily;
+      const barW = Math.min(Math.abs(cum)/maxAbs*45, 45);
+      const color = cum >= 0 ? '#16a34a' : '#dc2626';
+      const cumStr = (cum>=0?'+':'')+cum;
+      const cumColor = cum>=0?'var(--green)':'var(--red)';
+      if(cum >= 0){
+        eqHtml += `<div class="eq-row">
+          <div class="eq-label">${day}</div>
+          <div class="eq-bar-wrap" style="justify-content:flex-start;padding-left:50%">
+            <div class="eq-bar" style="width:${barW}%;background:${color}"></div>
+          </div>
+          <div class="eq-val" style="color:${cumColor}">${cumStr}</div>
+        </div>`;
+      } else {
+        eqHtml += `<div class="eq-row">
+          <div class="eq-label">${day}</div>
+          <div class="eq-bar-wrap" style="justify-content:flex-end;padding-right:50%">
+            <div class="eq-bar" style="width:${barW}%;background:${color}"></div>
+          </div>
+          <div class="eq-val" style="color:${cumColor}">${cumStr}</div>
+        </div>`;
+      }
+    });
+    eqHtml += `<div style="height:1px;background:#cbd5e1;margin:4px 0 8px"></div>`;
+    eqHtml += `<div class="eq-row"><div class="eq-label" style="font-weight:700">合計</div>
+      <div style="flex:1;text-align:center;font-size:.82em;color:var(--green)">▶ 最終累積 +158 (フラット$1)</div>
+      <div class="eq-val" style="color:var(--green);font-weight:700">+158</div></div>`;
+    document.write(eqHtml);
+    </script>
+    <div style="font-size:.75em;color:var(--gray);margin-top:8px;text-align:center">
+      ゼロライン = 中央。右がプラス、左がマイナス。
+    </div>
+  </div>
+</div>
+
+<!-- テーブル別 -->
+<div class="section">
+  <div class="section-header">
+    <span>🎰</span>
+    <h2>テーブル別 勝率</h2>
+    <span class="meta">BET数 降順</span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>テーブル名</th>
+        <th>BET数</th>
+        <th>勝率</th>
+        <th>評価</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>BACCARAT_9</td><td>4,447</td>
+        <td><span style="color:var(--green);font-weight:700">51.5%</span></td>
+        <td><span class="zbadge pos">期待値超え</span></td>
+      </tr>
+      <tr>
+        <td>BACCARAT_6</td><td>3,434</td>
+        <td><span style="color:var(--green);font-weight:700">50.8%</span></td>
+        <td><span class="zbadge pos">期待値超え</span></td>
+      </tr>
+      <tr class="best">
+        <td>BACCARAT_3</td><td>904</td>
+        <td><span style="color:var(--green);font-weight:700">54.3% ★</span></td>
+        <td><span class="zbadge pos">最高勝率</span></td>
+      </tr>
+      <tr>
+        <td>BACCARAT_2</td><td>2,044</td>
+        <td><span style="color:var(--green);font-weight:700">52.0%</span></td>
+        <td><span class="zbadge pos">期待値超え</span></td>
+      </tr>
+      <tr>
+        <td>KOREAN_BACCARAT_1</td><td>1,409</td>
+        <td><span style="color:var(--gray)">50.3%</span></td>
+        <td><span class="zbadge neu">ほぼ期待値</span></td>
+      </tr>
+      <tr>
+        <td>BACCARAT_7</td><td>641</td>
+        <td><span style="color:var(--gray)">49.9%</span></td>
+        <td><span class="zbadge neu">ほぼ期待値</span></td>
+      </tr>
+      <tr>
+        <td>BACCARAT_5</td><td>2,183</td>
+        <td><span style="color:var(--red)">48.6%</span></td>
+        <td><span class="zbadge warn">期待値割れ</span></td>
+      </tr>
+      <tr>
+        <td>BACCARAT_1</td><td>1,007</td>
+        <td><span style="color:var(--red)">46.1%</span></td>
+        <td><span class="zbadge neg">低勝率</span></td>
+      </tr>
+      <tr class="worst">
+        <td>THAI_BACCARAT_1</td><td>231</td>
+        <td><span style="color:var(--red);font-weight:700">42.7% ▼</span></td>
+        <td><span class="zbadge neg">最低勝率</span></td>
+      </tr>
+      <tr>
+        <td>KOREAN_BACCARAT_2</td><td>23</td>
+        <td><span style="color:var(--red)">42.9%</span></td>
+        <td><span class="zbadge neu">少サンプル</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="note-box">
+    <strong>注目:</strong>
+    BACCARAT_3 (54.3%) と BACCARAT_9/6/2 は勝率が高い。
+    一方 THAI_BACCARAT_1 (42.7%) と BACCARAT_1 (46.1%) は著しく低い。
+    ただしこれが「テーブルの差」なのか「偶然のばらつき」なのかは、
+    より多くのサンプルが必要。
+  </div>
+</div>
+
+<!-- まとめ -->
+<div class="section">
+  <div class="section-header"><span>💡</span><h2>まとめ・読み方</h2></div>
+  <div class="section-body" style="font-size:.86em;line-height:1.8;">
+    <p><strong>① 全体勝率 50.53% (Z=+1.30) → 統計的に有意ではない</strong><br>
+    　ハウスエッジを含む期待値 (~50%) をわずかに上回っているが、
+    　16,323 BET でも Z=1.30 で「偶然ではない」と断言できる水準 (Z=1.96) に届いていない。</p>
+    <br>
+    <p><strong>② BANKER は期待値並み、PLAYER は期待値割れ</strong><br>
+    　BANKER 50.93% (期待 50.68%) → ほぼ想定通り<br>
+    　PLAYER 47.83% (期待 49.32%) → 1.49% 下回り (Z=−1.31)<br>
+    　友人が PLAYER に打つときは何らかの不利な条件で打っている可能性がある。</p>
+    <br>
+    <p><strong>③ デュアルライン v3 (Forward OOS 現在) との比較</strong></p>
+    <table style="margin-top:6px">
+      <thead><tr>
+        <th></th><th>友人 AI学習記録</th><th>デュアルライン v3</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>有効BET数</td><td>14,772</td><td>1,286 (現在)</td></tr>
+        <tr><td>勝率</td><td>50.53%</td><td>53.03%</td></tr>
+        <tr><td>Z値</td><td>+1.30</td><td>+2.18 ★</td></tr>
+        <tr><td>統計的有意</td><td>✗</td><td>✓ (95%水準)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="footer">
+  データソース: VPS /opt/bacopy/data/decisions.jsonl ／ 集計: 2026-05-26<br>
+  期間: 2026-04-23〜2026-05-17 ／ 24日間
+</div>
+
+</div>
+</body>
+</html>

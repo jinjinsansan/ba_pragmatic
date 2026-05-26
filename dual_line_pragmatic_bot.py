@@ -26,6 +26,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -106,6 +107,7 @@ V2_PATTERNS = LIVE_SIGNAL_PATTERNS
 
 STATE_PATH = _PERSISTENT_DIR / "dual_line_pragmatic_state.json"
 STATE_TMP = _PERSISTENT_DIR / "dual_line_pragmatic_state.tmp"
+MONEY_STATE_PATH = _PERSISTENT_DIR / "dual_line_money_state.json"
 _DEFAULT_PREPOSITION_HINT_FILE = (
     Path("/opt/bacopy/data/latest_preposition_pragmatic.json")
     if os.name != "nt"
@@ -358,10 +360,12 @@ class DualLinePragmaticBot(cp.Collector):
         notify_tie: bool = False,
         bet_executor: BetExecutor | None = None,
         no_vps_poll: bool = False,
+        manual_assist: bool = False,
     ):
         super().__init__(headless=headless, raw_log=raw_log)
         self.use_v2_filter = use_v2_filter
         self.no_vps_poll = no_vps_poll
+        self.manual_assist = bool(manual_assist)
         self.notify_signal = notify_signal
         self.notify_resolution = notify_resolution
         self.notify_tie = notify_tie
@@ -370,7 +374,7 @@ class DualLinePragmaticBot(cp.Collector):
             mode=money_mode, unit=money_unit,
             profit_stop=profit_stop, loss_cut=loss_cut,
             on_limit=on_limit,
-            state_path=_PERSISTENT_DIR / "dual_line_money_state.json",
+            state_path=MONEY_STATE_PATH,
         )
 
         # per-table 状態
@@ -383,6 +387,8 @@ class DualLinePragmaticBot(cp.Collector):
         self._prev_preposition_keys: dict[str, str] = {}
         self._last_prepos_notify_at: float = 0.0             # 予告通知レートリミット
         self._diag_skip_counts: dict[str, int] = defaultdict(int)
+        self._manual_assist_items: dict[str, dict] = {}
+        self._manual_command_reader_started = False
 
 
         # 累計統計
@@ -602,6 +608,227 @@ class DualLinePragmaticBot(cp.Collector):
         except Exception:
             pass
 
+    def _send_manual_assist_mode(self) -> None:
+        """Tell the GUI whether dual-line is running in manual assist mode."""
+        try:
+            send_msg(
+                {
+                    "type": "manual_assist_mode",
+                    "enabled": bool(self.manual_assist),
+                    "auto_bet_enabled": not bool(self.manual_assist),
+                    "money_status": self.money.status_dict(),
+                    "ts": time.time(),
+                }
+            )
+        except Exception:
+            pass
+
+    def _send_manual_assist_item(
+        self,
+        *,
+        status: str,
+        table_id: str,
+        table_name: str = "",
+        qpid: str = "",
+        side: str = "",
+        amount: float | None = None,
+        pattern_key: str = "",
+        decision_id: str = "",
+        item_id: str = "",
+        signal_game_id: str = "",
+        score: int | None = None,
+        steps_before: int | None = None,
+        source: str = "",
+        expires_sec: float = 30.0,
+    ) -> None:
+        """Emit the manual operator queue item without touching auto-bet state."""
+        if not self.manual_assist:
+            return
+        now = time.time()
+        try:
+            amt = float(amount if amount is not None else self.money.next_bet())
+        except Exception:
+            amt = 0.0
+        item_id = str(item_id or decision_id or f"{status}:{qpid or table_id}:{pattern_key}:{int(now)}")
+        payload = {
+            "type": "manual_assist_item",
+            "id": item_id,
+            "decision_id": decision_id,
+            "table_id": table_id,
+            "qpid": qpid or table_id,
+            "table_name": table_name or table_id,
+            "side": side,
+            "amount": amt,
+            "pattern_key": pattern_key,
+            "status": status,
+            "signal_game_id": signal_game_id,
+            "score": score,
+            "steps_before": steps_before,
+            "source": source,
+            "created_at": _utc_now_iso(),
+            "expires_at": now + float(expires_sec or 0.0),
+            "money_status": self.money.status_dict(),
+        }
+        self._manual_assist_items[item_id] = dict(payload)
+        try:
+            send_msg(payload)
+        except Exception:
+            pass
+
+    def start_manual_assist_command_reader(self) -> None:
+        """Read GUI manual-assist commands from stdin without touching auto-bet."""
+        if self._manual_command_reader_started:
+            return
+        self._manual_command_reader_started = True
+
+        def _loop() -> None:
+            while True:
+                try:
+                    line = sys.stdin.readline()
+                except Exception:
+                    return
+                if not line:
+                    return
+                try:
+                    msg = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(msg, dict) and msg.get("type") == "manual_assist_command":
+                    self._handle_manual_assist_command(msg)
+
+        threading.Thread(target=_loop, name="manual-assist-stdin", daemon=True).start()
+
+    def _find_manual_assist_item(self, item_id: str = "", decision_id: str = "") -> tuple[str, dict] | tuple[str, None]:
+        if item_id and item_id in self._manual_assist_items:
+            return item_id, self._manual_assist_items[item_id]
+        if decision_id:
+            for key, item in self._manual_assist_items.items():
+                if str(item.get("decision_id") or "") == decision_id:
+                    return key, item
+        return "", None
+
+    def _handle_manual_assist_command(self, msg: dict) -> None:
+        if not self.manual_assist:
+            logger.warning("[MANUAL-ASSIST] command ignored: mode disabled")
+            return
+        action = str(msg.get("action") or "").strip().lower()
+        item_id = str(msg.get("id") or "").strip()
+        decision_id = str(msg.get("decision_id") or "").strip()
+        key, item = self._find_manual_assist_item(item_id=item_id, decision_id=decision_id)
+        if not item:
+            logger.warning(f"[MANUAL-ASSIST] command ignored: item not found id={item_id or decision_id or '-'}")
+            return
+        status = str(item.get("status") or "").upper()
+        if action == "take":
+            if status != "NOW":
+                logger.warning(f"[MANUAL-ASSIST] take ignored: status={status} id={key}")
+                return
+            item["status"] = "TAKEN"
+            item["taken_at"] = _utc_now_iso()
+            self._send_manual_assist_item(
+                status="TAKEN",
+                table_id=str(item.get("table_id") or ""),
+                table_name=str(item.get("table_name") or ""),
+                qpid=str(item.get("qpid") or ""),
+                side=str(item.get("side") or ""),
+                amount=float(item.get("amount") or 0.0),
+                pattern_key=str(item.get("pattern_key") or ""),
+                decision_id=str(item.get("decision_id") or ""),
+                item_id=key,
+                signal_game_id=str(item.get("signal_game_id") or ""),
+                expires_sec=120.0,
+            )
+            logger.info(f"[MANUAL-ASSIST] TAKEN id={key} table={item.get('table_name') or item.get('table_id')}")
+            return
+
+        if action != "result":
+            logger.warning(f"[MANUAL-ASSIST] unknown command action={action!r}")
+            return
+        if status != "TAKEN":
+            logger.warning(f"[MANUAL-ASSIST] result ignored: status={status} id={key}")
+            return
+
+        result = str(msg.get("result") or "").strip().upper()
+        if result not in ("WIN", "LOSE", "TIE"):
+            logger.warning(f"[MANUAL-ASSIST] invalid result={result!r} id={key}")
+            return
+
+        side = str(item.get("side") or "P").upper()
+        amount = float(item.get("amount") or 0.0)
+        before_pnl = float(getattr(self.money, "session_pnl", 0.0) or 0.0)
+        try:
+            self.money._last_bet_amount = amount
+        except Exception:
+            pass
+        won = True if result == "WIN" else False if result == "LOSE" else None
+        self.money.apply_result(won, side=side)
+        try:
+            if getattr(self.money, "state_path", None):
+                self.money._save_state()
+        except Exception:
+            pass
+        after_pnl = float(getattr(self.money, "session_pnl", 0.0) or 0.0)
+        pnl = after_pnl - before_pnl
+
+        if result == "WIN":
+            self.wins += 1
+        elif result == "LOSE":
+            self.losses += 1
+        else:
+            self.ties += 1
+        self.total_resolved += 1
+        item["status"] = "SETTLED"
+        item["manual_result"] = result
+        item["settled_at"] = _utc_now_iso()
+
+        prediction = "BANKER" if side.startswith("B") else "PLAYER"
+        if result == "TIE":
+            outcome = "TIE"
+        elif result == "WIN":
+            outcome = prediction
+        else:
+            outcome = "PLAYER" if prediction == "BANKER" else "BANKER"
+
+        ms = self.money.status_dict()
+        send_msg(
+            {
+                "type": "resolution",
+                "result": result,
+                "prediction": prediction,
+                "outcome": outcome,
+                "table_id": item.get("table_id"),
+                "table_name": item.get("table_name") or item.get("table_id"),
+                "pattern_key": item.get("pattern_key") or "",
+                "bet_amount": amount,
+                "pnl": pnl,
+                "cumulative_pnl": after_pnl,
+                "wins": self.wins,
+                "losses": self.losses,
+                "ties": self.ties,
+                "win_rate": round((self.wins / max(1, self.wins + self.losses)) * 100, 1),
+                "money_status": ms,
+            }
+        )
+        self._send_manual_assist_item(
+            status="SETTLED",
+            table_id=str(item.get("table_id") or ""),
+            table_name=str(item.get("table_name") or ""),
+            qpid=str(item.get("qpid") or ""),
+            side=side,
+            amount=amount,
+            pattern_key=str(item.get("pattern_key") or ""),
+            decision_id=str(item.get("decision_id") or ""),
+            item_id=key,
+            signal_game_id=str(item.get("signal_game_id") or ""),
+            expires_sec=0.0,
+        )
+        self._send_gui_money_status()
+        self._save_state()
+        logger.info(
+            f"[MANUAL-ASSIST] SETTLED id={key} result={result} "
+            f"amount=${amount:.2f} pnl=${pnl:+.2f} session=${after_pnl:+.2f}"
+        )
+
     def on_ws_frame(self, payload):  # type: ignore[override]
         super().on_ws_frame(payload)
         try:
@@ -747,6 +974,54 @@ class DualLinePragmaticBot(cp.Collector):
             "signal_game_id": "",
             "signal_hand_count": len(history_hands if history_hands is not None else (buf.hands or [])),
         }
+        if self.manual_assist:
+            qpid = str(getattr(buf, "qpid_table_id", "") or "").strip()
+            target_id = qpid or table_id
+            local_id = f"local-{uuid.uuid4().hex[:12]}"
+            try:
+                focus_fn = getattr(self.bet_executor, "_request_switch", None)
+                if callable(focus_fn):
+                    focus_fn(
+                        table_id,
+                        buf.table_name or "",
+                        target_id,
+                        intent="manual_assist",
+                        side=bet_side,
+                        preselect_amount=bet_amount,
+                    )
+                    logger.info(
+                        f"[MANUAL-ASSIST] local focus queued id={local_id} "
+                        f"table={buf.table_name or table_id} side={bet_side} amount=${bet_amount:.2f}"
+                    )
+            except Exception as ex:
+                logger.warning(f"[MANUAL-ASSIST] local focus queue failed id={local_id}: {ex}")
+            self.total_signals += 1
+            self._send_manual_assist_item(
+                status="NOW",
+                table_id=table_id,
+                table_name=buf.table_name or "",
+                qpid=target_id,
+                side=bet_side,
+                amount=bet_amount,
+                pattern_key=pattern_key,
+                decision_id=local_id,
+                signal_game_id=str(bet_metadata.get("source_last_game_id") or ""),
+                source="local",
+                expires_sec=30.0,
+            )
+            send_phase("manual_assist", f"{bet_side} via {pattern_key}")
+            send_action(
+                f"MANUAL NOW #{self.total_signals} {pattern_key} "
+                f"{bet_side} ${bet_amount:.2f} on {buf.table_name or table_id}"
+            )
+            self._send_gui_money_status()
+            self.table_scores[table_id] = 2
+            self._save_state()
+            logger.info(
+                f"[MANUAL-ASSIST] local NOW id={local_id} table={buf.table_name or table_id} "
+                f"side={bet_side} amount=${bet_amount:.2f} auto_bet=disabled"
+            )
+            return
         bet_id = self.bet_executor.place_bet(
             table_id=table_id,
             side=bet_side,
@@ -1167,7 +1442,30 @@ class DualLinePragmaticBot(cp.Collector):
         detail = confirmed.get("detail") if isinstance(confirmed.get("detail"), dict) else {}
         confirmed_table_ids.add(str(detail.get("table") or "").strip())
         confirmed_table_ids.discard("")
-        return bool(hand_table_ids and confirmed_table_ids and hand_table_ids.intersection(confirmed_table_ids))
+        if hand_table_ids and confirmed_table_ids and hand_table_ids.intersection(confirmed_table_ids):
+            return True
+
+        # Multi-lobby result feed uses numeric DGA table ids, while the confirmed
+        # click bet is keyed by Pragmatic qpid.  Once the exact game id has
+        # matched, allow the stable table name to bridge those id namespaces.
+        def _norm_name(value: object) -> str:
+            return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+        hand_name = _norm_name(getattr(buf, "table_name", "") or "")
+        confirmed_names = {
+            _norm_name(pending.get("table_name") or ""),
+            _norm_name(confirmed.get("table_name") or ""),
+            _norm_name(detail.get("tableName") or detail.get("table_name") or ""),
+        }
+        confirmed_names.discard("")
+        if hand_gid and confirmed_gid and hand_name and hand_name in confirmed_names:
+            logger.info(
+                f"[DECISION] match by exact game_id + table_name: "
+                f"game={hand_gid} table={getattr(buf, 'table_name', '') or table_id} "
+                f"ids={sorted(hand_table_ids)} confirmed_ids={sorted(confirmed_table_ids)}"
+            )
+            return True
+        return False
 
     def _settle_confirmed_decision_from_hand(self, table_id: str, buf, new_hand: dict, outcome: str) -> bool:
         """Settle a locally confirmed VPS decision using the exact observed hand."""
@@ -1647,7 +1945,17 @@ class DualLinePragmaticBot(cp.Collector):
     def _poll_remote_snapshots_for_signals(self) -> None:
         if not self.bet_executor.is_live:
             return
-        if not self.no_vps_poll:
+        pending_settlement = any(
+            isinstance(p, dict)
+            and not p.get("settlement_posted")
+            and (
+                p.get("local_bet_sent")
+                or p.get("bet_sent_posted")
+                or (isinstance(p.get("confirmed_bet"), dict) and bool(p.get("confirmed_bet")))
+            )
+            for p in list(getattr(self, "_pending_decisions", {}) or {}).values()
+        )
+        if not self.no_vps_poll and not pending_settlement:
             return
         enabled = str(os.getenv("BACOPY_ENABLE_REMOTE_SIGNAL_BRIDGE", "1") or "1").strip().lower() in (
             "1",
@@ -1661,7 +1969,7 @@ class DualLinePragmaticBot(cp.Collector):
         now = time.time()
         stale_sec = float(os.getenv("BACOPY_REMOTE_SIGNAL_BRIDGE_STALE_SEC", "20") or 20)
         last_local = float(getattr(self, "_last_collector_ws_at", 0.0) or 0.0)
-        if last_local > 0 and (now - last_local) <= stale_sec:
+        if not pending_settlement and last_local > 0 and (now - last_local) <= stale_sec:
             return
 
         tgt = self._remote_signal_target()
@@ -1700,6 +2008,17 @@ class DualLinePragmaticBot(cp.Collector):
             hands = self._sequence_to_hands(seq)
             if not hands:
                 continue
+            if last_hand:
+                # The sequence string only carries P/B/T.  Preserve the snapshot's
+                # exact latest game id so confirmed live bets can settle by hand id.
+                last = dict(hands[-1])
+                winner = last_hand.get("winner")
+                if winner:
+                    last["winner"] = winner
+                gid = last_hand.get("gameId") or last_hand.get("game_id")
+                if gid:
+                    last["gameId"] = str(gid)
+                hands[-1] = last
 
             buf = self.buffers.get(table_id)
             if not buf:
@@ -1925,6 +2244,24 @@ class DualLinePragmaticBot(cp.Collector):
         )
         preselect_amount = float(self.money.next_bet() or 0.0)
         steps_before = int(data.get("steps_before") or max(0, 3 - score))
+        if self.manual_assist:
+            self._send_manual_assist_item(
+                status="READY",
+                table_id=table_id,
+                table_name=table_name,
+                qpid=qpid,
+                side=direction,
+                amount=preselect_amount,
+                pattern_key="/".join(pattern_keys),
+                score=score,
+                steps_before=steps_before,
+                source=src_name,
+                expires_sec=90.0,
+            )
+            logger.info(
+                f"[MANUAL-ASSIST] READY table={table_name or table_id} "
+                f"qpid={qpid or '-'} side={direction or '?'} amount=${preselect_amount:.2f}"
+            )
         try:
             self.bet_executor._request_switch(
                 table_id,
@@ -2295,6 +2632,64 @@ class DualLinePragmaticBot(cp.Collector):
             "seq_at_predict": str(fa.get("seq_at_predict") or ""),
             "antenna_ok": bool(locals().get("antenna_ok", False)),
         }
+        if self.manual_assist:
+            try:
+                focus_fn = getattr(self.bet_executor, "_request_switch", None)
+                if callable(focus_fn):
+                    focus_fn(
+                        table_id,
+                        table_name,
+                        table_id,
+                        intent="manual_assist",
+                        side=side,
+                        preselect_amount=bet_amount,
+                    )
+                    logger.info(
+                        f"[MANUAL-ASSIST] focus queued did={did[:12]} "
+                        f"table={table_name or table_id} side={side} amount=${bet_amount:.2f}"
+                    )
+            except Exception as ex:
+                logger.warning(f"[MANUAL-ASSIST] focus queue failed did={did[:12]}: {ex}")
+            self.total_signals += 1
+            self._send_manual_assist_item(
+                status="NOW",
+                table_id=table_id,
+                table_name=table_name,
+                qpid=table_id,
+                side=side,
+                amount=bet_amount,
+                pattern_key=pattern_key,
+                decision_id=did,
+                signal_game_id=str(metadata.get("signal_game_id") or ""),
+                source=str(decision.get("_source_name") or "vps"),
+                expires_sec=30.0,
+            )
+            send_phase("manual_assist", f"{side} via VPS")
+            send_action(
+                f"MANUAL NOW #{self.total_signals} {pattern_key or 'VPS'} "
+                f"{side} ${bet_amount:.2f} on {table_name or table_id}"
+            )
+            self._send_gui_money_status()
+            source_base = str(decision.get("_source_api_base") or "")
+            source_key = str(decision.get("_source_api_key") or "")
+            self._api_post(
+                f"/api/decisions/{did}/ack",
+                {
+                    "ack": {
+                        "executor_id": "gui-1",
+                        "manual_assist_at": _utc_now_iso(),
+                        "auto_bet": False,
+                    },
+                    "status": "processing",
+                },
+                base_url=source_base,
+                api_key=source_key,
+            )
+            logger.info(
+                f"[MANUAL-ASSIST] NOW did={did[:12]} table={table_name or table_id} "
+                f"side={side} amount=${bet_amount:.2f} auto_bet=disabled"
+            )
+            return
         bet_id = self.bet_executor.place_bet(table_id, side, bet_amount, metadata)
 
         self._pending_decisions[did] = {
@@ -3377,6 +3772,11 @@ def main(argv: list[str] | None = None) -> int:
         help="LIVE モード: 実 BET を発行 (未指定時は DRY RUN)",
     )
     ap.add_argument(
+        "--manual-assist",
+        action="store_true",
+        help="manual assist mode: scroll/focus/preselect only; never auto-click BET",
+    )
+    ap.add_argument(
         "--no-vps-poll", action="store_true",
         help="VPS API polling を無効化（ローカル直接検出モード / bafather 直接実行用）",
     )
@@ -3392,10 +3792,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--result-timeout-sec", type=int, default=60)
     args, _ = ap.parse_known_args(argv)
 
-    if args.reset and STATE_PATH.exists():
-        STATE_PATH.unlink()
-        STATE_TMP.unlink(missing_ok=True)
-        logger.info("state reset")
+    if args.reset:
+        removed = []
+        for path in (STATE_PATH, STATE_TMP, MONEY_STATE_PATH):
+            try:
+                if path.exists():
+                    path.unlink()
+                    removed.append(path.name)
+            except Exception as ex:
+                logger.warning(f"state reset failed for {path.name}: {ex}")
+        logger.info(f"state reset removed={removed or '-'}")
 
     # BetExecutor の選択
     bet_executor: BetExecutor
@@ -3435,10 +3841,26 @@ def main(argv: list[str] | None = None) -> int:
         notify_tie=False,
         bet_executor=bet_executor,
         no_vps_poll=getattr(args, "no_vps_poll", False),
+        manual_assist=bool(getattr(args, "manual_assist", False)),
     )
 
-    mode_label = "LIVE" if bot.bet_executor.is_live else "DRY RUN"
-    if bot.bet_executor.is_live:
+    bot._send_manual_assist_mode()
+    if bot.manual_assist:
+        bot.start_manual_assist_command_reader()
+    mode_label = "MANUAL ASSIST" if bot.manual_assist else ("LIVE" if bot.bet_executor.is_live else "DRY RUN")
+    logger.info(
+        f"dual-line mode={mode_label} live_executor={bot.bet_executor.is_live} "
+        f"auto_bet_enabled={not bot.manual_assist}"
+    )
+    if bot.manual_assist:
+        _send_telegram(
+            f"🟢 dual_line_pragmatic_bot 起動 ({mode_label})\n"
+            "auto-bet: disabled\n"
+            f"filter: {'v2 (6 patterns)' if not args.no_v2_filter else 'all patterns'}\n"
+            f"money: {BET_MODES[bot.money.mode]} unit=${bot.money.unit}\n"
+            f"stop: ${bot.money.profit_stop} cut: ${bot.money.loss_cut} on_limit: {bot.money.on_limit}"
+        )
+    elif bot.bet_executor.is_live:
         _send_telegram(
             "📊 LIVE 稼働 0分\n"
             "通常BACCのBET: 0勝 / 0敗 / 0引分 (BET未実行)\n"

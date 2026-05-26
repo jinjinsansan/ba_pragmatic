@@ -330,6 +330,9 @@ let _dailyOpenDate = null;
 let sessionTotal = 0;
 let _balanceConfirmed = false; // エンジンから実残高を受信したら true
 const results = [];
+const manualAssistItems = [];
+let manualAssistEnabled = false;
+let activeManualItemId = '';
 
 function _jstDateStrNow() {
   const now = new Date();
@@ -422,12 +425,18 @@ async function startBotFlow({ auto = false } = {}) {
   setManualStop(false);
 
   const settings = loadSettings();
-  const isDL = settings.bet_mode === 'dual_line' || settings.mode === 'dual_line';
+  const selectedBetMode = normalizeBetMode(settings.bet_mode);
+  const isDL = isDualLineBetMode(selectedBetMode) || settings.mode === 'dual_line'
+    || settings.mode === 'dual_line_assist'
+    || settings.mode === 'dual_line_auto' || settings.mode === 'dual_line_manual';
+  const isDLAssist = isDualLineAssistBetMode(selectedBetMode) || settings.mode === 'dual_line'
+    || settings.mode === 'dual_line_assist'
+    || settings.mode === 'dual_line_manual';
   const config = {
     ...buildStartConfig(),
-    mode: isDL ? 'dual_line' : 'executor',
+    mode: isDL ? (isDLAssist ? 'dual_line_assist' : 'dual_line_auto') : 'executor',
     headless: isDL ? false : !!settings.headless,
-    live: settings.dual_live || false,
+    live: isDLAssist ? true : (settings.dual_live || false),
     money_mode: settings.dual_money_mode || 'flat',
     money_unit: settings.dual_unit || 100,
     on_limit: settings.dual_on_limit || 'stop',
@@ -449,6 +458,9 @@ async function startBotFlow({ auto = false } = {}) {
     _persistBalanceSnapshot();
     updateSessionDisplay();
     resetFeed();
+    manualAssistItems.length = 0;
+    activeManualItemId = '';
+    renderManualAssistPanel();
 
 
     try {
@@ -666,23 +678,42 @@ const DEFAULT_SETTINGS = {
   dual_live: false,
   dual_on_limit: 'stop',
 };
-const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small1', 'small6', 'dual_line']);
+const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small1', 'small6', 'dual_line', 'dual_line_assist', 'dual_line_auto']);
 
 function normalizeBetMode(mode) {
   return ALLOWED_BET_MODES.has(mode) ? mode : 'flat_1usd';
+}
+
+function isDualLineBetMode(mode) {
+  return mode === 'dual_line' || mode === 'dual_line_assist' || mode === 'dual_line_auto';
+}
+
+function isDualLineAssistBetMode(mode) {
+  return mode === 'dual_line' || mode === 'dual_line_assist';
 }
 
 function _ensureDualLineOption() {
   const sel = $('#inputBetMode');
   if (!sel) return;
   let hasDual = false;
+  let hasAuto = false;
   for (const opt of sel.options) {
-    if (opt.value === 'dual_line') { hasDual = true; break; }
+    if (opt.value === 'dual_line') {
+      hasDual = true;
+      opt.textContent = 'DUAL-LINE Assist — manual final BET';
+    }
+    if (opt.value === 'dual_line_auto') hasAuto = true;
   }
   if (!hasDual) {
     const opt = document.createElement('option');
     opt.value = 'dual_line';
-    opt.textContent = 'DUAL-LINE — pattern match (v2)';
+    opt.textContent = 'DUAL-LINE Assist — manual final BET';
+    sel.appendChild(opt);
+  }
+  if (!hasAuto) {
+    const opt = document.createElement('option');
+    opt.value = 'dual_line_auto';
+    opt.textContent = 'DUAL-LINE Auto — experimental';
     sel.appendChild(opt);
   }
 }
@@ -691,7 +722,7 @@ document.addEventListener('DOMContentLoaded', _ensureDualLineOption);
 // betMode 変更時に dual-line 設定の表示切替
 setTimeout(() => {
   $('#inputBetMode')?.addEventListener('change', function() {
-    const isDL = this.value === 'dual_line';
+    const isDL = isDualLineBetMode(this.value);
     if ($('#dualLineMoneyGroup')) $('#dualLineMoneyGroup').style.display = isDL ? '' : 'none';
     if ($('#chipBaseGroup')) $('#chipBaseGroup').style.display = isDL ? 'none' : '';
     if ($('#inputDryRun')) {
@@ -1076,7 +1107,9 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
   try { document.activeElement?.blur?.(); } catch {}
   await new Promise((r) => setTimeout(r, 0));
 
-  const isDualLine = normalizeBetMode($('#inputBetMode')?.value) === 'dual_line';
+  const selectedBetMode = normalizeBetMode($('#inputBetMode')?.value);
+  const isDualLine = isDualLineBetMode(selectedBetMode);
+  const isDualLineAssist = isDualLineAssistBetMode(selectedBetMode);
   const settings = {
     // bet_mode が金額を決めるため chip_base は固定 (UIも非表示)
     chip_base: isDualLine ? parseFloat($('#inputDualUnit')?.value || 100) : 1,
@@ -1084,7 +1117,7 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     profit_session_limit: normalizeProfitSessionLimit($('#inputProfitSessionLimit')?.value),
     loss_cut: (v => Number.isFinite(v) ? v : 200)(parseFloat($('#inputLossCut').value)),
     dry_run: $('#inputDryRun').checked,
-    bet_mode: normalizeBetMode($('#inputBetMode')?.value),
+    bet_mode: selectedBetMode,
     executor_id: $('#inputExecutorId').value.trim(),
     executor_label: $('#inputExecutorLabel').value.trim(),
     stake_username: $('#inputStakeUsername').value.trim(),
@@ -1096,7 +1129,7 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     assume_bc_012: $('#inputAssumeBc012')?.checked,
     headless: isDualLine ? false : $('#inputHeadless').checked,
     // dual-line settings
-    mode: isDualLine ? 'dual_line' : 'executor',
+    mode: isDualLine ? (isDualLineAssist ? 'dual_line_assist' : 'dual_line_auto') : 'executor',
     dual_money_mode: $('#inputDualMoneyMode')?.value || 'flat',
     dual_unit: parseFloat($('#inputDualUnit')?.value || 100),
     dual_live: $('#inputDualLive')?.checked || false,
@@ -1356,6 +1389,172 @@ function applyMoneyStatusToSignalPanel(ms) {
     current_turn: ms.seq_turn,
     overshoot: ms.seq_overshoot,
     turns_display: turns.join(''),
+  });
+}
+
+function _manualItemExpiryMs(item) {
+  const raw = item && item.expires_at;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return raw < 100000000000 ? raw * 1000 : raw;
+  }
+  return 0;
+}
+
+function _manualNormalizeStatus(status) {
+  const s = String(status || '').toUpperCase();
+  if (['READY', 'NOW', 'TAKEN', 'EXPIRED', 'MISSED', 'SETTLED'].includes(s)) return s;
+  return 'READY';
+}
+
+function upsertManualAssistItem(msg) {
+  const id = String(msg.id || msg.decision_id || `${msg.status}:${msg.qpid || msg.table_id}:${Date.now()}`);
+  const existing = manualAssistItems.find((it) => it.id === id);
+  const next = {
+    ...(existing || {}),
+    ...msg,
+    id,
+    status: _manualNormalizeStatus(msg.status),
+    updated_at_ms: Date.now(),
+  };
+  if (existing) {
+    Object.assign(existing, next);
+  } else {
+    manualAssistItems.unshift(next);
+  }
+  while (manualAssistItems.length > 20) manualAssistItems.pop();
+  renderManualAssistPanel();
+}
+
+async function sendManualAssistCommand(payload) {
+  if (!window.valhalla?.manualAssistCommand) {
+    addLog('[DL Assist] command channel unavailable', 'lose');
+    return { ok: false };
+  }
+  try {
+    const res = await window.valhalla.manualAssistCommand(payload);
+    if (!res || res.ok === false) {
+      addLog(`[DL Assist] command failed: ${(res && (res.error || res.reason)) || 'unknown'}`, 'lose');
+    }
+    return res || { ok: false };
+  } catch (e) {
+    addLog(`[DL Assist] command failed: ${e.message || e}`, 'lose');
+    return { ok: false };
+  }
+}
+
+function markManualAssistTaken(id) {
+  const item = manualAssistItems.find((it) => it.id === id);
+  if (!item) return;
+  if (['EXPIRED', 'MISSED', 'SETTLED'].includes(_manualNormalizeStatus(item.status))) return;
+  item.status = 'TAKEN';
+  item.taken_at_ms = Date.now();
+  activeManualItemId = id;
+  addLog(`[DL Assist] taken ${item.table_name || item.table_id || ''}`, 'info');
+  sendManualAssistCommand({ action: 'take', id, decision_id: item.decision_id || '' });
+  renderManualAssistPanel();
+}
+
+function renderManualAssistPanel() {
+  const panel = $('#manualAssistPanel');
+  const queue = $('#manualAssistQueue');
+  const summary = $('#manualAssistSummary');
+  const mode = $('#manualAssistMode');
+  if (!panel || !queue) return;
+  panel.classList.toggle('hidden', !manualAssistEnabled && manualAssistItems.length === 0);
+  if (mode) mode.textContent = manualAssistEnabled ? 'ASSIST' : 'AUTO';
+
+  const now = Date.now();
+  for (const item of manualAssistItems) {
+    const status = _manualNormalizeStatus(item.status);
+    const expiry = _manualItemExpiryMs(item);
+    if ((status === 'READY' || status === 'NOW') && expiry > 0 && now > expiry) {
+      item.status = status === 'NOW' ? 'MISSED' : 'EXPIRED';
+    }
+  }
+
+  const visible = manualAssistItems.slice().sort((a, b) => {
+    const rank = { NOW: 0, TAKEN: 1, READY: 2, MISSED: 3, EXPIRED: 4, SETTLED: 5 };
+    const ar = rank[_manualNormalizeStatus(a.status)] ?? 9;
+    const br = rank[_manualNormalizeStatus(b.status)] ?? 9;
+    if (ar !== br) return ar - br;
+    return (b.updated_at_ms || 0) - (a.updated_at_ms || 0);
+  });
+
+  const nowCount = visible.filter((it) => _manualNormalizeStatus(it.status) === 'NOW').length;
+  const readyCount = visible.filter((it) => _manualNormalizeStatus(it.status) === 'READY').length;
+  const taken = visible.find((it) => it.id === activeManualItemId && _manualNormalizeStatus(it.status) === 'TAKEN');
+  if (summary) {
+    const takenText = taken ? ` | TAKEN ${taken.table_name || taken.table_id || ''}` : '';
+    summary.textContent = `NOW ${nowCount} / READY ${readyCount}${takenText}`;
+  }
+
+  if (visible.length === 0) {
+    queue.innerHTML = '<div class="manual-assist-empty">No manual targets</div>';
+  } else {
+    queue.innerHTML = visible.map((item) => {
+      const status = _manualNormalizeStatus(item.status);
+      const sideRaw = String(item.side || '?').toUpperCase();
+      const sideCls = sideRaw.startsWith('B') ? 'b' : sideRaw.startsWith('P') ? 'p' : '';
+      const sideLabel = sideRaw === 'B' ? 'BANKER' : sideRaw === 'P' ? 'PLAYER' : sideRaw;
+      const amount = Number.isFinite(Number(item.amount)) ? Number(item.amount).toFixed(2) : '0.00';
+      const table = item.table_name || item.table_id || item.qpid || '?';
+      const pattern = item.pattern_key || item.pattern || '';
+      const expiry = _manualItemExpiryMs(item);
+      const remain = expiry > 0 && ['READY', 'NOW'].includes(status)
+        ? Math.max(0, Math.ceil((expiry - now) / 1000))
+        : 0;
+      const canTake = status === 'NOW';
+      return `
+        <div class="manual-assist-item ${status.toLowerCase()}" data-id="${esc(item.id)}">
+          <div class="manual-status">${esc(status)}</div>
+          <div class="manual-main">
+            <div class="manual-table" title="${esc(table)}">${esc(table)}</div>
+            <div class="manual-meta">
+              <span class="manual-side ${sideCls}">${esc(sideLabel)}</span>
+              $${amount}${remain ? ` | ${remain}s` : ''}${pattern ? ` | ${esc(pattern)}` : ''}
+            </div>
+          </div>
+          <div class="manual-item-actions">
+            <button class="manual-mini-btn" data-manual-action="take" data-id="${esc(item.id)}" ${canTake ? '' : 'disabled'}>TAKE</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  const resultEnabled = !!taken;
+  $('#manualResultWin')?.toggleAttribute('disabled', !resultEnabled);
+  $('#manualResultLose')?.toggleAttribute('disabled', !resultEnabled);
+  $('#manualResultTie')?.toggleAttribute('disabled', !resultEnabled);
+}
+
+setInterval(renderManualAssistPanel, 1000);
+
+document.addEventListener('click', (ev) => {
+  const btn = ev.target && ev.target.closest ? ev.target.closest('[data-manual-action]') : null;
+  if (!btn) return;
+  const action = btn.getAttribute('data-manual-action');
+  const id = btn.getAttribute('data-id') || '';
+  if (action === 'take') markManualAssistTaken(id);
+});
+
+for (const [id, result] of [
+  ['manualResultWin', 'WIN'],
+  ['manualResultLose', 'LOSE'],
+  ['manualResultTie', 'TIE'],
+]) {
+  document.addEventListener('click', (ev) => {
+    const target = ev.target;
+    if (!target || target.id !== id) return;
+    const item = manualAssistItems.find((it) => it.id === activeManualItemId);
+    if (!item || _manualNormalizeStatus(item.status) !== 'TAKEN') return;
+    addLog(`[DL Assist] ${result} selected for ${item.table_name || item.table_id || ''}`, 'info');
+    sendManualAssistCommand({
+      action: 'result',
+      result,
+      id: item.id,
+      decision_id: item.decision_id || '',
+    });
   });
 }
 
@@ -1757,6 +1956,28 @@ window.valhalla.onAgentMessage((msg) => {
 
     case 'money_status': {
       applyMoneyStatusToSignalPanel(msg.money_status || msg);
+      break;
+    }
+
+    case 'manual_assist_mode': {
+      const enabled = !!msg.enabled;
+      manualAssistEnabled = enabled;
+      renderManualAssistPanel();
+      addLog(enabled ? '[DL Assist] manual assist enabled; auto-bet disabled' : '[DL Assist] auto-bet enabled', 'info');
+      if (msg.money_status) applyMoneyStatusToSignalPanel(msg.money_status);
+      break;
+    }
+
+    case 'manual_assist_item': {
+      const status = String(msg.status || '').toUpperCase();
+      const side = String(msg.side || '?').toUpperCase();
+      const amount = Number.isFinite(Number(msg.amount)) ? Number(msg.amount).toFixed(2) : '0.00';
+      const table = msg.table_name || msg.table_id || msg.qpid || '?';
+      const label = status === 'NOW' ? '[DL Assist NOW]' : `[DL Assist ${status || 'ITEM'}]`;
+      upsertManualAssistItem(msg);
+      addLog(`${label} ${table} ${side} $${amount}`, status === 'NOW' ? 'win' : 'info');
+      setAction(`${label} ${side} $${amount} on ${table}`);
+      if (msg.money_status) applyMoneyStatusToSignalPanel(msg.money_status);
       break;
     }
 
