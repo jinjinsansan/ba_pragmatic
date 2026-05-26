@@ -707,6 +707,8 @@ function buildSpawnSpec(config) {
     if (config && config.profit_target) args.push('--profit-target', String(config.profit_target));
     if (config && config.loss_cut) args.push('--loss-cut', String(config.loss_cut));
     if (config && config.on_limit) args.push('--on-limit', String(config.on_limit));
+    // 新規リセットスタート: engine 側 state ファイルも削除する
+    if (config && config.resume === false) args.push('--reset');
   }
 
   if (config && config.allow_switch_table) args.push('--allow-switch-table');
