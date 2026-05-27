@@ -1421,8 +1421,29 @@ function upsertManualAssistItem(msg) {
   } else {
     manualAssistItems.unshift(next);
   }
+  const status = _manualNormalizeStatus(next.status);
+  const active = manualAssistItems.find((it) => it.id === activeManualItemId);
+  const activeStatus = active ? _manualNormalizeStatus(active.status) : '';
+  if (status === 'NOW' || !active || activeStatus === 'SETTLED') {
+    activeManualItemId = id;
+  }
   while (manualAssistItems.length > 20) manualAssistItems.pop();
   renderManualAssistPanel();
+}
+
+function getManualResultTarget() {
+  const active = manualAssistItems.find((it) => it.id === activeManualItemId);
+  if (active && ['NOW', 'TAKEN'].includes(_manualNormalizeStatus(active.status))) return active;
+  return manualAssistItems
+    .slice()
+    .sort((a, b) => {
+      const rank = { NOW: 0, TAKEN: 1, READY: 2, MISSED: 3, EXPIRED: 4, SETTLED: 5 };
+      const ar = rank[_manualNormalizeStatus(a.status)] ?? 9;
+      const br = rank[_manualNormalizeStatus(b.status)] ?? 9;
+      if (ar !== br) return ar - br;
+      return (b.updated_at_ms || 0) - (a.updated_at_ms || 0);
+    })
+    .find((it) => ['NOW', 'TAKEN'].includes(_manualNormalizeStatus(it.status))) || null;
 }
 
 async function sendManualAssistCommand(payload) {
@@ -1442,16 +1463,15 @@ async function sendManualAssistCommand(payload) {
   }
 }
 
-function markManualAssistTaken(id) {
-  const item = manualAssistItems.find((it) => it.id === id);
-  if (!item) return;
-  if (['EXPIRED', 'MISSED', 'SETTLED'].includes(_manualNormalizeStatus(item.status))) return;
-  item.status = 'TAKEN';
-  item.taken_at_ms = Date.now();
-  activeManualItemId = id;
-  addLog(`[DL Assist] taken ${item.table_name || item.table_id || ''}`, 'info');
-  sendManualAssistCommand({ action: 'take', id, decision_id: item.decision_id || '' });
-  renderManualAssistPanel();
+function forceManualResultButtons() {
+  for (const id of ['manualResultWin', 'manualResultLose']) {
+    const btn = $(`#${id}`);
+    if (!btn) continue;
+    btn.disabled = false;
+    btn.removeAttribute('disabled');
+    btn.setAttribute('aria-disabled', 'false');
+  }
+  $('#manualResultTie')?.toggleAttribute('disabled', true);
 }
 
 function renderManualAssistPanel() {
@@ -1482,10 +1502,10 @@ function renderManualAssistPanel() {
 
   const nowCount = visible.filter((it) => _manualNormalizeStatus(it.status) === 'NOW').length;
   const readyCount = visible.filter((it) => _manualNormalizeStatus(it.status) === 'READY').length;
-  const taken = visible.find((it) => it.id === activeManualItemId && _manualNormalizeStatus(it.status) === 'TAKEN');
+  const resultTarget = getManualResultTarget();
   if (summary) {
-    const takenText = taken ? ` | TAKEN ${taken.table_name || taken.table_id || ''}` : '';
-    summary.textContent = `NOW ${nowCount} / READY ${readyCount}${takenText}`;
+    const resultText = resultTarget ? ` | RESULT ${resultTarget.table_name || resultTarget.table_id || ''}` : '';
+    summary.textContent = `NOW ${nowCount} / READY ${readyCount}${resultText}`;
   }
 
   if (visible.length === 0) {
@@ -1503,9 +1523,10 @@ function renderManualAssistPanel() {
       const remain = expiry > 0 && ['READY', 'NOW'].includes(status)
         ? Math.max(0, Math.ceil((expiry - now) / 1000))
         : 0;
-      const canTake = status === 'NOW';
+      const stale = ['EXPIRED', 'MISSED', 'SETTLED'].includes(status);
+      const selected = item.id === (resultTarget && resultTarget.id);
       return `
-        <div class="manual-assist-item ${status.toLowerCase()}" data-id="${esc(item.id)}">
+        <div class="manual-assist-item ${status.toLowerCase()} ${sideCls} ${stale ? 'stale' : ''} ${selected ? 'selected' : ''}" data-id="${esc(item.id)}" data-manual-action="select">
           <div class="manual-status">${esc(status)}</div>
           <div class="manual-main">
             <div class="manual-table" title="${esc(table)}">${esc(table)}</div>
@@ -1514,46 +1535,50 @@ function renderManualAssistPanel() {
               $${amount}${remain ? ` | ${remain}s` : ''}${pattern ? ` | ${esc(pattern)}` : ''}
             </div>
           </div>
-          <div class="manual-item-actions">
-            <button class="manual-mini-btn" data-manual-action="take" data-id="${esc(item.id)}" ${canTake ? '' : 'disabled'}>TAKE</button>
-          </div>
         </div>
       `;
     }).join('');
   }
 
-  const resultEnabled = !!taken;
-  $('#manualResultWin')?.toggleAttribute('disabled', !resultEnabled);
-  $('#manualResultLose')?.toggleAttribute('disabled', !resultEnabled);
-  $('#manualResultTie')?.toggleAttribute('disabled', !resultEnabled);
+  forceManualResultButtons();
+  $('#manualResultTie')?.toggleAttribute('disabled', true);
 }
 
 setInterval(renderManualAssistPanel, 1000);
+setInterval(forceManualResultButtons, 500);
+forceManualResultButtons();
 
 document.addEventListener('click', (ev) => {
   const btn = ev.target && ev.target.closest ? ev.target.closest('[data-manual-action]') : null;
   if (!btn) return;
   const action = btn.getAttribute('data-manual-action');
   const id = btn.getAttribute('data-id') || '';
-  if (action === 'take') markManualAssistTaken(id);
+  if (action === 'select' && id) {
+    const item = manualAssistItems.find((it) => it.id === id);
+    if (item && _manualNormalizeStatus(item.status) !== 'SETTLED') {
+      activeManualItemId = id;
+      renderManualAssistPanel();
+    }
+  }
 });
 
 for (const [id, result] of [
   ['manualResultWin', 'WIN'],
   ['manualResultLose', 'LOSE'],
-  ['manualResultTie', 'TIE'],
 ]) {
   document.addEventListener('click', (ev) => {
     const target = ev.target;
     if (!target || target.id !== id) return;
-    const item = manualAssistItems.find((it) => it.id === activeManualItemId);
-    if (!item || _manualNormalizeStatus(item.status) !== 'TAKEN') return;
-    addLog(`[DL Assist] ${result} selected for ${item.table_name || item.table_id || ''}`, 'info');
+    target.classList.add('pressed');
+    setTimeout(() => target.classList.remove('pressed'), 180);
+    const item = getManualResultTarget();
+    if (item) activeManualItemId = item.id;
+    addLog(`[DL Assist] ${result} selected${item ? ` for ${item.table_name || item.table_id || ''}` : ''}`, 'info');
     sendManualAssistCommand({
       action: 'result',
       result,
-      id: item.id,
-      decision_id: item.decision_id || '',
+      id: item ? item.id : '',
+      decision_id: item ? (item.decision_id || '') : '',
     });
   });
 }

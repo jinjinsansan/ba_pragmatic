@@ -300,11 +300,26 @@ async (args) => {
   function qpidTarget(el) {
     const target = clickableAncestor(el);
     const tile = String((el && el.id) || '').startsWith('TileHeight-') ? el : (target || el);
+    const assistStatus = String((args && args.assistStatus) || '').toUpperCase();
+    if (assistStatus && String((tile && tile.id) || '').startsWith('TileHeight-')) return target || tile;
     if (String((tile && tile.id) || '').startsWith('TileHeight-') && !hasBetCells(tile)) return null;
     return target;
   }
+  function centerInScroller(el, sc) {
+    if (!el || !sc) return false;
+    try {
+      const er = el.getBoundingClientRect();
+      const sr = sc.getBoundingClientRect ? sc.getBoundingClientRect() : {top:0, left:0, width:window.innerWidth, height:window.innerHeight};
+      const dy = (er.top + er.height / 2) - (sr.top + sr.height / 2);
+      const dx = (er.left + er.width / 2) - (sr.left + sr.width / 2);
+      if (Math.abs(dy) > 8) sc.scrollTop = Math.max(0, Number(sc.scrollTop || 0) + dy);
+      if (Math.abs(dx) > 8 && typeof sc.scrollLeft === 'number') sc.scrollLeft = Math.max(0, Number(sc.scrollLeft || 0) + dx);
+      return true;
+    } catch(_) {
+      return false;
+    }
+  }
   function clickEl(el) {
-    try { el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
     const r = el.getBoundingClientRect ? el.getBoundingClientRect() : {left:0, top:0, width:0, height:0};
     const cx = r.left + (r.width || 0) / 2;
     const cy = r.top + (r.height || 0) / 2;
@@ -319,6 +334,119 @@ async (args) => {
       el.dispatchEvent(new MouseEvent('click', base));
       el.click();
     } catch(_) {}
+  }
+  function applyAssistOverlay(el) {
+    const status = String((args && args.assistStatus) || '').toUpperCase();
+    if (!status) return false;
+    const side = String((args && args.side) || '').toUpperCase();
+    const amount = Number(args && args.amount);
+    const tile = (() => {
+      let cur = el;
+      for (let i = 0; i < 8 && cur; i++) {
+        if (String(cur.id || '').startsWith('TileHeight-')) return cur;
+        cur = cur.parentElement;
+      }
+      return el;
+    })();
+    if (!tile || !tile.getBoundingClientRect) return false;
+    try {
+      if (!document.getElementById('bacopy-manual-assist-style')) {
+        const st = document.createElement('style');
+        st.id = 'bacopy-manual-assist-style';
+        st.textContent = `
+          @keyframes bacopyAssistPulse {
+            0%,100% { box-shadow: 0 0 0 3px var(--bc-ring), 0 0 14px var(--bc-glow); }
+            50% { box-shadow: 0 0 0 5px var(--bc-ring), 0 0 30px var(--bc-glow); }
+          }
+          .bacopy-assist-tile {
+            position: relative !important;
+            border-radius: 10px !important;
+            outline: 4px solid var(--bc-ring) !important;
+            outline-offset: -5px !important;
+          }
+          .bacopy-assist-tile.bacopy-assist-now {
+            animation: bacopyAssistPulse .72s ease-in-out infinite !important;
+          }
+          .bacopy-assist-badge {
+            position: absolute !important;
+            z-index: 2147483647 !important;
+            bottom: 6px !important;
+            left: 50% !important;
+            transform: translateX(-50%) !important;
+            pointer-events: none !important;
+            min-width: 72px !important;
+            max-width: calc(100% - 18px) !important;
+            padding: 4px 8px !important;
+            border-radius: 999px !important;
+            font: 800 13px/1.1 Arial, sans-serif !important;
+            letter-spacing: 0 !important;
+            color: #fff !important;
+            text-align: center !important;
+            background: var(--bc-bg) !important;
+            border: 1px solid var(--bc-ring) !important;
+            text-shadow: 0 1px 2px rgba(0,0,0,.55) !important;
+            opacity: .82 !important;
+          }
+        `;
+        document.head.appendChild(st);
+      }
+      for (const oldTile of document.querySelectorAll('.bacopy-assist-tile')) {
+        if (oldTile !== tile) {
+          try {
+            oldTile.classList.remove('bacopy-assist-tile', 'bacopy-assist-now', 'bacopy-assist-ready');
+            oldTile.style.removeProperty('--bc-ring');
+            oldTile.style.removeProperty('--bc-glow');
+            oldTile.style.removeProperty('--bc-bg');
+            for (const oldBadge of oldTile.querySelectorAll(':scope > .bacopy-assist-badge')) oldBadge.remove();
+          } catch(_) {}
+        }
+      }
+      tile.classList.remove('bacopy-assist-tile', 'bacopy-assist-now', 'bacopy-assist-ready');
+      tile.style.removeProperty('--bc-ring');
+      tile.style.removeProperty('--bc-glow');
+      tile.style.removeProperty('--bc-bg');
+      for (const old of tile.querySelectorAll(':scope > .bacopy-assist-badge')) old.remove();
+      let ring = 'rgba(255,204,0,.94)';
+      let glow = 'rgba(255,204,0,.45)';
+      let bg = 'rgba(25,18,0,.70)';
+      if (status === 'NOW' && side === 'P') {
+        ring = 'rgba(45,145,255,.98)';
+        glow = 'rgba(45,145,255,.62)';
+        bg = 'rgba(0,38,86,.72)';
+      } else if (status === 'NOW' && side === 'B') {
+        ring = 'rgba(255,58,92,.98)';
+        glow = 'rgba(255,58,92,.62)';
+        bg = 'rgba(82,0,18,.72)';
+      }
+      tile.style.setProperty('--bc-ring', ring);
+      tile.style.setProperty('--bc-glow', glow);
+      tile.style.setProperty('--bc-bg', bg);
+      tile.classList.add('bacopy-assist-tile');
+      tile.classList.add(status === 'NOW' ? 'bacopy-assist-now' : 'bacopy-assist-ready');
+      const badge = document.createElement('div');
+      badge.className = 'bacopy-assist-badge';
+      const sideLabel = side === 'P' ? 'PLAYER' : side === 'B' ? 'BANKER' : 'READY';
+      const amt = Number.isFinite(amount) && amount > 0 ? '$' + amount.toFixed(0) : '';
+      badge.textContent = status === 'NOW' ? `${sideLabel} ${amt}`.trim() : `READY ${sideLabel}`;
+      tile.appendChild(badge);
+      const ttl = status === 'NOW' ? 22000 : 90000;
+      const token = String(Date.now()) + ':' + Math.random();
+      tile.setAttribute('data-bacopy-assist-token', token);
+      window.setTimeout(() => {
+        try {
+          if (tile.getAttribute('data-bacopy-assist-token') !== token) return;
+          tile.classList.remove('bacopy-assist-tile', 'bacopy-assist-now', 'bacopy-assist-ready');
+          tile.style.removeProperty('--bc-ring');
+          tile.style.removeProperty('--bc-glow');
+          tile.style.removeProperty('--bc-bg');
+          tile.removeAttribute('data-bacopy-assist-token');
+          for (const old of tile.querySelectorAll(':scope > .bacopy-assist-badge')) old.remove();
+        } catch(_) {}
+      }, ttl);
+      return true;
+    } catch(_) {
+      return false;
+    }
   }
   function diagOf(el) {
     const out = [];
@@ -344,7 +472,8 @@ async (args) => {
     if (qpid) {
       try {
         const tile = document.getElementById('TileHeight-' + qpid);
-        if (tile && hasBetCells(tile)) {
+        const assistStatus = String((args && args.assistStatus) || '').toUpperCase();
+        if (tile && (assistStatus || hasBetCells(tile))) {
           return { el: clickableAncestor(tile), idx: 0, total: 1 };
         }
       } catch(_) {}
@@ -529,13 +658,16 @@ async (args) => {
       await sleep(90);
       const t = findTarget();
       if (t && t.el) {
-        try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+        centerInScroller(t.el, cachedScroller);
+        await sleep(70);
+        const assisted = applyAssistOverlay(t.el);
         if (click) clickEl(t.el);
         return {
           ok:true, found:true, clicked: !!click,
           matchIndex: Number(t.idx), totalNodes: Number(t.total),
           scroll: scrollMeta(cachedScroller), diag: diagOf(t.el),
-          scanMode: 'absolute_qpid', scanStep: i, scanTotal: positions.length
+          scanMode: 'absolute_qpid', scanStep: i, scanTotal: positions.length,
+          assisted: assisted
         };
       }
     }
@@ -543,9 +675,11 @@ async (args) => {
     for (let i = 0; i < maxScroll && Date.now() < deadline; i++) {
       const t = findTarget();
       if (t && t.el) {
-        try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+        centerInScroller(t.el, cachedScroller);
+        await sleep(70);
+        const assisted = applyAssistOverlay(t.el);
         if (click) clickEl(t.el);
-        return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
+        return { ok:true, found:true, clicked: !!click, assisted: assisted, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
       }
       scrollStep(cachedScroller, true);
       await sleep(70);
@@ -553,9 +687,11 @@ async (args) => {
     for (let i = 0; i < maxScroll && Date.now() < deadline; i++) {
       const t = findTarget();
       if (t && t.el) {
-        try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+        centerInScroller(t.el, cachedScroller);
+        await sleep(70);
+        const assisted = applyAssistOverlay(t.el);
         if (click) clickEl(t.el);
-        return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
+        return { ok:true, found:true, clicked: !!click, assisted: assisted, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
       }
       scrollStep(cachedScroller, false);
       await sleep(70);
@@ -564,9 +700,11 @@ async (args) => {
   for (let i = 0; i < Math.max(3, Math.floor(maxScroll / 4)) && Date.now() < deadline; i++) {
     const t = findTarget();
     if (t && t.el) {
-      try { t.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+      centerInScroller(t.el, cachedScroller);
+      await sleep(70);
+      const assisted = applyAssistOverlay(t.el);
       if (click) clickEl(t.el);
-      return { ok:true, found:true, clicked: !!click, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
+      return { ok:true, found:true, clicked: !!click, assisted: assisted, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
     }
     scrollStep(cachedScroller, false);
     await sleep(70);
@@ -574,9 +712,11 @@ async (args) => {
   const timedOut = Date.now() >= deadline;
   const finalTarget = findTarget();
   if (finalTarget && finalTarget.el) {
-    try { finalTarget.el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+    centerInScroller(finalTarget.el, cachedScroller);
+    await sleep(70);
+    const assisted = applyAssistOverlay(finalTarget.el);
     if (click) clickEl(finalTarget.el);
-    return { ok:true, found:true, clicked: !!click, matchIndex: Number(finalTarget.idx), totalNodes: Number(finalTarget.total), scroll: scrollMeta(cachedScroller), diag: diagOf(finalTarget.el), reason: timedOut ? 'deadline_late_match' : undefined };
+    return { ok:true, found:true, clicked: !!click, assisted: assisted, matchIndex: Number(finalTarget.idx), totalNodes: Number(finalTarget.total), scroll: scrollMeta(cachedScroller), diag: diagOf(finalTarget.el), reason: timedOut ? 'deadline_late_match' : undefined };
   }
   return { ok:true, found:false, clicked:false, matchIndex:-1, totalNodes:Number(finalTarget.total || 0), scroll: scrollMeta(cachedScroller), mountedQpids: mountedQpidSample(8), reason: timedOut ? 'deadline' : undefined };
 }
@@ -1685,10 +1825,10 @@ class LiveBetExecutor:
             "click": bool(click),
             "maxScroll": int(
                 os.getenv(
-                    "BACOPY_MULTI_PREPOSITION_SCROLL_MAX" if intent == "preposition" else "BACOPY_MULTI_SCROLL_MAX",
-                    "48" if intent == "preposition" else "18",
+                    "BACOPY_MULTI_PREPOSITION_SCROLL_MAX" if intent in ("preposition", "manual_assist") else "BACOPY_MULTI_SCROLL_MAX",
+                    "48" if intent in ("preposition", "manual_assist") else "18",
                 )
-                or ("48" if intent == "preposition" else "18")
+                or ("48" if intent in ("preposition", "manual_assist") else "18")
             ),
             "candidates": candidates,
             "hintIndex": -1,
@@ -1697,11 +1837,14 @@ class LiveBetExecutor:
             "hintScrollRatio": -1,
             "maxMs": int(
                 os.getenv(
-                    "BACOPY_MULTI_PREPOSITION_FOCUS_MS" if intent == "preposition" else "BACOPY_MULTI_FOCUS_MS",
-                    "9000" if intent == "preposition" else "12000",
+                    "BACOPY_MULTI_PREPOSITION_FOCUS_MS" if intent in ("preposition", "manual_assist") else "BACOPY_MULTI_FOCUS_MS",
+                    "9000" if intent in ("preposition", "manual_assist") else "12000",
                 )
-                or ("9000" if intent == "preposition" else "12000")
+                or ("9000" if intent in ("preposition", "manual_assist") else "12000")
             ),
+            "assistStatus": "NOW" if intent == "manual_assist" else ("READY" if intent == "preposition" else ""),
+            "side": side,
+            "amount": float(req.get("preselect_amount") or req.get("amount") or 0.0),
         }
         cache_key = str(qpid or table_id or "").strip()
         cached = self._table_focus_cache.get(cache_key) if cache_key else None

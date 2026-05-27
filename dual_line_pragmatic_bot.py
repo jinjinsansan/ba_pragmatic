@@ -649,7 +649,14 @@ class DualLinePragmaticBot(cp.Collector):
             amt = float(amount if amount is not None else self.money.next_bet())
         except Exception:
             amt = 0.0
-        item_id = str(item_id or decision_id or f"{status}:{qpid or table_id}:{pattern_key}:{int(now)}")
+        if item_id:
+            item_id = str(item_id)
+        elif decision_id:
+            item_id = str(decision_id)
+        elif str(status).upper() == "READY":
+            item_id = f"READY:{qpid or table_id}"
+        else:
+            item_id = f"{status}:{qpid or table_id}:{pattern_key}:{int(now)}"
         payload = {
             "type": "manual_assist_item",
             "id": item_id,
@@ -715,7 +722,30 @@ class DualLinePragmaticBot(cp.Collector):
         item_id = str(msg.get("id") or "").strip()
         decision_id = str(msg.get("decision_id") or "").strip()
         key, item = self._find_manual_assist_item(item_id=item_id, decision_id=decision_id)
-        if not item:
+        if not item and action == "result":
+            key = f"manual-result-{int(time.time() * 1000)}"
+            try:
+                amount = float(self.money.next_bet() or 0.0)
+            except Exception:
+                amount = 0.0
+            item = {
+                "status": "NOW",
+                "table_id": "",
+                "table_name": "Manual Result",
+                "qpid": "",
+                "side": str(msg.get("side") or "P").upper(),
+                "amount": amount,
+                "pattern_key": "manual",
+                "decision_id": "",
+                "signal_game_id": "",
+                "source": "manual_button",
+            }
+            self._manual_assist_items[key] = dict(item)
+            logger.info(
+                f"[MANUAL-ASSIST] result fallback item created id={key} "
+                f"amount=${amount:.2f}"
+            )
+        elif not item:
             logger.warning(f"[MANUAL-ASSIST] command ignored: item not found id={item_id or decision_id or '-'}")
             return
         status = str(item.get("status") or "").upper()
@@ -744,17 +774,22 @@ class DualLinePragmaticBot(cp.Collector):
         if action != "result":
             logger.warning(f"[MANUAL-ASSIST] unknown command action={action!r}")
             return
-        if status != "TAKEN":
-            logger.warning(f"[MANUAL-ASSIST] result ignored: status={status} id={key}")
+        if status == "SETTLED":
+            logger.warning(f"[MANUAL-ASSIST] result ignored: already settled id={key}")
             return
 
         result = str(msg.get("result") or "").strip().upper()
-        if result not in ("WIN", "LOSE", "TIE"):
+        if result not in ("WIN", "LOSE"):
             logger.warning(f"[MANUAL-ASSIST] invalid result={result!r} id={key}")
             return
 
         side = str(item.get("side") or "P").upper()
         amount = float(item.get("amount") or 0.0)
+        if amount <= 0:
+            try:
+                amount = float(self.money.next_bet() or 0.0)
+            except Exception:
+                amount = 0.0
         before_pnl = float(getattr(self.money, "session_pnl", 0.0) or 0.0)
         try:
             self.money._last_bet_amount = amount
