@@ -682,6 +682,67 @@ class DualLinePragmaticBot(cp.Collector):
         except Exception:
             pass
 
+    def _expire_manual_assist_ready(
+        self,
+        *,
+        reason: str,
+        table_id: str = "",
+        qpid: str = "",
+        keep_table_id: str = "",
+        keep_qpid: str = "",
+    ) -> int:
+        """Expire READY assist items when the pre-alert candidate collapses."""
+        if not self.manual_assist:
+            return 0
+        target_table = str(table_id or "").strip()
+        target_qpid = str(qpid or "").strip()
+        keep_table = str(keep_table_id or "").strip()
+        keep_target_qpid = str(keep_qpid or "").strip()
+        expired = 0
+        for key, item in list(self._manual_assist_items.items()):
+            try:
+                if str(item.get("status") or "").upper() != "READY":
+                    continue
+                item_table = str(item.get("table_id") or "").strip()
+                item_qpid = str(item.get("qpid") or "").strip()
+                if keep_table and item_table == keep_table:
+                    continue
+                if keep_target_qpid and item_qpid == keep_target_qpid:
+                    continue
+                if target_table or target_qpid:
+                    if target_table and item_table != target_table:
+                        continue
+                    if target_qpid and item_qpid != target_qpid:
+                        continue
+                self._send_manual_assist_item(
+                    status="EXPIRED",
+                    table_id=item_table,
+                    table_name=str(item.get("table_name") or ""),
+                    qpid=item_qpid,
+                    side=str(item.get("side") or ""),
+                    amount=float(item.get("amount") or 0.0),
+                    pattern_key=str(item.get("pattern_key") or ""),
+                    decision_id=str(item.get("decision_id") or ""),
+                    item_id=key,
+                    signal_game_id=str(item.get("signal_game_id") or ""),
+                    score=item.get("score"),
+                    steps_before=item.get("steps_before"),
+                    source=str(item.get("source") or ""),
+                    expires_sec=0.0,
+                )
+                clear_fn = getattr(self.bet_executor, "clear_manual_assist_overlay", None)
+                if callable(clear_fn):
+                    try:
+                        clear_fn(item_qpid or item_table)
+                    except Exception as ex:
+                        logger.debug(f"[MANUAL-ASSIST] overlay clear failed target={item_qpid or item_table}: {ex}")
+                expired += 1
+            except Exception as ex:
+                logger.debug(f"[MANUAL-ASSIST] READY expire failed id={key}: {ex}")
+        if expired:
+            logger.info(f"[MANUAL-ASSIST] READY expired count={expired} reason={reason}")
+        return expired
+
     def start_manual_assist_command_reader(self) -> None:
         """Read GUI manual-assist commands from stdin without touching auto-bet."""
         if self._manual_command_reader_started:
@@ -1125,11 +1186,13 @@ class DualLinePragmaticBot(cp.Collector):
             return
         if score <= 0:
             self._prev_preposition_keys.pop(table_id, None)
+            self._expire_manual_assist_ready(reason="local_score_zero", table_id=table_id)
             return
         if _is_unsupported_table_name(str(buf.table_name or table_id)):
             return
         pattern_keys = [str(x) for x in (preview.get("pattern_keys") or []) if str(x) in V2_PATTERNS]
         if not pattern_keys:
+            self._expire_manual_assist_ready(reason="local_pattern_cleared", table_id=table_id)
             return
         dedup_key = f"{score}|{'/'.join(pattern_keys)}|{len(seq)}"
         if self._prev_preposition_keys.get(table_id) == dedup_key:
@@ -2214,6 +2277,7 @@ class DualLinePragmaticBot(cp.Collector):
             # the previous forecast is no longer active.
             if not saw_stale_candidate:
                 self._last_preposition_key = ""
+                self._expire_manual_assist_ready(reason="vps_no_active_preposition")
             last = float(getattr(self, "_last_preposition_empty_log_at", 0.0) or 0.0)
             if now_ts - last >= 30.0:
                 logger.info(f"[PREPOS] no active candidate from {len(targets)} target(s)")
@@ -2280,6 +2344,11 @@ class DualLinePragmaticBot(cp.Collector):
         preselect_amount = float(self.money.next_bet() or 0.0)
         steps_before = int(data.get("steps_before") or max(0, 3 - score))
         if self.manual_assist:
+            self._expire_manual_assist_ready(
+                reason="vps_ready_replaced",
+                keep_table_id=table_id,
+                keep_qpid=qpid or table_id,
+            )
             self._send_manual_assist_item(
                 status="READY",
                 table_id=table_id,
@@ -3409,15 +3478,53 @@ class DualLinePragmaticBot(cp.Collector):
         report_interval = 60
 
         _camoufox_mgr = None  # GC による premature close を防ぐため参照を保持
+        _playwright_mgr = None
+        _chrome_browser = None
         ctx = None
         bet_page = None
         try:
-            _camoufox_mgr = cp.Camoufox(**launch_opts)
-            ctx = _camoufox_mgr.__enter__()
-            time.sleep(2)  # headless ブラウザ完全初期化待ち
+            browser_mode = (
+                os.getenv("BACOPY_BROWSER", "")
+                or os.getenv("BACOPY_DUAL_LINE_BROWSER", "")
+                or ""
+            ).strip().lower()
+            chrome_attach = browser_mode in ("chrome_attach", "chrome-cdp", "cdp")
+            if chrome_attach:
+                from playwright.sync_api import sync_playwright
+
+                cdp_url = (
+                    os.getenv("BACOPY_CHROME_CDP_URL", "")
+                    or os.getenv("BACOPY_CHROME_DEBUG_URL", "")
+                    or "http://127.0.0.1:9222"
+                ).strip()
+                logger.info(f"[BROWSER] chrome_attach enabled cdp={cdp_url}")
+                _playwright_mgr = sync_playwright().start()
+                _chrome_browser = _playwright_mgr.chromium.connect_over_cdp(cdp_url)
+                contexts = list(getattr(_chrome_browser, "contexts", []) or [])
+                ctx = contexts[0] if contexts else _chrome_browser.new_context()
+                time.sleep(0.5)
+            else:
+                _camoufox_mgr = cp.Camoufox(**launch_opts)
+                ctx = _camoufox_mgr.__enter__()
+                time.sleep(2)  # headless ブラウザ完全初期化待ち
 
             # bet_page のみ作成（lobby monitoring は VPS が担当）
-            bet_page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            if chrome_attach:
+                pages = list(getattr(ctx, "pages", []) or [])
+                stake_pages = [
+                    p for p in pages
+                    if "stake.com" in str(getattr(p, "url", "") or "").lower()
+                ]
+                lobby_pages = [
+                    p for p in stake_pages
+                    if "pragmatic-play-live-lobby-baccarat" in str(getattr(p, "url", "") or "").lower()
+                ]
+                bet_page = lobby_pages[0] if lobby_pages else (stake_pages[0] if stake_pages else (pages[0] if pages else ctx.new_page()))
+                logger.info(
+                    f"[BROWSER] chrome_attach page selected url={str(getattr(bet_page, 'url', '') or '')[:160]}"
+                )
+            else:
+                bet_page = ctx.pages[0] if ctx.pages else ctx.new_page()
             bet_page.on("websocket", self._on_ws)
 
             # executor setup
@@ -3738,6 +3845,13 @@ class DualLinePragmaticBot(cp.Collector):
                     _camoufox_mgr.__exit__(None, None, None)
                 except Exception:
                     pass
+            # chrome_attach mode connects to a user-owned Chrome. Do not close
+            # the browser process; just stop Playwright's client side.
+            if _playwright_mgr is not None:
+                try:
+                    _playwright_mgr.stop()
+                except Exception:
+                    pass
 
         logger.info(
             f"Final: signals={self.total_signals} resolved={self.total_resolved} "
@@ -3812,6 +3926,18 @@ def main(argv: list[str] | None = None) -> int:
         help="manual assist mode: scroll/focus/preselect only; never auto-click BET",
     )
     ap.add_argument(
+        "--browser",
+        type=str,
+        default="",
+        help="experimental browser backend: default/camoufox or chrome_attach",
+    )
+    ap.add_argument(
+        "--chrome-cdp-url",
+        type=str,
+        default="",
+        help="experimental: existing Chrome DevTools URL for --browser chrome_attach",
+    )
+    ap.add_argument(
         "--no-vps-poll", action="store_true",
         help="VPS API polling を無効化（ローカル直接検出モード / bafather 直接実行用）",
     )
@@ -3826,6 +3952,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--result-timeout-sec", type=int, default=60)
     args, _ = ap.parse_known_args(argv)
+
+    if args.browser:
+        os.environ["BACOPY_BROWSER"] = str(args.browser).strip()
+    if args.chrome_cdp_url:
+        os.environ["BACOPY_CHROME_CDP_URL"] = str(args.chrome_cdp_url).strip()
 
     if args.reset:
         removed = []

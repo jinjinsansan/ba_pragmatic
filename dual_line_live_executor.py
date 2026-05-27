@@ -4316,6 +4316,51 @@ class LiveBetExecutor:
             time.sleep(0.38)
         return True
 
+    _CLEAR_ASSIST_OVERLAY_JS = r"""
+(args) => {
+  const qpid = String((args && args.qpid) || '').trim();
+  const clearTile = (tile) => {
+    if (!tile) return false;
+    try {
+      tile.classList.remove('bacopy-assist-tile', 'bacopy-assist-now', 'bacopy-assist-ready');
+      tile.style.removeProperty('--bc-ring');
+      tile.style.removeProperty('--bc-glow');
+      tile.style.removeProperty('--bc-bg');
+      tile.removeAttribute('data-bacopy-assist-token');
+      for (const old of tile.querySelectorAll(':scope > .bacopy-assist-badge')) old.remove();
+      return true;
+    } catch(_) {
+      return false;
+    }
+  };
+  if (qpid) {
+    const tile = document.getElementById('TileHeight-' + qpid);
+    if (tile) return {ok: clearTile(tile), qpid, mode: 'target'};
+  }
+  let count = 0;
+  for (const tile of document.querySelectorAll('.bacopy-assist-tile')) {
+    if (clearTile(tile)) count += 1;
+  }
+  return {ok: count > 0, qpid, mode: 'sweep', count};
+}
+"""
+
+    def clear_manual_assist_overlay(self, qpid: str) -> bool:
+        """Remove the manual assist READY/NOW frame without scrolling or betting."""
+        tid = str(qpid or "").strip()
+        frame = self._find_pragmatic_frame(target_qpid=tid) if tid else self._find_pragmatic_frame()
+        if not frame:
+            logger.info(f"[MANUAL-ASSIST] overlay clear skipped: frame not found target={tid or '-'}")
+            return False
+        try:
+            res = frame.evaluate(self._CLEAR_ASSIST_OVERLAY_JS, {"qpid": tid})
+            ok = bool(isinstance(res, dict) and res.get("ok"))
+            logger.info(f"[MANUAL-ASSIST] overlay clear target={tid or '-'} ok={ok} result={res}")
+            return ok
+        except Exception as ex:
+            logger.debug(f"[MANUAL-ASSIST] overlay clear error target={tid or '-'}: {ex}")
+            return False
+
     def _center_multi_tile(self, qpid: str, table_name: str = "", *, click: bool = False) -> bool:
         """Keep a multi-play tile visible near the screen center."""
         tid = str(qpid or "").strip()
