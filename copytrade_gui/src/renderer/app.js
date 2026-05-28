@@ -1,5 +1,23 @@
 
 
+// === BACOPY renderer build marker + debug proof object ====================
+// Open Electron DevTools (Ctrl+Shift+I) and verify these in the console:
+//   window.__bacopyDebug.build       -> proves which app.js the renderer loaded
+//   window.__bacopyDebug.agentCounts -> per-msg-type receive count
+//   window.__bacopyDebug.lastMsg     -> last full agent-message payload
+//   window.__bacopyDebug.panelProof  -> latest #manualAssistPanel rect/visibility
+const __BACOPY_RENDERER_BUILD = 'manual-assist-proof-2026-05-28';
+window.__bacopyDebug = window.__bacopyDebug || {
+  build: __BACOPY_RENDERER_BUILD,
+  agentCounts: {},
+  lastMsg: null,
+  lastManualMode: null,
+  lastManualItem: null,
+  panelProof: null,
+  errors: [],
+};
+console.log('[BACOPY-RENDERER] loaded build=' + __BACOPY_RENDERER_BUILD);
+
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
@@ -332,6 +350,7 @@ let _balanceConfirmed = false; // エンジンから実残高を受信したら 
 const results = [];
 const manualAssistItems = [];
 let manualAssistEnabled = false;
+let manualAssistEnabledAt = 0;
 let activeManualItemId = '';
 
 function _jstDateStrNow() {
@@ -432,6 +451,9 @@ async function startBotFlow({ auto = false } = {}) {
   const isDLAssist = isDualLineAssistBetMode(selectedBetMode) || settings.mode === 'dual_line'
     || settings.mode === 'dual_line_assist'
     || settings.mode === 'dual_line_manual';
+  manualAssistEnabled = !!isDLAssist;
+  if (manualAssistEnabled) manualAssistEnabledAt = Date.now();
+  renderManualAssistPanel();
   const config = {
     ...buildStartConfig(),
     mode: isDL ? (isDLAssist ? 'dual_line_assist' : 'dual_line_auto') : 'executor',
@@ -1350,6 +1372,23 @@ function updateDevPanel(msg) {
   }
 }
 
+function logSeqProbe(source, ms, extra = {}) {
+  try {
+    const s = ms || {};
+    const turns = Array.isArray(s.seq7_current_turns) ? s.seq7_current_turns.join('') : '';
+    console.log(
+      `[AUTO-PROBE-GUI] ${source} ` +
+      `next=${Number(s.next_bet || 0).toFixed(2)} ` +
+      `mode=${s.mode || '-'} seq_turn=${s.seq_turn ?? '-'} ` +
+      `overshoot=${s.seq_overshoot ?? '-'} turns=${turns} ` +
+      `pnl=${Number(s.session_pnl || 0).toFixed(2)} ` +
+      `extra=${JSON.stringify(extra || {})}`
+    );
+  } catch (e) {
+    console.log('[AUTO-PROBE-GUI] log failed', e && e.message);
+  }
+}
+
 function renderDevSets(sets, current_turns) {
 
 
@@ -1446,6 +1485,18 @@ function getManualResultTarget() {
     .find((it) => ['NOW', 'TAKEN'].includes(_manualNormalizeStatus(it.status))) || null;
 }
 
+function markManualAssistTaken(id) {
+  const item = manualAssistItems.find((it) => it.id === id);
+  if (!item) return;
+  if (['EXPIRED', 'MISSED', 'SETTLED'].includes(_manualNormalizeStatus(item.status))) return;
+  item.status = 'TAKEN';
+  item.taken_at_ms = Date.now();
+  activeManualItemId = id;
+  addLog(`[DL Assist] taken ${item.table_name || item.table_id || ''}`, 'info');
+  sendManualAssistCommand({ action: 'take', id, decision_id: item.decision_id || '' });
+  renderManualAssistPanel();
+}
+
 async function sendManualAssistCommand(payload) {
   if (!window.valhalla?.manualAssistCommand) {
     addLog('[DL Assist] command channel unavailable', 'lose');
@@ -1463,24 +1514,29 @@ async function sendManualAssistCommand(payload) {
   }
 }
 
-function forceManualResultButtons() {
-  for (const id of ['manualResultWin', 'manualResultLose']) {
-    const btn = $(`#${id}`);
-    if (!btn) continue;
-    btn.disabled = false;
-    btn.removeAttribute('disabled');
-    btn.setAttribute('aria-disabled', 'false');
-  }
-  $('#manualResultTie')?.toggleAttribute('disabled', true);
-}
-
 function renderManualAssistPanel() {
   const panel = $('#manualAssistPanel');
   const queue = $('#manualAssistQueue');
   const summary = $('#manualAssistSummary');
   const mode = $('#manualAssistMode');
   if (!panel || !queue) return;
-  panel.classList.toggle('hidden', !manualAssistEnabled && manualAssistItems.length === 0);
+  panel.style.removeProperty('display');
+  let selectedAssistMode = false;
+  try {
+    const settings = loadSettings();
+    const selectedBetMode = normalizeBetMode(settings.bet_mode);
+    selectedAssistMode = isDualLineAssistBetMode(selectedBetMode)
+      || settings.mode === 'dual_line'
+      || settings.mode === 'dual_line_assist'
+      || settings.mode === 'dual_line_manual';
+  } catch (_) {}
+  // Hysteresis: keep panel visible for 90s after the last enabled signal so
+  // an engine auto-restart or a transient IPC gap does not blank the panel.
+  const recentEnable = manualAssistEnabledAt > 0 && (Date.now() - manualAssistEnabledAt < 90000);
+  panel.classList.toggle(
+    'hidden',
+    !manualAssistEnabled && !selectedAssistMode && !recentEnable && manualAssistItems.length === 0
+  );
   if (mode) mode.textContent = manualAssistEnabled ? 'ASSIST' : 'AUTO';
 
   const now = Date.now();
@@ -1502,10 +1558,10 @@ function renderManualAssistPanel() {
 
   const nowCount = visible.filter((it) => _manualNormalizeStatus(it.status) === 'NOW').length;
   const readyCount = visible.filter((it) => _manualNormalizeStatus(it.status) === 'READY').length;
-  const resultTarget = getManualResultTarget();
+  const taken = visible.find((it) => it.id === activeManualItemId && _manualNormalizeStatus(it.status) === 'TAKEN');
   if (summary) {
-    const resultText = resultTarget ? ` | RESULT ${resultTarget.table_name || resultTarget.table_id || ''}` : '';
-    summary.textContent = `NOW ${nowCount} / READY ${readyCount}${resultText}`;
+    const takenText = taken ? ` | TAKEN ${taken.table_name || taken.table_id || ''}` : '';
+    summary.textContent = `NOW ${nowCount} / READY ${readyCount}${takenText}`;
   }
 
   if (visible.length === 0) {
@@ -1523,10 +1579,9 @@ function renderManualAssistPanel() {
       const remain = expiry > 0 && ['READY', 'NOW'].includes(status)
         ? Math.max(0, Math.ceil((expiry - now) / 1000))
         : 0;
-      const stale = ['EXPIRED', 'MISSED', 'SETTLED'].includes(status);
-      const selected = item.id === (resultTarget && resultTarget.id);
+      const canTake = status === 'NOW';
       return `
-        <div class="manual-assist-item ${status.toLowerCase()} ${sideCls} ${stale ? 'stale' : ''} ${selected ? 'selected' : ''}" data-id="${esc(item.id)}" data-manual-action="select">
+        <div class="manual-assist-item ${status.toLowerCase()}" data-id="${esc(item.id)}">
           <div class="manual-status">${esc(status)}</div>
           <div class="manual-main">
             <div class="manual-table" title="${esc(table)}">${esc(table)}</div>
@@ -1535,50 +1590,76 @@ function renderManualAssistPanel() {
               $${amount}${remain ? ` | ${remain}s` : ''}${pattern ? ` | ${esc(pattern)}` : ''}
             </div>
           </div>
+          <div class="manual-item-actions">
+            <button class="manual-mini-btn" data-manual-action="take" data-id="${esc(item.id)}" ${canTake ? '' : 'disabled'}>TAKE</button>
+          </div>
         </div>
       `;
     }).join('');
   }
 
-  forceManualResultButtons();
-  $('#manualResultTie')?.toggleAttribute('disabled', true);
+  const resultEnabled = !!taken;
+  $('#manualResultWin')?.toggleAttribute('disabled', !resultEnabled);
+  $('#manualResultLose')?.toggleAttribute('disabled', !resultEnabled);
+  $('#manualResultTie')?.toggleAttribute('disabled', !resultEnabled);
+
+  // DOM visibility proof: tag the panel with last-update timestamp + record
+  // its bounding rect so we can prove from DevTools whether the panel is in
+  // the layout but visually hidden vs missing entirely.
+  try {
+    const stamp = Date.now();
+    panel.setAttribute('data-bacopy-last-update', String(stamp));
+    panel.setAttribute('data-bacopy-mode', manualAssistEnabled ? 'ASSIST' : 'AUTO');
+    panel.setAttribute('data-bacopy-items', String(manualAssistItems.length));
+    const rect = panel.getBoundingClientRect();
+    const cs = window.getComputedStyle(panel);
+    window.__bacopyDebug.panelProof = {
+      at: stamp,
+      inDom: !!panel.parentNode,
+      offsetWidth: panel.offsetWidth,
+      offsetHeight: panel.offsetHeight,
+      clientHeight: panel.clientHeight,
+      rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+      hiddenClass: panel.classList.contains('hidden'),
+      computedDisplay: cs.display,
+      computedVisibility: cs.visibility,
+      computedOpacity: cs.opacity,
+      computedZIndex: cs.zIndex,
+      mainContentHidden: !!($('#mainContent') && $('#mainContent').classList.contains('hidden')),
+      itemsCount: manualAssistItems.length,
+      manualAssistEnabled,
+      manualAssistEnabledAt,
+      mode: manualAssistEnabled ? 'ASSIST' : 'AUTO',
+    };
+  } catch (_) {}
 }
 
 setInterval(renderManualAssistPanel, 1000);
-setInterval(forceManualResultButtons, 500);
-forceManualResultButtons();
 
 document.addEventListener('click', (ev) => {
   const btn = ev.target && ev.target.closest ? ev.target.closest('[data-manual-action]') : null;
   if (!btn) return;
   const action = btn.getAttribute('data-manual-action');
   const id = btn.getAttribute('data-id') || '';
-  if (action === 'select' && id) {
-    const item = manualAssistItems.find((it) => it.id === id);
-    if (item && _manualNormalizeStatus(item.status) !== 'SETTLED') {
-      activeManualItemId = id;
-      renderManualAssistPanel();
-    }
-  }
+  if (action === 'take') markManualAssistTaken(id);
 });
 
 for (const [id, result] of [
   ['manualResultWin', 'WIN'],
   ['manualResultLose', 'LOSE'],
+  ['manualResultTie', 'TIE'],
 ]) {
   document.addEventListener('click', (ev) => {
     const target = ev.target;
     if (!target || target.id !== id) return;
-    target.classList.add('pressed');
-    setTimeout(() => target.classList.remove('pressed'), 180);
-    const item = getManualResultTarget();
-    if (item) activeManualItemId = item.id;
+    const item = manualAssistItems.find((it) => it.id === activeManualItemId);
+    if (!item || _manualNormalizeStatus(item.status) !== 'TAKEN') return;
     addLog(`[DL Assist] ${result} selected${item ? ` for ${item.table_name || item.table_id || ''}` : ''}`, 'info');
     sendManualAssistCommand({
       action: 'result',
       result,
-      id: item ? item.id : '',
-      decision_id: item ? (item.decision_id || '') : '',
+      id: item.id,
+      decision_id: item.decision_id || '',
     });
   });
 }
@@ -1824,6 +1905,15 @@ function renderDailyPnl() {
 
 window.valhalla.onAgentMessage((msg) => {
   try {
+    const t = (msg && msg.type) || 'unknown';
+    window.__bacopyDebug.agentCounts[t] = (window.__bacopyDebug.agentCounts[t] || 0) + 1;
+    window.__bacopyDebug.lastMsg = msg;
+    if (t === 'manual_assist_mode' || t === 'manual_assist_item') {
+      // High-signal events: log to DevTools so we can copy/paste evidence
+      console.log('[BACOPY-RENDERER] received', t, msg);
+      if (t === 'manual_assist_mode') window.__bacopyDebug.lastManualMode = msg;
+      if (t === 'manual_assist_item') window.__bacopyDebug.lastManualItem = msg;
+    }
   switch (msg.type) {
     case 'action':
       setAction(msg.message || '');
@@ -1974,12 +2064,15 @@ window.valhalla.onAgentMessage((msg) => {
       }
 
 
-      if (msg.money_status) applyMoneyStatusToSignalPanel(msg.money_status);
-      else updateDevPanel(msg);
+      if (msg.money_status) {
+        logSeqProbe('status', msg.money_status, { wins: msg.wins || 0, losses: msg.losses || 0, ties: msg.ties || 0 });
+        applyMoneyStatusToSignalPanel(msg.money_status);
+      } else updateDevPanel(msg);
       break;
     }
 
     case 'money_status': {
+      logSeqProbe('money_status', msg.money_status || msg);
       applyMoneyStatusToSignalPanel(msg.money_status || msg);
       break;
     }
@@ -1987,13 +2080,24 @@ window.valhalla.onAgentMessage((msg) => {
     case 'manual_assist_mode': {
       const enabled = !!msg.enabled;
       manualAssistEnabled = enabled;
+      if (enabled) manualAssistEnabledAt = Date.now();
       renderManualAssistPanel();
-      addLog(enabled ? '[DL Assist] manual assist enabled; auto-bet disabled' : '[DL Assist] auto-bet enabled', 'info');
-      if (msg.money_status) applyMoneyStatusToSignalPanel(msg.money_status);
+      addLog(
+        enabled
+          ? (msg.manual_assist_auto_click ? '[DL Assist] manual assist enabled; auto-click armed' : '[DL Assist] manual assist enabled; auto-bet disabled')
+          : '[DL Assist] auto-bet enabled',
+        'info'
+      );
+      if (msg.money_status) {
+        logSeqProbe('manual_assist_mode', msg.money_status, { enabled });
+        applyMoneyStatusToSignalPanel(msg.money_status);
+      }
       break;
     }
 
     case 'manual_assist_item': {
+      manualAssistEnabled = true;
+      manualAssistEnabledAt = Date.now();
       const status = String(msg.status || '').toUpperCase();
       const side = String(msg.side || '?').toUpperCase();
       const amount = Number.isFinite(Number(msg.amount)) ? Number(msg.amount).toFixed(2) : '0.00';
@@ -2002,7 +2106,16 @@ window.valhalla.onAgentMessage((msg) => {
       upsertManualAssistItem(msg);
       addLog(`${label} ${table} ${side} $${amount}`, status === 'NOW' ? 'win' : 'info');
       setAction(`${label} ${side} $${amount} on ${table}`);
-      if (msg.money_status) applyMoneyStatusToSignalPanel(msg.money_status);
+      if (msg.money_status) {
+        logSeqProbe('manual_assist_item', msg.money_status, {
+          status,
+          side,
+          amount,
+          table,
+          gui_next_bet: msg.gui_next_bet,
+        });
+        applyMoneyStatusToSignalPanel(msg.money_status);
+      }
       break;
     }
 
@@ -2084,6 +2197,26 @@ window.valhalla.onAgentMessage((msg) => {
 
     case 'resolution': {
       const r = msg;
+      if (r.decision_id) {
+        const item = manualAssistItems.find((it) => String(it.decision_id || it.id || '') === String(r.decision_id));
+        if (item) {
+          item.status = 'SETTLED';
+          item.result = r.result;
+          item.pnl = r.pnl;
+          item.money_status = r.money_status;
+          if (r.money_status) {
+            item.seq_turn = r.money_status.seq_turn;
+            item.seq_overshoot = r.money_status.seq_overshoot;
+            item.seq7_current_turns = Array.isArray(r.money_status.seq7_current_turns)
+              ? r.money_status.seq7_current_turns
+              : [];
+            item.gui_next_bet = r.money_status.next_bet;
+          }
+          item.updated_at_ms = Date.now();
+          activeManualItemId = item.id;
+          renderManualAssistPanel();
+        }
+      }
       const resultIcon = r.result === 'WIN' ? 'W' : (r.result === 'TIE' ? 'T' : 'L');
       addResult(resultIcon);
       if (r.result === 'WIN') flashScreen('win');
@@ -2092,6 +2225,13 @@ window.valhalla.onAgentMessage((msg) => {
       if (r.result !== 'TIE') _pushStreamMark(r.result === 'WIN' ? 'O' : 'X');
       // CYCLE / RATIO / DRIFT / ROUND
       const _ms = r.money_status || {};
+      logSeqProbe('resolution', _ms, {
+        result: r.result,
+        prediction: r.prediction,
+        outcome: r.outcome,
+        bet_amount: r.bet_amount,
+        pnl: r.pnl,
+      });
       applyMoneyStatusToSignalPanel(_ms);
       setAction(
         '[DL] ' + r.result + ' ' + r.table_name + ': ' + r.prediction + '\u2192' + r.outcome + ' ' +
@@ -2113,6 +2253,15 @@ window.valhalla.onAgentMessage((msg) => {
   }
   } catch (e) {
     console.error('[onAgentMessage] error in msg.type=' + (msg && msg.type), e);
+    try {
+      window.__bacopyDebug.errors.push({
+        at: Date.now(),
+        type: msg && msg.type,
+        message: String(e && e.message || e),
+        stack: String(e && e.stack || ''),
+      });
+      if (window.__bacopyDebug.errors.length > 50) window.__bacopyDebug.errors.shift();
+    } catch (_) {}
   }
 });
 

@@ -29,6 +29,11 @@ from typing import Any
 # bot と同じロガーを使うことでログファイルへの書き込みを保証する
 logger = logging.getLogger("dual_line.bot")
 
+PRAGMATIC_BACCARAT_LOBBY_URL = os.getenv(
+    "BACOPY_PRAGMATIC_LOBBY_URL",
+    "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat",
+)
+
 # ── WS Bridge JS ──────────────────────────────────────────────────────
 # context.add_init_script() で全フレームに注入される。
 # ゲームWSを捕捉し、__bacopy_ws_send() で送信できるようにする。
@@ -228,6 +233,103 @@ _WS_BRIDGE_INIT = r"""
 })();
 """
 
+_LOBBY_SCROLL_PROBE_JS = r"""
+async (args) => {
+  // Evidence-only probe: do not change scroll. Reports every plausible
+  // scroll container and any element using transform translateY (which is
+  // how React-Window / react-virtualized drives offset without scrollTop).
+  const qpid = String((args && args.qpid) || '').trim();
+  const out = {
+    href: String(location.href || '').slice(0, 160),
+    scrollingElement: null,
+    documentScrollTop: 0,
+    windowScroll: { x: window.scrollX || 0, y: window.scrollY || 0 },
+    tile: null,
+    scrollAncestors: [],
+    transformElements: [],
+    virtualizerHints: [],
+  };
+  try {
+    const se = document.scrollingElement || document.documentElement;
+    out.scrollingElement = {
+      tag: se && se.tagName,
+      scrollTop: Number((se && se.scrollTop) || 0),
+      scrollHeight: Number((se && se.scrollHeight) || 0),
+      clientHeight: Number((se && se.clientHeight) || 0),
+    };
+    out.documentScrollTop = Number((document.documentElement || {}).scrollTop || 0);
+  } catch (_) {}
+
+  let tile = null;
+  try {
+    if (qpid) tile = document.getElementById('TileHeight-' + qpid);
+    if (!tile) tile = document.querySelector('[id^="TileHeight-"]');
+  } catch (_) {}
+  if (tile) {
+    try {
+      const r = tile.getBoundingClientRect();
+      out.tile = {
+        id: tile.id,
+        rect: { top: r.top, left: r.left, width: r.width, height: r.height },
+      };
+    } catch (_) {}
+  }
+
+  function describe(el, depth) {
+    try {
+      const cs = window.getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      return {
+        depth,
+        tag: el.tagName,
+        id: el.id || '',
+        cls: (el.className && String(el.className).slice(0, 80)) || '',
+        scrollTop: Number(el.scrollTop || 0),
+        scrollHeight: Number(el.scrollHeight || 0),
+        clientHeight: Number(el.clientHeight || 0),
+        overflowY: cs.overflowY,
+        overflowX: cs.overflowX,
+        transform: cs.transform && cs.transform !== 'none' ? cs.transform.slice(0, 120) : '',
+        rect: { top: r.top, left: r.left, width: r.width, height: r.height },
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  if (tile) {
+    let cur = tile;
+    let d = 0;
+    while (cur && d < 25) {
+      const desc = describe(cur, d);
+      if (desc) {
+        if (desc.scrollHeight > desc.clientHeight + 2) out.scrollAncestors.push(desc);
+        if (desc.transform && desc.transform.indexOf('translate') >= 0) out.transformElements.push(desc);
+      }
+      cur = cur.parentElement;
+      d += 1;
+    }
+  }
+
+  try {
+    const candidates = document.querySelectorAll(
+      '[class*="virtual"],[class*="Virtual"],[class*="list"],[class*="List"],[role="grid"],[role="list"]'
+    );
+    let n = 0;
+    for (const el of candidates) {
+      if (n >= 8) break;
+      const desc = describe(el, -1);
+      if (desc && (desc.scrollHeight > desc.clientHeight + 2 || desc.transform)) {
+        out.virtualizerHints.push(desc);
+        n += 1;
+      }
+    }
+  } catch (_) {}
+
+  return out;
+}
+"""
+
 _MULTI_LOBBY_FOCUS_JS = r"""
 async (args) => {
   const qpid = String((args && args.qpid) || '').trim();
@@ -238,6 +340,7 @@ async (args) => {
   const hintScrollTop = Number.isFinite(Number(args && args.hintScrollTop)) ? Number(args && args.hintScrollTop) : -1;
   const hintScrollRatio = Number.isFinite(Number(args && args.hintScrollRatio)) ? Number(args && args.hintScrollRatio) : -1;
   const candidates = Array.isArray(args && args.candidates) ? args.candidates : [];
+  const holdOnly = !!(args && args.holdOnly);
   const norm = (s) => String(s || '').replace(/\s+/g, '').replace(/[$￥¥]/g, '').toLowerCase();
   const candNorm = candidates.map(norm).filter(Boolean);
   const maxMsRaw = Number(args && args.maxMs);
@@ -308,12 +411,162 @@ async (args) => {
   function centerInScroller(el, sc) {
     if (!el || !sc) return false;
     try {
+      const outer = snapshotOuterScroll();
       const er = el.getBoundingClientRect();
       const sr = sc.getBoundingClientRect ? sc.getBoundingClientRect() : {top:0, left:0, width:window.innerWidth, height:window.innerHeight};
       const dy = (er.top + er.height / 2) - (sr.top + sr.height / 2);
       const dx = (er.left + er.width / 2) - (sr.left + sr.width / 2);
       if (Math.abs(dy) > 8) sc.scrollTop = Math.max(0, Number(sc.scrollTop || 0) + dy);
       if (Math.abs(dx) > 8 && typeof sc.scrollLeft === 'number') sc.scrollLeft = Math.max(0, Number(sc.scrollLeft || 0) + dx);
+      restoreOuterScroll(outer);
+      return true;
+    } catch(_) {
+      return false;
+    }
+  }
+  function installAssistScrollLock(tile, sc, ttl) {
+    try {
+      if (!tile || !sc) return false;
+      const qid = String((tile.id || '').replace(/^TileHeight-/, '') || qpid || '');
+      const until = Date.now() + Math.max(2000, Number(ttl) || 15000);
+      let rafPending = false;
+      let recenterBusy = false;
+      const recenter = () => {
+        try {
+          const lock = window.__bacopyAssistScrollLock || {};
+          if (!lock || Number(lock.until || 0) <= Date.now()) return;
+          const target = lock.qpid
+            ? document.getElementById('TileHeight-' + lock.qpid)
+            : document.querySelector('.bacopy-assist-tile');
+          const lockScroller = lock.scroller || sc;
+          if (target && lockScroller) {
+            recenterBusy = true;
+            centerInScroller(target, lockScroller);
+            lock.scrollTop = Number(lockScroller.scrollTop || 0);
+            lock.scrollLeft = Number(lockScroller.scrollLeft || 0);
+            recenterBusy = false;
+          } else if (lockScroller) {
+            // If a user scrolls far enough to unmount the virtualized tile,
+            // the target cannot be found anymore. Snap the real scroller back
+            // to the last centered position so the tile remounts.
+            recenterBusy = true;
+            try { lockScroller.scrollTop = Number(lock.scrollTop || 0); } catch(_) {}
+            try { lockScroller.scrollLeft = Number(lock.scrollLeft || 0); } catch(_) {}
+            recenterBusy = false;
+          }
+          if (Math.abs((window.scrollX || 0) - Number(lock.windowX || 0)) > 2 ||
+              Math.abs((window.scrollY || 0) - Number(lock.windowY || 0)) > 2) {
+            window.scrollTo(Number(lock.windowX || 0), Number(lock.windowY || 0));
+          }
+        } catch(_) {
+          recenterBusy = false;
+        }
+      };
+      const scheduleRecenter = () => {
+        if (rafPending) return;
+        rafPending = true;
+        window.requestAnimationFrame(() => {
+          rafPending = false;
+          recenter();
+        });
+      };
+      const active = () => {
+        const lock = window.__bacopyAssistScrollLock || {};
+        return lock && Number(lock.until || 0) > Date.now();
+      };
+      const block = (ev) => {
+        if (!active()) return;
+        try { ev.preventDefault(); } catch(_) {}
+        try { ev.stopPropagation(); } catch(_) {}
+        scheduleRecenter();
+      };
+      const onScroll = () => {
+        if (!active() || recenterBusy) return;
+        try {
+          const lock = window.__bacopyAssistScrollLock || {};
+          const lockScroller = lock.scroller;
+          const target = lock.qpid ? document.getElementById('TileHeight-' + lock.qpid) : document.querySelector('.bacopy-assist-tile');
+          if (lockScroller && !target) {
+            lockScroller.scrollTop = Number(lock.scrollTop || 0);
+            lockScroller.scrollLeft = Number(lock.scrollLeft || 0);
+          }
+        } catch(_) {}
+        scheduleRecenter();
+      };
+      const onKey = (ev) => {
+        if (!active()) return;
+        const k = String(ev.key || '');
+        if (['ArrowDown','ArrowUp','PageDown','PageUp','Home','End',' '].includes(k)) block(ev);
+      };
+      window.__bacopyAssistScrollLock = {
+        qpid: qid,
+        scroller: sc,
+        until: until,
+        windowX: window.scrollX || 0,
+        windowY: window.scrollY || 0,
+        scrollTop: Number(sc.scrollTop || 0),
+        scrollLeft: Number(sc.scrollLeft || 0),
+      };
+      // Block pointer/mouse down events on the scroll container background so
+      // React's virtualizer cannot receive the "scroll to clicked row" gesture.
+      // Clicks originating FROM the target tile are allowed through.
+      const blockPointer = (ev) => {
+        if (!active()) return;
+        try {
+          const lock = window.__bacopyAssistScrollLock || {};
+          const targetTile = lock.qpid
+            ? document.getElementById('TileHeight-' + lock.qpid)
+            : document.querySelector('.bacopy-assist-tile');
+          if (targetTile) {
+            let cur = ev.target;
+            while (cur) {
+              if (cur === targetTile) return; // click on our tile → allow
+              cur = cur.parentElement;
+            }
+          }
+          try { ev.preventDefault(); } catch(_) {}
+          try { ev.stopPropagation(); } catch(_) {}
+          scheduleRecenter();
+        } catch(_) {}
+      };
+      if (!window.__bacopyAssistScrollLockInstalled) {
+        window.__bacopyAssistScrollLockInstalled = true;
+        window.addEventListener('wheel', block, {capture:true, passive:false});
+        document.addEventListener('wheel', block, {capture:true, passive:false});
+        window.addEventListener('touchmove', block, {capture:true, passive:false});
+        document.addEventListener('touchmove', block, {capture:true, passive:false});
+        window.addEventListener('keydown', onKey, {capture:true, passive:false});
+        document.addEventListener('keydown', onKey, {capture:true, passive:false});
+        window.addEventListener('scroll', onScroll, {capture:true, passive:true});
+        document.addEventListener('scroll', onScroll, {capture:true, passive:true});
+        // Block click-scroll on the lobby background (React virtualizer "scroll to
+        // clicked row" gesture). Must be capture+non-passive to preventDefault.
+        window.addEventListener('pointerdown', blockPointer, {capture:true, passive:false});
+        document.addEventListener('pointerdown', blockPointer, {capture:true, passive:false});
+        window.addEventListener('mousedown', blockPointer, {capture:true, passive:false});
+        document.addEventListener('mousedown', blockPointer, {capture:true, passive:false});
+        window.setInterval(() => {
+          scheduleRecenter();
+        }, 60);
+      }
+      try { sc.addEventListener('wheel', block, {capture:true, passive:false}); } catch(_) {}
+      try { sc.addEventListener('touchmove', block, {capture:true, passive:false}); } catch(_) {}
+      try { sc.addEventListener('pointerdown', blockPointer, {capture:true, passive:false}); } catch(_) {}
+      try { sc.addEventListener('mousedown', blockPointer, {capture:true, passive:false}); } catch(_) {}
+      try { sc.addEventListener('scroll', () => {
+        const lock = window.__bacopyAssistScrollLock || {};
+        if (Number(lock.until || 0) > Date.now()) {
+          if (!recenterBusy) {
+            const target = lock.qpid ? document.getElementById('TileHeight-' + lock.qpid) : document.querySelector('.bacopy-assist-tile');
+            if (!target) {
+              try { sc.scrollTop = Number(lock.scrollTop || 0); } catch(_) {}
+              try { sc.scrollLeft = Number(lock.scrollLeft || 0); } catch(_) {}
+            }
+          }
+          scheduleRecenter();
+        }
+      }, {capture:true, passive:true}); } catch(_) {}
+      recenter();
       return true;
     } catch(_) {
       return false;
@@ -335,7 +588,7 @@ async (args) => {
       el.click();
     } catch(_) {}
   }
-  function applyAssistOverlay(el) {
+  function applyAssistOverlay(el, sc) {
     const status = String((args && args.assistStatus) || '').toUpperCase();
     if (!status) return false;
     const side = String((args && args.side) || '').toUpperCase();
@@ -350,6 +603,20 @@ async (args) => {
     })();
     if (!tile || !tile.getBoundingClientRect) return false;
     try {
+      if (status !== 'NOW') {
+        const activeNow = document.querySelector('.bacopy-assist-tile.bacopy-assist-now');
+        if (activeNow) {
+          const until = Number(activeNow.getAttribute('data-bacopy-assist-until') || 0);
+          if (!until || Date.now() < until) {
+            return {
+              ok: true,
+              preservedNow: true,
+              status,
+              activeText: String(activeNow.innerText || activeNow.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120)
+            };
+          }
+        }
+      }
       if (!document.getElementById('bacopy-manual-assist-style')) {
         const st = document.createElement('style');
         st.id = 'bacopy-manual-assist-style';
@@ -429,9 +696,13 @@ async (args) => {
       const amt = Number.isFinite(amount) && amount > 0 ? '$' + amount.toFixed(0) : '';
       badge.textContent = status === 'NOW' ? `${sideLabel} ${amt}`.trim() : `READY ${sideLabel}`;
       tile.appendChild(badge);
-      const ttl = status === 'NOW' ? 22000 : 90000;
+      const nowTtl = Math.max(30000, Number((args && args.nowTtlMs) || 65000));
+      const ttl = status === 'NOW' ? nowTtl : 90000;
       const token = String(Date.now()) + ':' + Math.random();
       tile.setAttribute('data-bacopy-assist-token', token);
+      tile.setAttribute('data-bacopy-assist-status', status);
+      tile.setAttribute('data-bacopy-assist-until', String(Date.now() + ttl));
+      installAssistScrollLock(tile, sc, ttl);
       window.setTimeout(() => {
         try {
           if (tile.getAttribute('data-bacopy-assist-token') !== token) return;
@@ -440,6 +711,8 @@ async (args) => {
           tile.style.removeProperty('--bc-glow');
           tile.style.removeProperty('--bc-bg');
           tile.removeAttribute('data-bacopy-assist-token');
+          tile.removeAttribute('data-bacopy-assist-status');
+          tile.removeAttribute('data-bacopy-assist-until');
           for (const old of tile.querySelectorAll(':scope > .bacopy-assist-badge')) old.remove();
         } catch(_) {}
       }, ttl);
@@ -500,6 +773,9 @@ async (args) => {
             if (!qt && containsQpid(el.innerHTML || '')) qt = qpidTarget(el);
           } catch(_) {}
           if (qt) return { el: qt, idx, total: nodes.length };
+          if (candNorm.length && isCandidateText(textOf(el))) {
+            return { el: clickableAncestor(el), idx, total: nodes.length, textFallback: true };
+          }
           idx += 1;
           continue;
         }
@@ -508,6 +784,23 @@ async (args) => {
       idx += 1;
     }
     return { el: null, idx: -1, total: nodes.length };
+  }
+  function currentAssistTarget() {
+    try {
+      if (qpid) {
+        const exact = document.getElementById('TileHeight-' + qpid);
+        if (exact) return exact;
+      }
+    } catch(_) {}
+    try {
+      const nodes = document.querySelectorAll('.bacopy-assist-now, .bacopy-assist-tile');
+      for (const node of nodes) {
+        const id = String((node && node.id) || '');
+        if (!id.startsWith('TileHeight-')) continue;
+        if (!qpid || id === ('TileHeight-' + qpid)) return node;
+      }
+    } catch(_) {}
+    return null;
   }
   function pickScroller() {
     // Prefer the closest scrollable ancestor of a real TileHeight- tile.
@@ -549,6 +842,30 @@ async (args) => {
     }
     return best;
   }
+  function snapshotOuterScroll() {
+    const se = document.scrollingElement || document.documentElement || document.body;
+    return {
+      x: Number(window.scrollX || 0),
+      y: Number(window.scrollY || 0),
+      seTop: Number((se && se.scrollTop) || 0),
+      bodyTop: Number((document.body && document.body.scrollTop) || 0),
+      docTop: Number((document.documentElement && document.documentElement.scrollTop) || 0),
+    };
+  }
+  function restoreOuterScroll(s) {
+    if (!s) return;
+    try {
+      if (Math.abs((window.scrollX || 0) - Number(s.x || 0)) > 1 ||
+          Math.abs((window.scrollY || 0) - Number(s.y || 0)) > 1) {
+        window.scrollTo(Number(s.x || 0), Number(s.y || 0));
+      }
+    } catch(_) {}
+    try {
+      if (document.scrollingElement) document.scrollingElement.scrollTop = Number(s.seTop || 0);
+    } catch(_) {}
+    try { if (document.body) document.body.scrollTop = Number(s.bodyTop || 0); } catch(_) {}
+    try { if (document.documentElement) document.documentElement.scrollTop = Number(s.docTop || 0); } catch(_) {}
+  }
   function mountedQpidSample(limit) {
     const out = [];
     try {
@@ -576,25 +893,29 @@ async (args) => {
   }
   function scrollStep(sc, down=true) {
     if (!sc) return;
+    const outer = snapshotOuterScroll();
     const delta = Math.max(240, (sc.clientHeight || 500) * 0.8) * (down ? 1 : -1);
     try { sc.scrollTop = Math.max(0, Math.min((sc.scrollHeight || 99999), (sc.scrollTop || 0) + delta)); } catch(_) {}
     try {
       const r = sc.getBoundingClientRect ? sc.getBoundingClientRect() : {left:0, top:0, width:0, height:0};
-      const ev = new WheelEvent('wheel', {deltaY: delta, bubbles:true, cancelable:true, composed:true, clientX:r.left+r.width/2, clientY:r.top+r.height/2});
+      const ev = new WheelEvent('wheel', {deltaY: delta, bubbles:false, cancelable:true, composed:false, clientX:r.left+r.width/2, clientY:r.top+r.height/2});
       sc.dispatchEvent(ev);
     } catch(_) {}
+    restoreOuterScroll(outer);
   }
   function setScrollTop(sc, top) {
     if (!sc) return;
+    const outer = snapshotOuterScroll();
     try {
       const span = Math.max(0, (sc.scrollHeight || 0) - (sc.clientHeight || 0));
       sc.scrollTop = Math.max(0, Math.min(span, Math.floor(top)));
     } catch(_) {}
     try {
       const r = sc.getBoundingClientRect ? sc.getBoundingClientRect() : {left:0, top:0, width:0, height:0};
-      const ev = new WheelEvent('wheel', {deltaY: 1, bubbles:true, cancelable:true, composed:true, clientX:r.left+r.width/2, clientY:r.top+r.height/2});
+      const ev = new WheelEvent('wheel', {deltaY: 1, bubbles:false, cancelable:true, composed:false, clientX:r.left+r.width/2, clientY:r.top+r.height/2});
       sc.dispatchEvent(ev);
     } catch(_) {}
+    restoreOuterScroll(outer);
   }
   function scanPositions(sc, steps) {
     if (!sc) return [0];
@@ -651,6 +972,24 @@ async (args) => {
   }
 
   const cachedScroller = initScroller || pickScroller();
+  if (holdOnly) {
+    const target = currentAssistTarget();
+    if (target) {
+      centerInScroller(target, cachedScroller);
+      await sleep(40);
+      const assisted = applyAssistOverlay(target, cachedScroller);
+      return {
+        ok:true, found:true, clicked:false, assisted: assisted,
+        matchIndex: 0, totalNodes: 1, scroll: scrollMeta(cachedScroller),
+        diag: diagOf(target), scanMode: 'hold_only'
+      };
+    }
+    return {
+      ok:true, found:false, clicked:false, matchIndex:-1, totalNodes:0,
+      scroll: scrollMeta(cachedScroller), mountedQpids: mountedQpidSample(8),
+      scanMode: 'hold_only', reason: 'target_not_mounted_no_scan'
+    };
+  }
   if (qpid) {
     const positions = scanPositions(cachedScroller, maxScroll);
     for (let i = 0; i < positions.length && Date.now() < deadline; i++) {
@@ -660,7 +999,7 @@ async (args) => {
       if (t && t.el) {
         centerInScroller(t.el, cachedScroller);
         await sleep(70);
-        const assisted = applyAssistOverlay(t.el);
+        const assisted = applyAssistOverlay(t.el, cachedScroller);
         if (click) clickEl(t.el);
         return {
           ok:true, found:true, clicked: !!click,
@@ -677,7 +1016,7 @@ async (args) => {
       if (t && t.el) {
         centerInScroller(t.el, cachedScroller);
         await sleep(70);
-        const assisted = applyAssistOverlay(t.el);
+        const assisted = applyAssistOverlay(t.el, cachedScroller);
         if (click) clickEl(t.el);
         return { ok:true, found:true, clicked: !!click, assisted: assisted, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
       }
@@ -689,7 +1028,7 @@ async (args) => {
       if (t && t.el) {
         centerInScroller(t.el, cachedScroller);
         await sleep(70);
-        const assisted = applyAssistOverlay(t.el);
+        const assisted = applyAssistOverlay(t.el, cachedScroller);
         if (click) clickEl(t.el);
         return { ok:true, found:true, clicked: !!click, assisted: assisted, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
       }
@@ -702,7 +1041,7 @@ async (args) => {
     if (t && t.el) {
       centerInScroller(t.el, cachedScroller);
       await sleep(70);
-      const assisted = applyAssistOverlay(t.el);
+      const assisted = applyAssistOverlay(t.el, cachedScroller);
       if (click) clickEl(t.el);
       return { ok:true, found:true, clicked: !!click, assisted: assisted, matchIndex: Number(t.idx), totalNodes: Number(t.total), scroll: scrollMeta(cachedScroller), diag: diagOf(t.el) };
     }
@@ -714,7 +1053,7 @@ async (args) => {
   if (finalTarget && finalTarget.el) {
     centerInScroller(finalTarget.el, cachedScroller);
     await sleep(70);
-    const assisted = applyAssistOverlay(finalTarget.el);
+    const assisted = applyAssistOverlay(finalTarget.el, cachedScroller);
     if (click) clickEl(finalTarget.el);
     return { ok:true, found:true, clicked: !!click, assisted: assisted, matchIndex: Number(finalTarget.idx), totalNodes: Number(finalTarget.total), scroll: scrollMeta(cachedScroller), diag: diagOf(finalTarget.el), reason: timedOut ? 'deadline_late_match' : undefined };
   }
@@ -795,13 +1134,17 @@ _MULTI_LOBBY_ENSURE_TAB_JS = r"""
 # 見つかった場合は true を返す。
 _RECONNECTING_DETECT_JS = r"""
 () => {
-  const NEEDLE = '再接続';
+  const NEEDLES = [
+    '再接続', '再接続しています', '接続を回復', '接続が失われ',
+    'reconnecting', 'connection lost', 'restoring connection'
+  ];
   function hasText(doc) {
     try {
       const walker = doc.createTreeWalker(doc.body || doc, 0x4 /* NodeFilter.SHOW_TEXT */);
       let node;
       while ((node = walker.nextNode())) {
-        if (node.nodeValue && node.nodeValue.includes(NEEDLE)) return true;
+        const t = String(node.nodeValue || '').toLowerCase();
+        if (t && NEEDLES.some((k) => t.includes(String(k).toLowerCase()))) return true;
       }
     } catch(_) {}
     return false;
@@ -823,19 +1166,22 @@ _AUTO_RECOVER_IDLE_JS = r"""
 () => {
   const dialogNeedles = [
     '非アクティブ', '操作がありません', '接続が失われ', '再接続',
+    '再接続しています', '接続を回復', '長時間セッション', '長時間操作',
+    'しばらく操作', 'セッションがありません', 'ログアウト',
     '他の場所でセッション', 'inactivity', 'are you still there',
     'session elsewhere', 'reconnecting', 'connection lost',
-    'カスタマーサポート', 'カスタマーサポートに連絡してください',
+    'カスタマーサポート', 'カスタマーサポートに連絡してください', 'カスタマーサポートへ連絡してください',
+    'カスタマーサポートにお問い合わせ', 'カスタマーサポートへお問い合わせ',
     'お問い合わせください', 'customer support',
     '連絡してください', 'サポートに連絡', 'please contact', 'contact support', 'technical issue',
-    'something went wrong', 'try again later', 'エラーが発生',
-    'セッションが終了', 'session has ended', 'session expired'
+    'something went wrong', 'try again later', 'エラーが発生', 'error has occurred',
+    'セッションが終了', 'session has ended', 'session expired', 'no active session'
   ];
   const buttonNeedles = [
     'continue', 'stay', 'close', 'remain', 'dismiss', 'ok', 'okay',
     'got it', 'understand', 'retry', 'reload', 'refresh', 'confirm',
     '続行', '閉じる', 'ここに残る', '再開', '戻る', '再試行', '更新',
-    'はい', '確認', '了解', 'オーケー'
+    'はい', '確認', '了解', 'オーケー', 'ゲームに戻る', 'ロビーに戻る', '確認しました'
   ];
   const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
   const visible = (el) => {
@@ -929,7 +1275,7 @@ _AUTO_RECOVER_IDLE_JS = r"""
           el.getAttribute('value') || el.getAttribute('title') ||
           el.getAttribute('data-testid') || el.className || ''
         ).slice(0, 160));
-        const isOkLike = t === 'ok' || t === 'okay' || t === '確認' || t === '了解';
+        const isOkLike = t === 'ok' || t === 'okay' || t === '確認' || t === '了解' || t === '閉じる';
         if (t && (isOkLike || buttonNeedles.some((k) => t.includes(k))) && click(el)) clicked += 1;
         if (clicked >= 3) break;
       } catch(_) {}
@@ -939,7 +1285,8 @@ _AUTO_RECOVER_IDLE_JS = r"""
         try {
           if (!visible(el)) continue;
           const t = norm((el.innerText || el.textContent || el.getAttribute('aria-label') || '').slice(0, 160));
-          if (t.includes('support') || t.includes('サポート') || t.includes('customer')) continue;
+          const shortButton = t.length <= 18 || /^(ok|okay|確認|了解|閉じる)$/i.test(t);
+          if (!shortButton && (t.includes('support') || t.includes('サポート') || t.includes('customer'))) continue;
           if (click(el)) { fallbackClicked += 1; break; }
         } catch(_) {}
       }
@@ -1077,7 +1424,11 @@ class LiveBetExecutor:
         self._last_reconnecting_check_at: float = 0.0
         self._last_idle_recover_check_at: float = 0.0
         self._last_betslip_check_at: float = 0.0
+        self._last_manual_assist_recover_at: float = 0.0
+        self._last_lobby_recover_at: float = 0.0
         self._reconnecting_first_at: float = 0.0   # 再接続しています 最初の検出時刻
+        self._manual_assist_watch_until: float = 0.0
+        self._manual_assist_watch_target: str = ""
         self._user_id: str = ""              # userId (for lpbet)
         self._game_id: str = ""              # current game id
         self._phase: str = "waiting"         # waiting | ready | betting
@@ -1109,6 +1460,22 @@ class LiveBetExecutor:
             logger.warning(
                 "[EXEC-SETUP] BACOPY_MULTI_BET_TRANSPORT=ws ignored; "
                 "forcing click transport because WS send did not prove real Stake balance acceptance"
+            )
+            self._multi_bet_transport = "click"
+        browser_mode_now = (
+            os.getenv("BACOPY_BROWSER", "")
+            or os.getenv("BACOPY_DUAL_LINE_BROWSER", "")
+            or ""
+        ).strip().lower()
+        if (
+            self._multi_bet_transport == "ws"
+            and browser_mode_now in ("chrome_attach", "chrome-cdp", "cdp")
+            and os.getenv("BACOPY_ENABLE_WS_REAL_BET", "0").strip() != "1"
+        ):
+            logger.warning(
+                "[EXEC-SETUP] chrome_attach WS bet transport disabled; "
+                "forcing click transport. Set BACOPY_ENABLE_WS_REAL_BET=1 only "
+                "after WS lpbet proves real Stake acceptance."
             )
             self._multi_bet_transport = "click"
         self._diag_probe_qpid: str = os.getenv("BACOPY_MULTI_DIAG_PROBE_QPID", "").strip()
@@ -1148,6 +1515,15 @@ class LiveBetExecutor:
         self._preselected_chip: dict[str, Any] = {}
         self._visible_bet_hold: dict[str, Any] = {}
         self._last_visible_bet_center_at: float = 0.0
+        self._active_now_bet_hold: dict[str, Any] = {}
+        self._last_active_now_bet_center_at: float = 0.0
+        self._assist_focus_hold: dict[str, Any] = {}
+        self._last_assist_focus_center_at: float = 0.0
+        # Bot-owned NOW lock mirror. Source of truth lives in dual_line_pragmatic_bot;
+        # the executor only reads it to drop competing focus/auto-fire while a NOW
+        # decision is locked to a single table.
+        self._bot_now_lock: dict[str, Any] = {}
+        self._last_lobby_scroll_probe_at: float = 0.0
         self._multi_tile_snapshot: dict[str, Any] = {}
         self._multi_tile_snapshot_at: float = 0.0
         self._lock = threading.Lock()
@@ -1207,6 +1583,12 @@ class LiveBetExecutor:
         logger.warning(
             f"[BET-FAILED] bet_id={bid} reason={payload['reason']} "
             f"phase={payload['phase']} table={payload['table_id']}"
+        )
+        self._clear_active_now_bet_hold(
+            bet_id=bid,
+            table_id=str(bet.get("table_id") or ""),
+            decision_id=str(bet.get("decision_id") or ""),
+            reason=str(reason or "bet_failed"),
         )
 
     def _mark_bet_confirmed(self, bet: dict[str, Any], confirm: dict[str, Any]) -> None:
@@ -1285,6 +1667,19 @@ class LiveBetExecutor:
         table_id: str = "",
         before_balances: dict[str, float],
     ) -> dict[str, Any] | None:
+        try:
+            now_ts = time.time()
+            game_age = (now_ts - self._last_game_bet_confirm_at) if self._last_game_bet_confirm_at else -1.0
+            lpbet_age = (now_ts - self._last_lpbet_at) if self._last_lpbet_at else -1.0
+            stake_age = (now_ts - self._last_stake_balance_at) if self._last_stake_balance_at else -1.0
+            logger.info(
+                f"[CONFIRM-PROBE] amount=${float(amount):.2f} game={game_id or '-'} "
+                f"table={table_id or '-'} stake_delta_keys={list(self._stake_balance_delta_by_currency.keys())} "
+                f"balance_keys={list(self._stake_balance_by_currency.keys())} "
+                f"stake_age={stake_age:.1f}s game_confirm_age={game_age:.1f}s lpbet_age={lpbet_age:.1f}s"
+            )
+        except Exception:
+            pass
         # Prefer Stake balance delta/drop, matching the existing modes' strongest
         # confirmation signal.
         for cur, delta in list(self._stake_balance_delta_by_currency.items()):
@@ -1435,7 +1830,7 @@ class LiveBetExecutor:
             # add_init_script は登録済みだが、既に開いている WS には適用されない。
             # ロビーを再ロードすることで、Pragmatic iframe が bridge インストール後に
             # 再描画され、マルチテーブル WS が __bacopy_sockets に捕捉される。
-            lobby_url = "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat"
+            lobby_url = PRAGMATIC_BACCARAT_LOBBY_URL
             logger.info("[EXEC-SETUP] multi-lobby: loading lobby so bridge pre-installs before multi-table WS opens")
             try:
                 cur_url = str(getattr(lobby_page, "url", "") or "")
@@ -1475,8 +1870,21 @@ class LiveBetExecutor:
             pass
         self._inject_all(page)
         try:
+            existing_ws = []
+            try:
+                ws_list = list(getattr(page, "websockets", []) or [])
+                existing_ws = [str(getattr(w, "url", "") or "")[:120] for w in ws_list]
+            except Exception:
+                existing_ws = []
             page.on("websocket", self._on_ws_event)
-            logger.info(f"[EXEC-ATTACH] websocket hook registered page={getattr(page,'url','?')[:60]}")
+            logger.info(
+                f"[EXEC-ATTACH] websocket hook registered page={getattr(page,'url','?')[:60]} "
+                f"existing_ws={len(existing_ws)}"
+            )
+            if existing_ws:
+                logger.info(
+                    f"[WS-HOOK] page={getattr(page,'url','?')[:60]} existing={existing_ws[:6]}"
+                )
         except Exception as e:
             logger.warning(f"[EXEC-ATTACH] page.on(websocket) FAILED: {e}")
 
@@ -1494,6 +1902,59 @@ class LiveBetExecutor:
                     pass
         except Exception:
             pass
+
+    def _reset_multi_lobby_runtime(self, reason: str) -> None:
+        if self._prepared_table_id:
+            logger.warning(
+                f"[PREPARED-CLEAR] reason={reason} prev_target={self._prepared_table_id!r} "
+                f"age={time.time() - (self._prepared_at or 0.0):.1f}s"
+            )
+        self._prepared_table_id = ""
+        self._prepared_at = 0.0
+        self._table_states.clear()
+        self._game_to_table_id.clear()
+        self._saw_per_table_betsopen = False
+        self._multi_tile_snapshot = {}
+        self._multi_tile_snapshot_at = 0.0
+        self._multi_area_ready = False
+        self._is_multi_table_ws = False
+        self._last_multi_area_ensure_at = 0.0
+        self._game_ws_url = ""
+        self._last_game_ws_recv_at = 0.0
+
+    def _recover_pragmatic_lobby(self, reason: str, *, force: bool = False) -> bool:
+        """Return Chrome to the Pragmatic baccarat lobby and rebuild multi-table state."""
+        if not self._multi_lobby_mode:
+            return False
+        now = time.time()
+        if not force and now - self._last_lobby_recover_at < 8.0:
+            return False
+        self._last_lobby_recover_at = now
+        page = self._bet_page or self._lobby_page
+        if page is None:
+            return False
+        try:
+            cur_url = str(getattr(page, "url", "") or "")
+        except Exception:
+            cur_url = ""
+        logger.warning(
+            f"[LIVE-RECOVER] goto pragmatic lobby reason={reason} "
+            f"from={cur_url[:100] or '(unknown)'}"
+        )
+        self._reset_multi_lobby_runtime(f"recover:{reason}")
+        try:
+            if cur_url and "pragmatic-play-live-lobby-baccarat" in cur_url:
+                page.reload(wait_until="domcontentloaded", timeout=30000)
+            else:
+                page.goto(PRAGMATIC_BACCARAT_LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(3500)
+            self._inject_all(page)
+            self._ensure_multi_area(force=True)
+            logger.info(f"[LIVE-RECOVER] pragmatic lobby recovery complete reason={reason}")
+            return True
+        except Exception as ex:
+            logger.warning(f"[LIVE-RECOVER] pragmatic lobby recovery failed reason={reason}: {ex}")
+            return False
 
     def _ensure_table_state(self, table_id: str) -> dict[str, Any]:
         tid = str(table_id or "").strip()
@@ -1670,6 +2131,7 @@ class LiveBetExecutor:
         qpid = str(req.get("qpid") or "").strip()
         table_name = str(req.get("table_name") or "").strip()
         intent = str(req.get("intent") or "preposition").strip().lower()
+        focus_started = time.time()
         # Do not let a forecast focus request own the costly multi-area entry path.
         # At startup that path can take tens of seconds; if a live signal arrives
         # meanwhile, the owner thread cannot process the BET until it is stale.
@@ -1702,6 +2164,12 @@ class LiveBetExecutor:
         except Exception:
             pass
         logger.info(f"[FOCUS] intent={intent} click={click} table={table_name!r} qpid={qpid!r} page={page_url}")
+        logger.info(
+            f"[AUTO-PROBE] focus start intent={intent} table={table_name or table_id or qpid or '-'} "
+            f"qpid={qpid or table_id or '-'} click={click} side={side or '-'} "
+            f"preselect=${float(req.get('preselect_amount') or req.get('amount') or 0.0):.2f} "
+            f"multi={self._multi_lobby_mode} multi_ws={self._is_multi_table_ws}"
+        )
 
         # Diagnostic mode must not spend the preposition window trying to
         # navigate an empty lobby frame. Probe every Pragmatic frame directly;
@@ -1921,6 +2389,15 @@ class LiveBetExecutor:
                     f"{tag} FOUND table={table_name or table_id or qpid} qpid={qpid or table_id or '-'} "
                     f"clicked={bool(res.get('clicked'))}"
                 )
+                logger.info(
+                    f"[AUTO-PROBE] focus result=found intent={intent} "
+                    f"table={table_name or table_id or qpid or '-'} qpid={qpid or table_id or '-'} "
+                    f"clicked={bool(res.get('clicked'))} elapsed_ms={(time.time() - focus_started) * 1000:.0f} "
+                    f"match_index={res.get('matchIndex') if isinstance(res, dict) else '-'} "
+                    f"total_nodes={res.get('totalNodes') if isinstance(res, dict) else '-'}"
+                )
+                if tid and intent in ("preposition", "manual_assist", "prepare", "decision"):
+                    self._start_assist_focus_hold(tid, table_name or table_id or qpid or tid, intent=intent)
                 if click and res.get("clicked") and tid:
                     try:
                         page.wait_for_timeout(750)
@@ -1930,6 +2407,14 @@ class LiveBetExecutor:
                     self._prepared_at = time.time()
                     self._refresh_multi_tile_snapshot(force=True)
                     logger.info(f"[ML-PREPARED] active target ready for BET table={tid}")
+                    if intent == "manual_assist":
+                        watch_sec = float(os.getenv("BACOPY_MANUAL_ASSIST_WATCH_SEC", "90") or 90)
+                        self._manual_assist_watch_until = time.time() + max(15.0, watch_sec)
+                        self._manual_assist_watch_target = tid
+                        logger.info(
+                            f"[MANUAL-ASSIST-WATCH] armed target={tid} "
+                            f"sec={max(15.0, watch_sec):.1f}"
+                        )
                 if side in ("P", "B") and tid:
                     side_class = {"P": "ym_yP", "B": "ym_yQ"}[side]
                     probe_frame = self._find_pragmatic_frame(target_qpid=tid)
@@ -1953,6 +2438,11 @@ class LiveBetExecutor:
                 return True
         logger.warning(
             f"[FOCUS] NOT FOUND table={table_name or table_id or qpid or '-'} intent={intent} candidates={candidates}"
+        )
+        logger.warning(
+            f"[AUTO-PROBE] focus result=not_found intent={intent} "
+            f"table={table_name or table_id or qpid or '-'} qpid={qpid or table_id or '-'} "
+            f"elapsed_ms={(time.time() - focus_started) * 1000:.0f} candidates={candidates}"
         )
         return False
 
@@ -1992,20 +2482,10 @@ class LiveBetExecutor:
                 try:
                     reload_page = self._bet_page or self._lobby_page
                     if reload_page:
-                        reload_page.reload(wait_until="domcontentloaded", timeout=30000)
-                        reload_page.wait_for_timeout(3000)
-                        self._is_multi_table_ws = False
-                        self._multi_area_ready = False
-                        for st in self._table_states.values():
-                            if st.get("is_multi_table"):
-                                st["last_bets_open_at"] = 0.0
-                                st["bets_open_game_id"] = ""
-                                st["bets_closed_game_id"] = ""
-                                st["ws_url"] = ""
-                        self._game_ws_url = ""
-                        logger.info("[MULTI-AREA] page reload complete — WS state reset")
+                        if self._recover_pragmatic_lobby("multi_ws_silent", force=True):
+                            logger.info("[MULTI-AREA] lobby recovery complete — WS state reset")
                 except Exception as _re:
-                    logger.warning(f"[MULTI-AREA] page reload failed: {_re}")
+                    logger.warning(f"[MULTI-AREA] lobby recovery failed: {_re}")
                 return
 
         page = self._bet_page or self._lobby_page
@@ -2624,6 +3104,19 @@ class LiveBetExecutor:
         now = time.time()
         page = self._lobby_page
 
+        if self._multi_lobby_mode and page is not None:
+            try:
+                cur_url = str(getattr(page, "url", "") or "")
+            except Exception:
+                cur_url = ""
+            wrong_page = (
+                cur_url
+                and "stake.com" in cur_url
+                and "pragmatic-play-live-lobby-baccarat" not in cur_url
+            )
+            if wrong_page and now - self._last_lobby_recover_at >= 8.0:
+                self._recover_pragmatic_lobby("wrong_page", force=True)
+
         # ── DOMダンプ（スケジュール済みの場合のみ）─────────────────────
         if getattr(self, '_dom_dump_scheduled', False) and not getattr(self, '_dom_dumped', False):
             if now >= getattr(self, '_dom_dump_at', float('inf')):
@@ -2895,6 +3388,28 @@ class LiveBetExecutor:
                 f"(age={pending_age:.1f}s > {max_signal_age:.1f}s, "
                 f"table={pending_snapshot.get('table_id')})"
             )
+            try:
+                self._mark_bet_failed(
+                    pending_snapshot,
+                    "pending_signal_stale",
+                    phase="bet_failed",
+                    age=round(float(pending_age or 0.0), 3),
+                    max_age=round(float(max_signal_age or 0.0), 3),
+                    table_state_known=bool(
+                        self._table_states.get(str(pending_snapshot.get("table_id") or "").strip())
+                    ),
+                )
+            except Exception as ex:
+                logger.debug(f"[LIVE] stale pending mark failed error: {ex}")
+            try:
+                self._clear_active_now_bet_hold(
+                    bet_id=str(pending_snapshot.get("bet_id") or ""),
+                    table_id=str(pending_snapshot.get("table_id") or ""),
+                    decision_id=str(pending_snapshot.get("decision_id") or ""),
+                    reason="pending_signal_stale",
+                )
+            except Exception:
+                pass
             with self._lock:
                 if isinstance(self._pending_bet, dict) and self._pending_bet:
                     self._pending_bet = None
@@ -3028,6 +3543,10 @@ class LiveBetExecutor:
             except Exception:
                 pass
             try:
+                self._maintain_active_now_bet_hold(now)
+            except Exception as ex:
+                logger.debug(f"[NOW-BET-HOLD] maintain failed: {ex}")
+            try:
                 self._maintain_visible_bet_hold(now)
             except Exception as ex:
                 logger.debug(f"[VISIBLE-HOLD] maintain failed: {ex}")
@@ -3149,6 +3668,28 @@ class LiveBetExecutor:
             self._last_idle_recover_check_at = now
             self._auto_recover_idle_dialogs("tick")
 
+        if (
+            self._multi_lobby_mode
+            and self._manual_assist_watch_until > now
+            and now - self._last_manual_assist_recover_at >= 0.35
+        ):
+            self._last_manual_assist_recover_at = now
+            hits = self._auto_recover_idle_dialogs("manual-assist-watch")
+            if hits:
+                logger.info(
+                    f"[MANUAL-ASSIST-WATCH] recovered dialogs target={self._manual_assist_watch_target or '-'} "
+                    f"hits={hits} remaining={self._manual_assist_watch_until - now:.1f}s"
+                )
+
+        try:
+            self._maintain_assist_focus_hold(now)
+        except Exception as ex:
+            logger.debug(f"[ASSIST-HOLD] maintain failed: {ex}")
+        try:
+            self._maintain_active_now_bet_hold(now)
+        except Exception as ex:
+            logger.debug(f"[NOW-BET-HOLD] maintain failed: {ex}")
+
         # 「他の場所でセッションが開始されました」モーダル検出・解除 (10秒ごと)
         # WS 並列接続後にサーバが session-elsewhere を送ることがある。旧 executor と同じ
         # _dismiss_session_elsewhere_modal を使って「ここに残る」を自動クリックする。
@@ -3180,11 +3721,7 @@ class LiveBetExecutor:
                     )
                     self._reconnecting_first_at = 0.0
                     self._last_game_ws_recv_at = 0.0
-                    try:
-                        page.reload(wait_until="domcontentloaded", timeout=15000)
-                        logger.info("[LIVE] page reload after reconnect-stuck OK")
-                    except Exception as e:
-                        logger.warning(f"[LIVE] page reload error: {e}")
+                    self._recover_pragmatic_lobby("reconnecting_stuck", force=True)
             else:
                 if self._reconnecting_first_at != 0.0:
                     logger.info("[LIVE] 再接続しています 解消 — タイマーリセット")
@@ -3220,9 +3757,25 @@ class LiveBetExecutor:
             self._switch_target_table_id = str(qpid or table_id)
             if table_name:
                 self._table_name = table_name
+            target = str(qpid or table_id)
+            bot_lock = self._bot_now_lock_active()
+            lock_target = str((bot_lock or {}).get("table_id") or "")
+            if (
+                self._multi_lobby_mode
+                and bot_lock
+                and lock_target
+                and target
+                and target != lock_target
+                and intent in ("preposition", "prepare", "manual_assist", "decision", "bet")
+            ):
+                logger.info(
+                    f"[BOT-NOW-LOCK] abort active switch before focus: "
+                    f"intent={intent} target={target} keep={lock_target} "
+                    f"did={str(bot_lock.get('decision_id') or '-')[:12]}"
+                )
+                return
             ok = self._focus_table_in_multi(req)
             logger.info(f"[SWITCH] _focus_table_in_multi result={ok}")
-            target = str(qpid or table_id)
             if not ok and intent == "preposition" and target:
                 cooldown = float(os.getenv("BACOPY_PREPOSITION_FOCUS_FAIL_COOLDOWN_SEC", "10") or 10)
                 self._preposition_focus_block_until[target] = time.time() + max(5.0, cooldown)
@@ -3232,6 +3785,8 @@ class LiveBetExecutor:
                 )
             elif ok and target:
                 self._preposition_focus_block_until.pop(target, None)
+                if intent in ("preposition", "manual_assist", "prepare", "decision"):
+                    self._start_assist_focus_hold(target, table_name or target, intent=intent)
             if ok and self._switch_target_table_id:
                 self._switch_target_table_id = ""
             if ok and target and self._prepared_table_id == target:
@@ -3239,15 +3794,44 @@ class LiveBetExecutor:
                     pending_target = str((self._pending_bet or {}).get("table_id") or "")
                     pending_amount = float((self._pending_bet or {}).get("amount") or 0.0)
                 preselect_amount = float(req.get("preselect_amount") or req.get("amount") or 0.0)
+                bot_lock = self._bot_now_lock_active()
+                lock_target = str((bot_lock or {}).get("table_id") or "")
+                if (
+                    self._multi_lobby_mode
+                    and bot_lock
+                    and pending_target
+                    and lock_target
+                    and pending_target != lock_target
+                ):
+                    logger.info(
+                        f"[BOT-NOW-LOCK] discard stale pending bet during NOW lock: "
+                        f"pending_table={pending_target} lock_table={lock_target}"
+                    )
+                    with self._lock:
+                        self._pending_bet = None
+                    pending_target = ""
+                    pending_amount = 0.0
                 if pending_target == target and self._is_table_bet_window_open(target):
                     st = self._table_states.get(target) or {}
                     gid = str(st.get("bets_open_game_id") or "")
                     if gid:
                         logger.info(f"[SWITCH] prepared target has open BET window; resume pending BET table={target}")
+                        logger.info(
+                            f"[AUTO-PROBE] final_click allowed=true reason=pending_bet_window_open "
+                            f"target={target} game_id={gid} planned=${pending_amount:.2f}"
+                        )
                         self._try_execute_bet(gid, table_id=target)
                 elif pending_target == target and pending_amount > 0:
+                    logger.info(
+                        f"[AUTO-PROBE] preselect source=pending target={target} "
+                        f"planned=${pending_amount:.2f} intent={intent}"
+                    )
                     self._preselect_first_chip(target, pending_amount)
                 elif intent in ("preposition", "manual_assist") and preselect_amount > 0:
+                    logger.info(
+                        f"[AUTO-PROBE] preselect source={intent} target={target} "
+                        f"planned=${preselect_amount:.2f}"
+                    )
                     self._preselect_first_chip(target, preselect_amount)
             return
 
@@ -3329,6 +3913,11 @@ class LiveBetExecutor:
                             f"url={getattr(page, 'url', '?')[:80]} "
                             f"clicks={rec.get('clicked')} fallback={rec.get('fallbackClicked')}"
                         )
+                        # ダイアログ dismiss 後 = ゲームがリロードする可能性が高い。
+                        # NOW-BET-HOLD と ASSIST-HOLD の再センタリングタイマーをリセットして
+                        # リロード完了後できるだけ早くタイルを中央に戻す。
+                        self._last_active_now_bet_center_at = 0.0
+                        self._last_assist_focus_center_at = 0.0
             except Exception as e:
                 logger.debug(f"[LIVE] idle recover page error ({reason}): {e}")
             if include_frames:
@@ -3345,6 +3934,8 @@ class LiveBetExecutor:
                                         f"url={getattr(frame, 'url', '?')[:80]} "
                                         f"clicks={rec.get('clicked')} fallback={rec.get('fallbackClicked')}"
                                     )
+                                    self._last_active_now_bet_center_at = 0.0
+                                    self._last_assist_focus_center_at = 0.0
                         except Exception:
                             continue
                 except Exception as e:
@@ -3445,6 +4036,7 @@ class LiveBetExecutor:
                 return
             self._pending_bet = None
         logger.info(f"[TRY-BET] executing: side={bet.get('side')} table={bet.get('table_id')} game_id_arg={game_id!r}")
+        self._start_active_now_bet_hold(bet, str(bet.get("table_name") or self._table_name or bet.get("table_id") or ""))
 
         age = self._bet_signal_age(bet)
         max_age = self._max_bet_signal_age_sec()
@@ -3464,6 +4056,7 @@ class LiveBetExecutor:
                 age_sec=round(age, 2),
                 max_age_sec=round(max_age, 2),
             )
+            self._clear_active_now_bet_hold(bet_id=str(bet.get("bet_id") or ""), reason="signal_too_old")
             self._notify("⚠️ BET SKIP\nsignal too old")
             return
 
@@ -3475,6 +4068,7 @@ class LiveBetExecutor:
             logger.warning("[TRY-BET] DEFER: no table context — re-queue")
             with self._lock:
                 self._pending_bet = bet
+            self._clear_active_now_bet_hold(bet_id=str(bet.get("bet_id") or ""), reason="defer_no_table")
             return
         # multi-WS: chosen_table=aggregator channel, requested_table=actual table ID
         # XML channel must use actual table ID; WS send uses aggregator channel
@@ -3703,6 +4297,45 @@ class LiveBetExecutor:
 
         # UI buttons cannot be safely mapped to a table in the shared multi frame.
         # Default to sending the targeted lpbet message over the established multi WS proxy.
+        # WS transport: bet window validity check (no click-path guards ran above).
+        # Sending lpbet after bets_closed → "カスタマーにお問い合わせください" (server reject).
+        if (
+            self._multi_lobby_mode
+            and self._multi_bet_transport == "ws"
+            and (self._is_multi_table_ws or bool(self._ws_proxy_server or self._ws_proxy_servers))
+        ):
+            st_for_ws = self._table_states.get(bet_table_id) or self._table_states.get(chosen_table) or {}
+            ws_open_gid = str(st_for_ws.get("bets_open_game_id") or game_id or "").strip()
+            ws_closed_gid = str(st_for_ws.get("bets_closed_game_id") or "").strip()
+            ws_open_at = float(st_for_ws.get("last_bets_open_at") or 0.0)
+            max_open_age_ws = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC", "60") or 60)
+            ws_bet_open = bool(
+                ws_open_gid
+                and (not ws_closed_gid or ws_closed_gid != ws_open_gid)
+                and ws_open_at
+                and 0 < (time.time() - ws_open_at) < max_open_age_ws
+            )
+            logger.info(
+                f"[TRY-BET-WS-CHECK] window_open={ws_bet_open} "
+                f"open_gid={ws_open_gid or '-'} closed_gid={ws_closed_gid or '-'} "
+                f"game_id={game_id or '-'} "
+                f"age={time.time()-ws_open_at:.1f}s table={bet_table_id}"
+            )
+            if not ws_bet_open:
+                logger.warning(
+                    f"[TRY-BET] DROP (WS transport): bet window not open at send time "
+                    f"table={bet_table_id} open={ws_open_gid or '-'} closed={ws_closed_gid or '-'}"
+                )
+                self._mark_bet_failed(
+                    bet,
+                    "bet_window_closed_before_ws_send",
+                    "bet_skipped_window_closed",
+                    game_id=game_id,
+                    table_id=bet_table_id,
+                )
+                self._clear_active_now_bet_hold(bet_id=bet_id, reason="window_closed")
+                return
+
         if self._multi_lobby_mode and self._is_multi_table_ws and self._multi_bet_transport == "click":
             self._bet_send_in_progress = True
             try:
@@ -3768,10 +4401,27 @@ class LiveBetExecutor:
                         self._last_bet_modal_recover_at = now_wait
                         self._auto_recover_idle_dialogs("lpbet-wait")
                     time.sleep(0.1)
-                require_trusted = os.getenv("BACOPY_DUAL_REQUIRE_TRUSTED_CONFIRM", "1").strip() != "0"
+                browser_mode_now = (
+                    os.getenv("BACOPY_BROWSER", "")
+                    or os.getenv("BACOPY_DUAL_LINE_BROWSER", "")
+                    or ""
+                ).strip().lower()
+                chrome_attach_active = browser_mode_now in ("chrome_attach", "chrome-cdp", "cdp")
+                require_trusted_default = "0" if chrome_attach_active else "1"
+                require_trusted = (
+                    os.getenv("BACOPY_DUAL_REQUIRE_TRUSTED_CONFIRM", require_trusted_default).strip()
+                    != "0"
+                )
+                logger.info(
+                    f"[LPBET-DECIDE] lpbet={lpbet_confirmed} trusted={bool(trusted_confirm)} "
+                    f"require_trusted={require_trusted} chrome_attach={chrome_attach_active} "
+                    f"game={game_id or '-'} table={bet_table_id or '-'}"
+                )
                 if (not trusted_confirm) and lpbet_confirmed and not require_trusted:
                     trusted_confirm = {
-                        "confirm_type": "lpbet_only_untrusted",
+                        "confirm_type": (
+                            "lpbet_chrome_attach" if chrome_attach_active else "lpbet_only_untrusted"
+                        ),
                         "confirmed_amount": float(amount),
                         "game_id": str(game_id or ""),
                         "lpbet_observed": True,
@@ -3855,7 +4505,7 @@ class LiveBetExecutor:
                 page = self._bet_page
                 if page is not None:
                     page.goto(
-                        "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat",
+                        PRAGMATIC_BACCARAT_LOBBY_URL,
                         wait_until="domcontentloaded",
                         timeout=20000,
                     )
@@ -3975,6 +4625,31 @@ class LiveBetExecutor:
     return {ok: true, x: r.left + r.width / 2, y: r.top + r.height / 2,
             wasActive: wasActive, source: src, btnW: r.width, btnH: r.height};
   }
+  function geometryCoords(tile, src) {
+    if (!tile) return null;
+    if (String(args.geometryFallback || '1') === '0') return null;
+    const gameGuard = guardGame(tile, src);
+    if (gameGuard) return gameGuard;
+    if (!['P', 'B', 'T', 'PP', 'BP'].includes(sideCode)) return null;
+    try { tile.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+    const r = tile.getBoundingClientRect();
+    if (!rectOk(r)) return null;
+    const xRatio = ({PP: 0.16, P: 0.34, T: 0.50, B: 0.66, BP: 0.84})[sideCode];
+    if (!xRatio) return null;
+    // Some compact multi-baccarat cards render the wager controls without
+    // stable ym_* DOM classes. In that case the qpid-matched card is still
+    // trustworthy, so use the visual 5-button row near the bottom of the card.
+    const y = r.top + Math.max(r.height * 0.68, r.height - 34);
+    return {
+      ok: true,
+      x: r.left + r.width * xRatio,
+      y: Math.min(r.bottom - 12, y),
+      wasActive: false,
+      source: src + '_geometry',
+      tileW: r.width,
+      tileH: r.height,
+    };
+  }
 
   function tryOrderedTileButtons(tile, src) {
     if (!tile) return null;
@@ -4071,9 +4746,11 @@ class LiveBetExecutor:
     if (gameGuard) return gameGuard;
     // In multi-baccarat the selected tile and the actual wager panel can be
     // rendered as separate DOM islands. Once the exact qpid tile is mounted,
-    // prefer the large active wager-panel button. Compact tile buttons can
-    // select/focus a card without placing a real wager.
-    const candidates = Array.from(document.querySelectorAll('.' + sideClass + '.' + activeClass))
+    // prefer the large wager-panel button. Compact tile buttons can
+    // select/focus a card without placing a real wager. Some builds do not
+    // mark the large button with ym_yn until after chip hover/click, so search
+    // by side class first and only use activeClass as a ranking signal.
+    const candidates = sideClasses.flatMap((cls) => Array.from(document.querySelectorAll('.' + cls)))
       .filter((btn) => {
         const r = btn.getBoundingClientRect();
         if (!(rectOk(r) && r.x >= 0 && r.y >= 0)) return false;
@@ -4082,11 +4759,24 @@ class LiveBetExecutor:
       })
       .map((btn) => {
         const r = btn.getBoundingClientRect();
-        return {btn, area: r.width * r.height, x: r.left, y: r.top};
+        const active = btn.classList.contains(activeClass);
+        const tileOfBtn = enclosingTile(btn);
+        const inTile = tileOfBtn === tile;
+        return {
+          btn,
+          area: r.width * r.height,
+          score: (active ? 1000000 : 0) + (!inTile ? 500000 : 0) + (r.width * r.height),
+          x: r.left,
+          y: r.top,
+        };
       })
-      .sort((a, b) => b.area - a.area);
+      .sort((a, b) => b.score - a.score);
     if (candidates.length < 1) return null;
-    return btnCoords(candidates[0].btn, true, 'active_panel_after_qpid_tile');
+    return btnCoords(
+      candidates[0].btn,
+      candidates[0].btn.classList.contains(activeClass),
+      'active_panel_after_qpid_tile'
+    );
   }
   function enclosingTile(el) {
     let node = el;
@@ -4106,6 +4796,8 @@ class LiveBetExecutor:
       if (activePanelResult) return activePanelResult;
       const orderedResult = tryOrderedTileButtons(targetTile, 'qpid_tile_ordered');
       if (orderedResult) return orderedResult;
+      const geomResult = geometryCoords(targetTile, 'qpid_tile');
+      if (geomResult) return geomResult;
     }
   }
 
@@ -4127,6 +4819,10 @@ class LiveBetExecutor:
         if (orderedResult) return orderedResult;
         const result = tryWithinTile(tile, 'table_name_tile');
         if (result) return result;
+        if (qpid && tile && tile.id === ('TileHeight-' + qpid)) {
+          const geomResult = geometryCoords(tile, 'table_name_qpid_tile');
+          if (geomResult) return geomResult;
+        }
       } catch(e) {}
     }
   }
@@ -4201,8 +4897,21 @@ class LiveBetExecutor:
         if not tid:
             return False
         try:
-            frame.locator(f'[id="TileHeight-{tid}"]').hover(timeout=2000, force=True)
-            frame.page.wait_for_timeout(250)
+            tile = frame.locator(f'[id="TileHeight-{tid}"]')
+            tile.hover(timeout=2000, force=True)
+            try:
+                box = tile.bounding_box(timeout=1000)
+                if box:
+                    frame.page.mouse.move(
+                        float(box["x"]) + float(box["width"]) / 2.0,
+                        float(box["y"]) + float(box["height"]) / 2.0,
+                        steps=8,
+                    )
+            except TypeError:
+                pass
+            except Exception as ex:
+                logger.debug(f"[ML-HOVER] mouse move after hover failed table={tid}: {ex}")
+            frame.page.wait_for_timeout(400)
             logger.info(f"[ML-HOVER] exact tile hovered table={tid}")
             return True
         except Exception as ex:
@@ -4361,16 +5070,41 @@ class LiveBetExecutor:
             logger.debug(f"[MANUAL-ASSIST] overlay clear error target={tid or '-'}: {ex}")
             return False
 
-    def _center_multi_tile(self, qpid: str, table_name: str = "", *, click: bool = False) -> bool:
-        """Keep a multi-play tile visible near the screen center."""
+    def _center_multi_tile(
+        self,
+        qpid: str,
+        table_name: str = "",
+        *,
+        click: bool = False,
+        source: str = "",
+    ) -> bool:
+        """Keep a multi-play tile visible near the screen center.
+
+        ``source`` identifies which hold caller invoked this so logs can be
+        disambiguated; previously every caller logged as ``[VISIBLE-HOLD]``
+        even when the request came from ASSIST-HOLD or NOW-BET-HOLD.
+        """
         tid = str(qpid or "").strip()
+        tag_map = {
+            "visible_bet_hold": "VISIBLE-HOLD",
+            "now_bet_hold": "NOW-BET-HOLD",
+            "now_lock": "NOW-BET-HOLD",
+            "assist_focus_hold": "ASSIST-HOLD",
+        }
+        tag = tag_map.get(str(source or "").strip().lower(), "TILE-CENTER")
         if not tid:
             return False
         frame = self._find_pragmatic_frame(target_qpid=tid)
         if not frame:
-            logger.info(f"[VISIBLE-HOLD] frame not found for center target={tid!r}")
+            logger.info(f"[{tag}] frame not found for center target={tid!r}")
             return False
         try:
+            source_key = str(source or "").strip().lower()
+            assist_status = ""
+            if source_key in ("now_bet_hold", "now_lock"):
+                assist_status = "NOW"
+            elif source_key == "assist_focus_hold":
+                assist_status = "READY"
             res = frame.evaluate(
                 _MULTI_LOBBY_FOCUS_JS,
                 {
@@ -4380,14 +5114,71 @@ class LiveBetExecutor:
                     "candidates": [str(table_name or ""), tid],
                     "hintIndex": -1,
                     "hintTotal": 0,
+                    "holdOnly": source_key in ("now_bet_hold", "visible_bet_hold"),
+                    "assistStatus": assist_status,
                 },
             )
             ok = bool(isinstance(res, dict) and res.get("found"))
-            logger.info(f"[VISIBLE-HOLD] center target={tid!r} ok={ok} result={res}")
+            logger.info(f"[{tag}] center target={tid!r} ok={ok} result={res}")
             return ok
         except Exception as ex:
-            logger.warning(f"[VISIBLE-HOLD] center failed target={tid!r}: {ex}")
+            logger.warning(f"[{tag}] center failed target={tid!r}: {ex}")
             return False
+
+    def _run_lobby_scroll_probe(self, qpid: str) -> None:
+        """One-shot probe: log every scroll-able ancestor and translateY element.
+
+        Goal: identify whether the Pragmatic lobby scrolls via document scrollTop,
+        an inner overflow:auto container, or a React virtualizer using
+        transform: translateY(...). The result is logged as JSON so the user can
+        copy/paste a single line of evidence.
+        """
+        tid = str(qpid or "").strip()
+        frame = self._find_pragmatic_frame(target_qpid=tid) or self._find_pragmatic_frame()
+        if not frame:
+            logger.info(f"[SCROLL-PROBE] frame not found target={tid!r}")
+            return
+        try:
+            res = frame.evaluate(_LOBBY_SCROLL_PROBE_JS, {"qpid": tid})
+        except Exception as ex:
+            logger.warning(f"[SCROLL-PROBE] eval failed target={tid!r}: {ex}")
+            return
+        if not isinstance(res, dict):
+            logger.info(f"[SCROLL-PROBE] target={tid!r} result_type={type(res).__name__}")
+            return
+        try:
+            anc = res.get("scrollAncestors") or []
+            tr = res.get("transformElements") or []
+            vh = res.get("virtualizerHints") or []
+            tile_rect = (res.get("tile") or {}).get("rect") or {}
+            logger.info(
+                "[SCROLL-PROBE] target=%s href=%s tile=%s scrollAncestors=%d transforms=%d virtualizers=%d"
+                % (
+                    tid or "-",
+                    str(res.get("href") or "")[:80],
+                    json.dumps(tile_rect, separators=(",", ":")),
+                    len(anc),
+                    len(tr),
+                    len(vh),
+                )
+            )
+            for d in anc[:5]:
+                logger.info("[SCROLL-PROBE] anc " + json.dumps(d, separators=(",", ":"))[:280])
+            for d in tr[:5]:
+                logger.info("[SCROLL-PROBE] tr  " + json.dumps(d, separators=(",", ":"))[:280])
+            for d in vh[:5]:
+                logger.info("[SCROLL-PROBE] vh  " + json.dumps(d, separators=(",", ":"))[:280])
+            se = res.get("scrollingElement") or {}
+            ws = res.get("windowScroll") or {}
+            logger.info(
+                "[SCROLL-PROBE] scrollingElement=%s windowScroll=%s"
+                % (
+                    json.dumps(se, separators=(",", ":")),
+                    json.dumps(ws, separators=(",", ":")),
+                )
+            )
+        except Exception as ex:
+            logger.warning(f"[SCROLL-PROBE] log format failed: {ex}")
 
     def _start_visible_bet_hold(self, bet_id: str, table_id: str, table_name: str = "") -> None:
         if not self._multi_lobby_mode:
@@ -4410,7 +5201,211 @@ class LiveBetExecutor:
             f"[VISIBLE-HOLD] start table={tid} name={table_name or tid!r} "
             f"bet_id={str(bet_id or '')[:16]} max_sec={hold_sec:.0f}"
         )
-        self._center_multi_tile(tid, table_name, click=False)
+        self._center_multi_tile(tid, table_name, click=False, source="visible_bet_hold")
+
+    def _start_assist_focus_hold(self, table_id: str, table_name: str = "", *, intent: str = "") -> None:
+        if not self._multi_lobby_mode:
+            return
+        if os.getenv("BACOPY_ASSIST_FOCUS_HOLD", "1").strip() == "0":
+            return
+        tid = str(table_id or "").strip()
+        if not tid:
+            return
+        hold_sec = float(os.getenv("BACOPY_ASSIST_FOCUS_HOLD_SEC", "45") or 45)
+        self._assist_focus_hold = {
+            "table_id": tid,
+            "table_name": str(table_name or tid),
+            "intent": str(intent or ""),
+            "until": time.time() + max(8.0, hold_sec),
+        }
+        self._last_assist_focus_center_at = 0.0
+        logger.info(
+            f"[ASSIST-HOLD] start table={tid} name={table_name or tid!r} "
+            f"intent={intent or '-'} max_sec={hold_sec:.0f}"
+        )
+        try:
+            now_ts = time.time()
+            last_probe = float(getattr(self, "_last_lobby_scroll_probe_at", 0.0) or 0.0)
+            if (
+                os.getenv("BACOPY_LOBBY_SCROLL_PROBE", "1").strip() != "0"
+                and (now_ts - last_probe) > 30.0
+            ):
+                self._last_lobby_scroll_probe_at = now_ts
+                self._run_lobby_scroll_probe(tid)
+        except Exception as ex:
+            logger.debug(f"[SCROLL-PROBE] dispatch failed: {ex}")
+
+    def _start_active_now_bet_hold(self, bet: dict[str, Any] | None, table_name: str = "") -> None:
+        if not self._multi_lobby_mode or not isinstance(bet, dict):
+            return
+        tid = str(bet.get("table_id") or "").strip()
+        if not tid:
+            return
+        hold_sec = float(os.getenv("BACOPY_NOW_BET_HOLD_MAX_SEC", "65") or 65)
+        self._active_now_bet_hold = {
+            "table_id": tid,
+            "table_name": str(table_name or bet.get("table_name") or tid),
+            "bet_id": str(bet.get("bet_id") or ""),
+            "decision_id": str(bet.get("decision_id") or ""),
+            "side": str(bet.get("side") or ""),
+            "started_at": time.time(),
+            "until": time.time() + max(30.0, hold_sec),
+        }
+        self._last_active_now_bet_center_at = 0.0
+        logger.info(
+            f"[NOW-BET-HOLD] start table={tid} bet_id={str(bet.get('bet_id') or '')[:16] or '-'} "
+            f"decision={str(bet.get('decision_id') or '')[:12] or '-'} max_sec={max(30.0, hold_sec):.0f}"
+        )
+        self._center_multi_tile(
+            tid,
+            str(table_name or bet.get("table_name") or tid),
+            click=False,
+            source="now_bet_hold",
+        )
+
+    def _clear_active_now_bet_hold(
+        self,
+        *,
+        bet_id: str = "",
+        table_id: str = "",
+        decision_id: str = "",
+        reason: str = "",
+    ) -> None:
+        hold = self._active_now_bet_hold or {}
+        if not hold:
+            return
+        bid = str(bet_id or "").strip()
+        tid = str(table_id or "").strip()
+        did = str(decision_id or "").strip()
+        hold_bid = str(hold.get("bet_id") or "")
+        hold_tid = str(hold.get("table_id") or "")
+        hold_did = str(hold.get("decision_id") or "")
+        if bid and hold_bid and bid != hold_bid:
+            return
+        if tid and hold_tid and tid != hold_tid:
+            return
+        if did and hold_did and did != hold_did:
+            return
+        logger.info(
+            f"[NOW-BET-HOLD] clear table={hold_tid or '-'} bet_id={hold_bid[:16] or '-'} "
+            f"decision={hold_did[:12] or '-'} reason={reason or '-'}"
+        )
+        self._active_now_bet_hold = {}
+
+    def _maintain_active_now_bet_hold(self, now: float | None = None) -> None:
+        hold = self._active_now_bet_hold or {}
+        if not hold:
+            return
+        now = time.time() if now is None else now
+        tid = str(hold.get("table_id") or "")
+        if not tid:
+            self._active_now_bet_hold = {}
+            return
+        if now >= float(hold.get("until") or 0.0):
+            logger.info(f"[NOW-BET-HOLD] expired table={tid}")
+            self._active_now_bet_hold = {}
+            return
+        interval = float(os.getenv("BACOPY_NOW_BET_RECENTER_SEC", "0.5") or 0.5)
+        if now - self._last_active_now_bet_center_at < max(0.3, interval):
+            return
+        self._last_active_now_bet_center_at = now
+        self._center_multi_tile(
+            tid, str(hold.get("table_name") or tid), click=False, source="now_bet_hold"
+        )
+
+    def set_bot_now_lock(
+        self,
+        *,
+        decision_id: str,
+        table_id: str,
+        table_name: str = "",
+        side: str = "",
+        until: float = 0.0,
+    ) -> None:
+        """Mirror bot._now_lock so executor-side gates can drop competing work."""
+        tid = str(table_id or "").strip()
+        did = str(decision_id or "").strip()
+        if not tid and not did:
+            self._bot_now_lock = {}
+            return
+        self._bot_now_lock = {
+            "decision_id": did,
+            "table_id": tid,
+            "table_name": str(table_name or tid),
+            "side": str(side or "").upper(),
+            "until": float(until or 0.0),
+        }
+        logger.info(
+            f"[BOT-NOW-LOCK] mirror set did={did[:12] or '-'} table={tid or '-'} "
+            f"side={side or '-'} until={float(until or 0.0):.0f}"
+        )
+
+    def clear_bot_now_lock(
+        self,
+        *,
+        decision_id: str = "",
+        table_id: str = "",
+        reason: str = "",
+    ) -> None:
+        lock = self._bot_now_lock or {}
+        if not lock:
+            return
+        did = str(decision_id or "").strip()
+        tid = str(table_id or "").strip()
+        lock_did = str(lock.get("decision_id") or "")
+        lock_tid = str(lock.get("table_id") or "")
+        if did and lock_did and did != lock_did:
+            return
+        if tid and lock_tid and tid != lock_tid:
+            return
+        logger.info(
+            f"[BOT-NOW-LOCK] mirror clear did={lock_did[:12] or '-'} "
+            f"table={lock_tid or '-'} reason={reason or '-'}"
+        )
+        self._bot_now_lock = {}
+
+    def _bot_now_lock_active(self) -> dict[str, Any]:
+        lock = self._bot_now_lock or {}
+        if not lock:
+            return {}
+        until = float(lock.get("until") or 0.0)
+        if until and time.time() >= until:
+            self._bot_now_lock = {}
+            return {}
+        return lock
+
+    def _maintain_assist_focus_hold(self, now: float | None = None) -> None:
+        hold = self._assist_focus_hold or {}
+        if not hold:
+            return
+        visible_hold = self._visible_bet_hold or {}
+        if visible_hold:
+            visible_bid = str(visible_hold.get("bet_id") or "")
+            if visible_bid and visible_bid in self._confirmed_bets:
+                return
+            logger.info(
+                f"[ASSIST-HOLD] clearing unconfirmed visible hold "
+                f"table={visible_hold.get('table_id') or '-'} bet_id={visible_bid[:16] or '-'}"
+            )
+            self._visible_bet_hold = {}
+        now = time.time() if now is None else now
+        tid = str(hold.get("table_id") or "")
+        if not tid:
+            self._assist_focus_hold = {}
+            return
+        if now >= float(hold.get("until") or 0.0):
+            logger.info(f"[ASSIST-HOLD] expired table={tid}")
+            self._assist_focus_hold = {}
+            return
+        if self._switch_request or self._switch_in_progress:
+            return
+        interval = float(os.getenv("BACOPY_ASSIST_FOCUS_RECENTER_SEC", "1.5") or 1.5)
+        if now - self._last_assist_focus_center_at < max(0.75, interval):
+            return
+        self._last_assist_focus_center_at = now
+        self._center_multi_tile(
+            tid, str(hold.get("table_name") or tid), click=False, source="assist_focus_hold"
+        )
 
     def _maintain_visible_bet_hold(self, now: float | None = None) -> None:
         hold = self._visible_bet_hold or {}
@@ -4430,21 +5425,33 @@ class LiveBetExecutor:
             return
         self._last_visible_bet_center_at = now
         self._auto_recover_idle_dialogs("visible-hold")
-        self._center_multi_tile(tid, str(hold.get("table_name") or tid), click=False)
+        self._center_multi_tile(
+            tid, str(hold.get("table_name") or tid), click=False, source="visible_bet_hold"
+        )
 
     def mark_bet_resolved(self, bet_id: str = "", table_id: str = "") -> None:
         """Called by the live bot when the watched bet has an outcome."""
+        bid = str(bet_id or "").strip()
+        tid = str(table_id or "").strip()
+        self._clear_active_now_bet_hold(
+            bet_id=bid,
+            table_id=tid,
+            reason="result_resolved",
+        )
         hold = self._visible_bet_hold or {}
         if not hold:
             return
-        bid = str(bet_id or "").strip()
-        tid = str(table_id or "").strip()
         hold_bid = str(hold.get("bet_id") or "")
         hold_tid = str(hold.get("table_id") or "")
         if (bid and hold_bid and bid != hold_bid) or (tid and hold_tid and tid != hold_tid):
             return
         logger.info(f"[VISIBLE-HOLD] resolved; release table={hold_tid} bet_id={hold_bid[:16]}")
-        self._center_multi_tile(hold_tid, str(hold.get("table_name") or hold_tid), click=False)
+        self._center_multi_tile(
+            hold_tid,
+            str(hold.get("table_name") or hold_tid),
+            click=False,
+            source="visible_bet_hold",
+        )
         self._visible_bet_hold = {}
 
     def _js_click_bet_in_container(
@@ -4469,6 +5476,10 @@ class LiveBetExecutor:
                     "sideCode": side,
                     "expectedGameId": str(expected_game_id or ""),
                     "staleTileGameIdOk": str(stale_tile_game_id_ok or ""),
+                    # Real-money click path must not use visual-ratio geometry.
+                    # It can focus a compact tile and still report click OK
+                    # without placing an actual wager.
+                    "geometryFallback": "0",
                 },
             )
             logger.info(f"[CLICK-BET-JS] qpid={qpid!r} table={table_name!r} coords={res}")
@@ -4490,8 +5501,11 @@ class LiveBetExecutor:
                 logger.debug(f"[CLICK-BET-JS] frame_element offset failed: {_fe}")
 
             page = frame.page
-            page.mouse.move(page_x, page_y)
-            page.wait_for_timeout(80)
+            try:
+                page.mouse.move(page_x, page_y, steps=8)
+            except TypeError:
+                page.mouse.move(page_x, page_y)
+            page.wait_for_timeout(180)
             page.mouse.click(page_x, page_y)
             self._last_click_bet_page_coords = {
                 "x": page_x,
@@ -4510,19 +5524,76 @@ class LiveBetExecutor:
 
     _JS_SELECTOR_COORDS = r"""
 (selector) => {
-  const el = document.querySelector(selector);
-  if (!el) return {ok:false, reason:'not_found', selector};
-  try { el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
-  const r = el.getBoundingClientRect();
-  const cs = getComputedStyle(el);
-  if (!r || r.width <= 4 || r.height <= 4 || cs.visibility === 'hidden' || cs.display === 'none') {
-    return {ok:false, reason:'not_visible', selector,
-            x: r ? r.left : 0, y: r ? r.top : 0,
-            w: r ? r.width : 0, h: r ? r.height : 0};
+  const nodes = Array.from(document.querySelectorAll(selector));
+  if (!nodes.length) return {ok:false, reason:'not_found', selector};
+  function visibleBox(el) {
+    try {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      if (!r || r.width <= 4 || r.height <= 4 || cs.visibility === 'hidden' || cs.display === 'none') return null;
+      return r;
+    } catch(_) {
+      return null;
+    }
   }
-  return {ok:true, selector, x:r.left + r.width / 2, y:r.top + r.height / 2,
+  let el = null;
+  let r = null;
+  let picked = -1;
+  for (let i = 0; i < nodes.length; i++) {
+    const nr = visibleBox(nodes[i]);
+    if (nr) {
+      el = nodes[i];
+      r = nr;
+      picked = i;
+      break;
+    }
+  }
+  if (!el) {
+    const first = nodes[0];
+    const fr = first && first.getBoundingClientRect ? first.getBoundingClientRect() : null;
+    return {ok:false, reason:'not_visible', selector, matches:nodes.length,
+            x: fr ? fr.left : 0, y: fr ? fr.top : 0,
+            w: fr ? fr.width : 0, h: fr ? fr.height : 0};
+  }
+  try { el.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+  r = visibleBox(el) || r;
+  const cx = r.left + r.width / 2;
+  const cy = r.top + r.height / 2;
+  const ev = { bubbles:true, cancelable:true, composed:true, clientX:cx, clientY:cy, view:window };
+  try {
+    if (window.PointerEvent) {
+      el.dispatchEvent(new PointerEvent('pointerdown', ev));
+      el.dispatchEvent(new PointerEvent('pointerup', ev));
+    }
+    el.dispatchEvent(new MouseEvent('mousedown', ev));
+    el.dispatchEvent(new MouseEvent('mouseup', ev));
+    el.dispatchEvent(new MouseEvent('click', ev));
+    if (typeof el.click === 'function') el.click();
+  } catch(_) {}
+  return {ok:true, selector, picked, matches:nodes.length, x:cx, y:cy,
           w:r.width, h:r.height, text:String(el.innerText || el.textContent || '').trim().slice(0,80)};
 }
+"""
+
+    _JS_CHIP_SCAN = r"""
+() => Array.from(document.querySelectorAll('[data-testid^="chip-stack-value-"]'))
+  .map((el, index) => {
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    const testid = String(el.getAttribute('data-testid') || '');
+    return {
+      index,
+      testid,
+      value: testid.replace('chip-stack-value-', ''),
+      text: String(el.innerText || el.textContent || '').trim().slice(0, 80),
+      visible: !!(r && r.width > 4 && r.height > 4 && cs.visibility !== 'hidden' && cs.display !== 'none'),
+      x: r ? Math.round(r.left + r.width / 2) : 0,
+      y: r ? Math.round(r.top + r.height / 2) : 0,
+      w: r ? Math.round(r.width) : 0,
+      h: r ? Math.round(r.height) : 0,
+      cls: String(el.className || '').slice(0, 120)
+    };
+  })
 """
 
     def _js_click_selector(self, frame, selector: str, label: str) -> bool:
@@ -4544,8 +5615,11 @@ class LiveBetExecutor:
             except Exception as _fe:
                 logger.debug(f"[CLICK-{label}-JS] frame_element offset failed: {_fe}")
             page = frame.page
-            page.mouse.move(page_x, page_y)
-            page.wait_for_timeout(60)
+            try:
+                page.mouse.move(page_x, page_y, steps=8)
+            except TypeError:
+                page.mouse.move(page_x, page_y)
+            page.wait_for_timeout(250 if label == "CHIP" else 120)
             page.mouse.click(page_x, page_y)
             logger.info(f"[CLICK-{label}-JS] mouse.click at ({page_x:.1f}, {page_y:.1f})")
             return True
@@ -4562,15 +5636,17 @@ class LiveBetExecutor:
     def _available_chip_denoms(self, frame) -> list[float]:
         """Read currently rendered chip denominations from the Pragmatic frame."""
         try:
-            vals = frame.evaluate(
-                r"""
-() => Array.from(document.querySelectorAll('[data-testid^="chip-stack-value-"]'))
-  .map(el => String(el.getAttribute('data-testid') || '').replace('chip-stack-value-', ''))
-  .map(v => Number(v))
-  .filter(v => Number.isFinite(v) && v > 0)
-"""
-            )
-            if isinstance(vals, list):
+            chips = frame.evaluate(self._JS_CHIP_SCAN)
+            if isinstance(chips, list):
+                logger.info(f"[AUTO-PROBE] chip scan count={len(chips)} chips={chips[:12]}")
+                vals = []
+                for item in chips:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        vals.append(float(item.get("value") or 0))
+                    except Exception:
+                        pass
                 denoms = sorted({float(v) for v in vals if float(v) > 0})
                 if denoms:
                     return denoms
@@ -4640,6 +5716,14 @@ class LiveBetExecutor:
     def _select_chip_in_frame(self, frame, chip_value: float, log_prefix: str = "CLICK-BET") -> bool:
         chip_str = self._fmt_chip_denom(chip_value)
         chip_sel = f'[data-testid="chip-stack-value-{chip_str}"]'
+        try:
+            chips = frame.evaluate(self._JS_CHIP_SCAN)
+            logger.info(
+                f"[AUTO-PROBE] chip select target={chip_str} "
+                f"visible={[c for c in chips if isinstance(c, dict) and c.get('visible')][:12] if isinstance(chips, list) else chips}"
+            )
+        except Exception as ex:
+            logger.info(f"[AUTO-PROBE] chip select scan failed target={chip_str}: {ex}")
         if self._js_click_selector(frame, chip_sel, "CHIP"):
             logger.info(f"[{log_prefix}] chip selected via JS mouse: {chip_str} (selector={chip_sel})")
             try:
@@ -4677,9 +5761,17 @@ class LiveBetExecutor:
         chip_plan = self._chip_plan(amount, rendered_denoms)
         if not chip_plan:
             logger.info(f"[CHIP-PRESELECT] skip: empty chip plan amount=${amount:.2f} target={target_qpid!r}")
+            logger.info(
+                f"[AUTO-PROBE] preselect result=empty_plan target={target_qpid!r} "
+                f"amount=${amount:.2f} denoms={rendered_denoms}"
+            )
             return False
         first = float(chip_plan[0])
         if not self._select_chip_in_frame(frame, first, "CHIP-PRESELECT"):
+            logger.warning(
+                f"[AUTO-PROBE] preselect result=failed target={target_qpid!r} "
+                f"amount=${amount:.2f} first_chip={self._fmt_chip_denom(first)}"
+            )
             return False
         self._preselected_chip = {
             "target": str(target_qpid or ""),
@@ -4690,6 +5782,11 @@ class LiveBetExecutor:
         logger.info(
             f"[CHIP-PRESELECT] ready target={target_qpid!r} amount=${amount:.2f} "
             f"first_chip={self._fmt_chip_denom(first)} plan_clicks={len(chip_plan)}"
+        )
+        logger.info(
+            f"[AUTO-PROBE] preselect result=ready target={target_qpid!r} "
+            f"amount=${amount:.2f} first_chip={self._fmt_chip_denom(first)} "
+            f"plan_clicks={len(chip_plan)}"
         )
         return True
 
@@ -4959,7 +6056,10 @@ class LiveBetExecutor:
         for idx, chip_value in enumerate(chip_plan, start=1):
             pre = self._preselected_chip or {}
             chip_changed_this_click = False
+            reuse_preselected_chip = os.getenv("BACOPY_REUSE_PRESELECTED_CHIP", "0").strip() == "1"
             can_skip_preselect = (
+                reuse_preselected_chip
+                and
                 idx == 1
                 and str(pre.get("target") or "") == str(target_qpid or "")
                 and int(pre.get("amount_key") or -1) == self._amount_key(amount)
@@ -5008,6 +6108,20 @@ class LiveBetExecutor:
         match = f"tableId={table_id}"
         st = self._table_states.get(table_id) or {}
         ws_url = str(st.get("ws_url") or self._game_ws_url or "").strip()
+
+        def _note_direct_lpbet_sent(mode: str, channel: str) -> None:
+            if "<lpbet" not in payload:
+                return
+            m_gid = re.search(r'gId="([^"]+)"', payload)
+            m_ck = re.search(r'\bck="([^"]+)"', payload)
+            gid = str(m_gid.group(1) if m_gid else "").strip()
+            ck = str(m_ck.group(1) if m_ck else "").strip()
+            self._last_lpbet_gid = gid
+            self._last_lpbet_at = time.time()
+            logger.info(
+                f"[WS-BET-SEND] direct lpbet sent marker mode={mode} "
+                f"channel={channel or '-'} gId={gid or '-'} ck={ck or '-'}"
+            )
 
         pages = [self._lobby_page] if self._lobby_page else []
         try:
@@ -5099,9 +6213,17 @@ class LiveBetExecutor:
             self._ws_proxy_servers.get(table_id) or self._ws_proxy_server
             if self._multi_lobby_mode else None
         )
+        logger.info(
+            f"[WS-SEND-PATH] table={table_id or '-'} ws_url={ws_url[:60] if ws_url else 'NONE'} "
+            f"proxy={'SET' if proxy_server else 'NONE'} "
+            f"proxy_channels={list(self._ws_proxy_servers.keys())} "
+            f"proxy_global={'SET' if self._ws_proxy_server else 'NONE'} "
+            f"worker_bridge={bool(self._multi_lobby_mode)}"
+        )
         if proxy_server is not None:
             try:
                 proxy_server.send(payload)
+                _note_direct_lpbet_sent("ws_proxy", table_id)
                 logger.info(f"[WS-SEND] ws_proxy_server.send OK channel={table_id}")
                 return {"ok": True, "mode": "ws_proxy", "channel": table_id}
             except Exception as _e:
@@ -5117,6 +6239,7 @@ class LiveBetExecutor:
         if self._multi_lobby_mode:
             res_w = _try_worker_send()
             if isinstance(res_w, dict) and res_w.get("ok"):
+                _note_direct_lpbet_sent("worker_bridge", table_id)
                 return res_w
             logger.info(f"[WS-SEND] worker bridge result: {res_w} — falling back")
 
@@ -5131,11 +6254,13 @@ class LiveBetExecutor:
             )
             res = _try_open_send(ws_url)
             if isinstance(res, dict) and res.get("ok"):
+                _note_direct_lpbet_sent("open_send", table_id)
                 return res
 
         # 3. 既存 __bacopy_ws_send（ページ文脈の WS）
         first = _send_once()
         if isinstance(first, dict) and first.get("ok"):
+            _note_direct_lpbet_sent("page_bridge", table_id)
             return first
 
         # 4. bridge 未注入なら再注入して再試行
@@ -5147,13 +6272,16 @@ class LiveBetExecutor:
         if self._multi_lobby_mode:
             res_w2 = _try_worker_send()
             if isinstance(res_w2, dict) and res_w2.get("ok"):
+                _note_direct_lpbet_sent("worker_bridge_retry", table_id)
                 return res_w2
         if ws_url and not self._multi_lobby_mode:
             res2 = _try_open_send(ws_url)
             if isinstance(res2, dict) and res2.get("ok"):
+                _note_direct_lpbet_sent("open_send_retry", table_id)
                 return res2
         second = _send_once()
         if isinstance(second, dict) and second.get("ok"):
+            _note_direct_lpbet_sent("page_bridge_retry", table_id)
             return second
         return second
 
@@ -5284,7 +6412,7 @@ class LiveBetExecutor:
         if page is not None:
             try:
                 page.goto(
-                    "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat",
+                    PRAGMATIC_BACCARAT_LOBBY_URL,
                     wait_until="domcontentloaded",
                     timeout=20000,
                 )
@@ -5322,6 +6450,20 @@ class LiveBetExecutor:
         new_intent = str(new_req["intent"])
         new_target = str(new_req["qpid"] or new_req["table_id"])
         now = time.time()
+        bot_lock = self._bot_now_lock_active()
+        if (
+            self._multi_lobby_mode
+            and bot_lock
+            and new_target
+            and new_target != str(bot_lock.get("table_id") or "")
+            and new_intent in ("preposition", "prepare", "manual_assist")
+        ):
+            logger.info(
+                f"[BOT-NOW-LOCK] drop switch intent={new_intent} target={new_target} "
+                f"keep={bot_lock.get('table_id') or '-'} "
+                f"did={str(bot_lock.get('decision_id') or '-')[:12]}"
+            )
+            return
         if self._multi_lobby_mode and new_intent == "preposition" and new_target:
             blocked_until = float(self._preposition_focus_block_until.get(new_target) or 0.0)
             pre_score = int(new_req.get("preposition_score") or 0)
@@ -5343,16 +6485,49 @@ class LiveBetExecutor:
         hold = self._visible_bet_hold or {}
         hold_target = str(hold.get("table_id") or "")
         hold_until = float(hold.get("until") or 0.0)
+        now_bet_hold = self._active_now_bet_hold or {}
+        now_bet_target = str(now_bet_hold.get("table_id") or "")
+        now_bet_until = float(now_bet_hold.get("until") or 0.0)
         if (
             self._multi_lobby_mode
-            and new_intent == "preposition"
+            and now_bet_target
+            and new_target
+            and new_target != now_bet_target
+        ):
+            lock_for_hold = self._bot_now_lock_active()
+            lock_table = str(lock_for_hold.get("table_id") or "")
+            if not lock_table:
+                logger.info(
+                    f"[NOW-BET-HOLD] clear stale hold before new focus: "
+                    f"old={now_bet_target} new={new_target} intent={new_intent}"
+                )
+                self._active_now_bet_hold = {}
+                now_bet_target = ""
+                now_bet_until = 0.0
+        if (
+            self._multi_lobby_mode
+            and now_bet_target
+            and now < now_bet_until
+            and new_target != now_bet_target
+            and new_intent in ("preposition", "prepare", "manual_assist", "decision", "bet")
+        ):
+            logger.info(
+                f"[NOW-BET-HOLD] drop focus while active NOW bet is locked: "
+                f"keep={now_bet_target} drop={new_target or '-'} intent={new_intent} "
+                f"remaining={now_bet_until - now:.1f}s"
+            )
+            return
+        if (
+            self._multi_lobby_mode
             and hold_target
             and now < hold_until
             and new_target != hold_target
+            and new_intent in ("preposition", "prepare", "manual_assist", "decision", "bet")
         ):
             logger.info(
-                f"[VISIBLE-HOLD] drop preposition while showing bet/result: "
-                f"keep={hold_target} drop={new_target or '-'}"
+                f"[VISIBLE-HOLD] drop focus while showing bet/result: "
+                f"keep={hold_target} drop={new_target or '-'} intent={new_intent} "
+                f"remaining={hold_until - now:.1f}s"
             )
             return
         current = self._switch_request or {}
@@ -5729,7 +6904,12 @@ class LiveBetExecutor:
 
     @property
     def has_pending_bet(self) -> bool:
-        return bool(self._pending_bet) or self._switch_in_progress or bool(self._switch_request)
+        return (
+            bool(self._pending_bet)
+            or bool(self._active_now_bet_hold)
+            or self._switch_in_progress
+            or bool(self._switch_request)
+        )
 
     @property
     def is_bet_in_flight(self) -> bool:
@@ -5745,7 +6925,7 @@ class LiveBetExecutor:
         waiting フェーズ（ロビー待機中）のみ切替可。
         ready/betting（テーブル入場済み）では切替しない。
         """
-        if self._switch_in_progress or self._pending_bet:
+        if self._switch_in_progress or self._pending_bet or self._active_now_bet_hold:
             return False
         if self._multi_lobby_mode:
             return True

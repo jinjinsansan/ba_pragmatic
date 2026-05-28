@@ -217,6 +217,13 @@ def _is_unsupported_table_name(name: str) -> bool:
     )
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _fmt_pattern(pkey: str) -> str:
     """'telecho|telecho|B' → 'china=telecho / big=telecho / side=B'"""
     parts = pkey.split("|")
@@ -366,6 +373,13 @@ class DualLinePragmaticBot(cp.Collector):
         self.use_v2_filter = use_v2_filter
         self.no_vps_poll = no_vps_poll
         self.manual_assist = bool(manual_assist)
+        self.manual_assist_auto_click = bool(
+            self.manual_assist
+            and (
+                _env_bool("BACOPY_MANUAL_ASSIST_AUTO_CLICK", False)
+                or _env_bool("BACOPY_CHROME_ASSIST_AUTO_CLICK", False)
+            )
+        )
         self.notify_signal = notify_signal
         self.notify_resolution = notify_resolution
         self.notify_tie = notify_tie
@@ -389,6 +403,7 @@ class DualLinePragmaticBot(cp.Collector):
         self._diag_skip_counts: dict[str, int] = defaultdict(int)
         self._manual_assist_items: dict[str, dict] = {}
         self._manual_command_reader_started = False
+        self._now_lock: dict[str, object] = {}
 
 
         # 累計統計
@@ -425,6 +440,24 @@ class DualLinePragmaticBot(cp.Collector):
             f"unit=${self.money.unit} stop=${self.money.profit_stop} "
             f"cut=${self.money.loss_cut} on_limit={self.money.on_limit} "
             f"signals={self.total_signals}"
+        )
+        browser_mode = (
+            os.getenv("BACOPY_BROWSER", "")
+            or os.getenv("BACOPY_DUAL_LINE_BROWSER", "")
+            or "camoufox"
+        ).strip()
+        cdp_url = (
+            os.getenv("BACOPY_CHROME_CDP_URL", "")
+            or os.getenv("BACOPY_CHROME_DEBUG_URL", "")
+            or "http://127.0.0.1:9222"
+        ).strip()
+        logger.info(
+            f"[AUTO-PROBE] init browser={browser_mode or 'camoufox'} "
+            f"cdp={cdp_url if browser_mode.lower() in ('chrome_attach', 'chrome-cdp', 'cdp') else '-'} "
+            f"manual_assist={self.manual_assist} "
+            f"auto_bet_enabled={not self.manual_assist or self.manual_assist_auto_click} "
+            f"manual_assist_auto_click={self.manual_assist_auto_click} "
+            f"live_executor={self.bet_executor.is_live}"
         )
         send_log(f"Bot 起動: {mode_label} {BET_MODES[self.money.mode]} unit=${self.money.unit} stop=${self.money.profit_stop} cut=${self.money.loss_cut}")
         send_phase("observing", "watching tables")
@@ -585,6 +618,13 @@ class DualLinePragmaticBot(cp.Collector):
         try:
             ms = self.money.status_dict()
             turns = ms.get("seq7_current_turns") or []
+            logger.info(
+                f"[AUTO-PROBE] money snapshot source=status "
+                f"mode={ms.get('mode')} next=${float(ms.get('next_bet') or 0.0):.2f} "
+                f"seq_turn={ms.get('seq_turn')} overshoot={ms.get('seq_overshoot')} "
+                f"turns={''.join(turns) if isinstance(turns, list) else ''} "
+                f"pnl=${float(ms.get('session_pnl') or 0.0):+.2f}"
+            )
             send_msg(
                 {
                     "type": "status",
@@ -615,13 +655,27 @@ class DualLinePragmaticBot(cp.Collector):
                 {
                     "type": "manual_assist_mode",
                     "enabled": bool(self.manual_assist),
-                    "auto_bet_enabled": not bool(self.manual_assist),
+                    "auto_bet_enabled": (not bool(self.manual_assist)) or bool(self.manual_assist_auto_click),
+                    "manual_assist_auto_click": bool(self.manual_assist_auto_click),
                     "money_status": self.money.status_dict(),
                     "ts": time.time(),
                 }
             )
+            self._last_manual_assist_mode_sent_at = time.time()
         except Exception:
             pass
+
+    def _maintain_manual_assist_mode_heartbeat(self) -> None:
+        """Re-publish manual_assist_mode periodically so the GUI panel does not vanish."""
+        if not self.manual_assist:
+            return
+        try:
+            interval = float(os.getenv("BACOPY_MANUAL_ASSIST_MODE_HEARTBEAT_SEC", "30") or 30)
+        except Exception:
+            interval = 30.0
+        last = float(getattr(self, "_last_manual_assist_mode_sent_at", 0.0) or 0.0)
+        if time.time() - last >= max(5.0, interval):
+            self._send_manual_assist_mode()
 
     def _send_manual_assist_item(
         self,
@@ -640,6 +694,8 @@ class DualLinePragmaticBot(cp.Collector):
         steps_before: int | None = None,
         source: str = "",
         expires_sec: float = 30.0,
+        result: str = "",
+        pnl: float | None = None,
     ) -> None:
         """Emit the manual operator queue item without touching auto-bet state."""
         if not self.manual_assist:
@@ -649,6 +705,8 @@ class DualLinePragmaticBot(cp.Collector):
             amt = float(amount if amount is not None else self.money.next_bet())
         except Exception:
             amt = 0.0
+        ms = self.money.status_dict()
+        turns = ms.get("seq7_current_turns") or []
         if item_id:
             item_id = str(item_id)
         elif decision_id:
@@ -674,13 +732,132 @@ class DualLinePragmaticBot(cp.Collector):
             "source": source,
             "created_at": _utc_now_iso(),
             "expires_at": now + float(expires_sec or 0.0),
-            "money_status": self.money.status_dict(),
+            "money_status": ms,
+            "seq_turn": ms.get("seq_turn"),
+            "seq_overshoot": ms.get("seq_overshoot"),
+            "seq7_current_turns": turns if isinstance(turns, list) else [],
+            "gui_next_bet": ms.get("next_bet"),
+            "result": str(result or ""),
+            "pnl": pnl,
         }
+        logger.info(
+            f"[AUTO-PROBE] manual_item status={status} id={item_id} "
+            f"table={table_name or table_id} qpid={qpid or table_id} side={side or '-'} "
+            f"planned=${amt:.2f} gui_next=${float(ms.get('next_bet') or 0.0):.2f} "
+            f"seq_turn={ms.get('seq_turn')} overshoot={ms.get('seq_overshoot')} "
+            f"turns={''.join(turns) if isinstance(turns, list) else ''}"
+        )
         self._manual_assist_items[item_id] = dict(payload)
         try:
             send_msg(payload)
         except Exception:
             pass
+
+    def _active_now_lock(self) -> dict[str, object]:
+        lock = self._now_lock if isinstance(self._now_lock, dict) else {}
+        if not lock:
+            return {}
+        until = float(lock.get("until") or 0.0)
+        if until and time.time() >= until:
+            logger.info(
+                f"[NOW-LOCK] expired did={str(lock.get('decision_id') or '-')[:12]} "
+                f"table={lock.get('table_id') or '-'}"
+            )
+            self._now_lock = {}
+            return {}
+        return lock
+
+    def _start_now_lock(
+        self,
+        *,
+        decision_id: str,
+        table_id: str,
+        table_name: str = "",
+        side: str = "",
+        bet_id: str = "",
+        hold_sec: float | None = None,
+    ) -> None:
+        tid = str(table_id or "").strip()
+        did = str(decision_id or "").strip()
+        if not tid and not did:
+            return
+        sec = float(hold_sec if hold_sec is not None else os.getenv("BACOPY_NOW_LOCK_MAX_SEC", "65") or 65)
+        until_ts = time.time() + max(30.0, sec)
+        self._now_lock = {
+            "decision_id": did,
+            "table_id": tid,
+            "table_name": str(table_name or tid),
+            "side": str(side or "").upper(),
+            "bet_id": str(bet_id or ""),
+            "started_at": time.time(),
+            "until": until_ts,
+        }
+        logger.info(
+            f"[NOW-LOCK] start did={did[:12] or '-'} table={tid or '-'} "
+            f"name={table_name or tid or '-'} side={side or '-'} max_sec={max(30.0, sec):.0f}"
+        )
+        try:
+            hold_fn = getattr(self.bet_executor, "_start_assist_focus_hold", None)
+            if callable(hold_fn) and tid:
+                hold_fn(tid, table_name or tid, intent="now_lock")
+        except Exception as ex:
+            logger.debug(f"[NOW-LOCK] focus hold start failed: {ex}")
+        try:
+            mirror_fn = getattr(self.bet_executor, "set_bot_now_lock", None)
+            if callable(mirror_fn):
+                mirror_fn(
+                    decision_id=did,
+                    table_id=tid,
+                    table_name=table_name or tid,
+                    side=side,
+                    until=until_ts,
+                )
+        except Exception as ex:
+            logger.debug(f"[NOW-LOCK] executor mirror failed: {ex}")
+        # NOW が確定した瞬間に一度だけ即時センタリングを実行する。
+        # _maintain_active_now_bet_hold のポーリング (0.5s) を待たずに
+        # タイルを画面中央へ移動するため。
+        try:
+            center_fn = getattr(self.bet_executor, "_center_multi_tile", None)
+            if callable(center_fn) and tid:
+                center_fn(tid, table_name or tid, click=False, source="now_lock")
+        except Exception as ex:
+            logger.debug(f"[NOW-LOCK] immediate center failed: {ex}")
+
+    def _release_now_lock(
+        self,
+        *,
+        decision_id: str = "",
+        table_id: str = "",
+        bet_id: str = "",
+        reason: str = "",
+    ) -> None:
+        lock = self._now_lock if isinstance(self._now_lock, dict) else {}
+        if not lock:
+            return
+        did = str(decision_id or "").strip()
+        tid = str(table_id or "").strip()
+        bid = str(bet_id or "").strip()
+        lock_did = str(lock.get("decision_id") or "")
+        lock_tid = str(lock.get("table_id") or "")
+        lock_bid = str(lock.get("bet_id") or "")
+        if did and lock_did and did != lock_did:
+            return
+        if tid and lock_tid and tid != lock_tid:
+            return
+        if bid and lock_bid and bid != lock_bid:
+            return
+        logger.info(
+            f"[NOW-LOCK] release did={lock_did[:12] or '-'} table={lock_tid or '-'} "
+            f"reason={reason or '-'}"
+        )
+        self._now_lock = {}
+        try:
+            mirror_fn = getattr(self.bet_executor, "clear_bot_now_lock", None)
+            if callable(mirror_fn):
+                mirror_fn(decision_id=lock_did, table_id=lock_tid, reason=reason or "")
+        except Exception as ex:
+            logger.debug(f"[NOW-LOCK] executor mirror clear failed: {ex}")
 
     def _expire_manual_assist_ready(
         self,
@@ -1057,6 +1234,16 @@ class DualLinePragmaticBot(cp.Collector):
                 f"on_limit: {self.money.on_limit}"
             )
             return
+        ms_probe = self.money.status_dict()
+        turns_probe = ms_probe.get("seq7_current_turns") or []
+        logger.info(
+            f"[AUTO-PROBE] bet plan source=local_signal table={buf.table_name or table_id} "
+            f"qpid={str(getattr(buf, 'qpid_table_id', '') or table_id)} side={bet_side} "
+            f"planned=${float(bet_amount):.2f} gui_next=${float(ms_probe.get('next_bet') or 0.0):.2f} "
+            f"seq_turn={ms_probe.get('seq_turn')} overshoot={ms_probe.get('seq_overshoot')} "
+            f"turns={''.join(turns_probe) if isinstance(turns_probe, list) else ''} "
+            f"manual_assist={self.manual_assist}"
+        )
         bet_metadata = {
             "pattern_key": pattern_key,
             "china_pattern": d.china_pattern,
@@ -1074,6 +1261,12 @@ class DualLinePragmaticBot(cp.Collector):
             qpid = str(getattr(buf, "qpid_table_id", "") or "").strip()
             target_id = qpid or table_id
             local_id = f"local-{uuid.uuid4().hex[:12]}"
+            logger.info(
+                f"[AUTO-PROBE] final_click allowed={str(bool(self.manual_assist_auto_click)).lower()} "
+                f"reason={'manual_assist_auto_click' if self.manual_assist_auto_click else 'manual_assist_autoclick_disabled'} "
+                f"id={local_id} table={buf.table_name or table_id} "
+                f"qpid={target_id or '-'} side={bet_side} planned=${bet_amount:.2f}"
+            )
             try:
                 focus_fn = getattr(self.bet_executor, "_request_switch", None)
                 if callable(focus_fn):
@@ -1113,20 +1306,84 @@ class DualLinePragmaticBot(cp.Collector):
             self._send_gui_money_status()
             self.table_scores[table_id] = 2
             self._save_state()
+            if self.manual_assist_auto_click:
+                bet_metadata["decision_id"] = local_id
+                self._start_now_lock(
+                    decision_id=local_id,
+                    table_id=table_id,
+                    table_name=buf.table_name or "",
+                    side=bet_side,
+                )
+                bet_id = self.bet_executor.place_bet(
+                    table_id=table_id,
+                    side=bet_side,
+                    amount=bet_amount,
+                    metadata=bet_metadata,
+                )
+                self._start_now_lock(
+                    decision_id=local_id,
+                    table_id=table_id,
+                    table_name=buf.table_name or "",
+                    side=bet_side,
+                    bet_id=str(bet_id or ""),
+                )
+                self.pending[table_id] = {
+                    "side": bet_side,
+                    "pattern_key": pattern_key,
+                    "china_pattern": d.china_pattern,
+                    "china_pred": d.china_pred,
+                    "big_pattern": d.big_pattern,
+                    "big_pred": d.big_pred,
+                    "seq_at_predict": observed_sequence,
+                    "table_id": table_id,
+                    "table_name": buf.table_name or "",
+                    "qpid_table_id": target_id,
+                    "predicted_at": _utc_now_iso(),
+                    "predicting_n": next_n,
+                    "bet_amount": bet_amount,
+                    "bet_id": str(bet_id or ""),
+                    "decision_id": local_id,
+                }
+                logger.info(
+                    f"[MANUAL-ASSIST] local NOW id={local_id} table={buf.table_name or table_id} "
+                    f"side={bet_side} amount=${bet_amount:.2f} auto_bet=enabled bet_id={bet_id or '-'}"
+                )
+                self._save_state()
+                return
             logger.info(
                 f"[MANUAL-ASSIST] local NOW id={local_id} table={buf.table_name or table_id} "
                 f"side={bet_side} amount=${bet_amount:.2f} auto_bet=disabled"
             )
             return
+        logger.info(
+            f"[AUTO-PROBE] final_click allowed=true reason=auto_mode "
+            f"table={buf.table_name or table_id} qpid={str(getattr(buf, 'qpid_table_id', '') or table_id)} "
+            f"side={bet_side} planned=${bet_amount:.2f}"
+        )
+        local_decision_id_pre = f"local-{uuid.uuid4().hex[:12]}"
+        bet_metadata["decision_id"] = local_decision_id_pre
+        self._start_now_lock(
+            decision_id=local_decision_id_pre,
+            table_id=table_id,
+            table_name=buf.table_name or "",
+            side=bet_side,
+        )
         bet_id = self.bet_executor.place_bet(
             table_id=table_id,
             side=bet_side,
             amount=bet_amount,
             metadata=bet_metadata,
         )
-        decision_id = ""
+        self._start_now_lock(
+            decision_id=local_decision_id_pre,
+            table_id=table_id,
+            table_name=buf.table_name or "",
+            side=bet_side,
+            bet_id=str(bet_id or ""),
+        )
+        decision_id = local_decision_id_pre
         if not self.bet_executor.is_live:
-            decision_id = self._publish_live_decision(table_id, buf, bet_side, bet_amount, bet_metadata) or ""
+            decision_id = self._publish_live_decision(table_id, buf, bet_side, bet_amount, bet_metadata) or local_decision_id_pre
         # BET指示を出した → 事前入場タイマーをリセット（BET完了後はexecutorがlobbyに戻る）
         self._prepos_switch_at = 0.0
 
@@ -1296,6 +1553,12 @@ class DualLinePragmaticBot(cp.Collector):
                 mark_resolved(bet_id=bet_id, table_id=table_id)
             except Exception:
                 pass
+        self._release_now_lock(
+            decision_id=str(pending.get("decision_id") or ""),
+            table_id=table_id,
+            bet_id=bet_id,
+            reason="prediction_resolved",
+        )
 
         # LIVE: 実BET送信が確認できないシグナルは資金管理/勝敗に反映しない
         if self.bet_executor.is_live and bet_id:
@@ -1324,6 +1587,43 @@ class DualLinePragmaticBot(cp.Collector):
                     sent = bool(consume_sent(bet_id)) if callable(consume_sent) else False
                 except Exception:
                     sent = False
+                # Chrome attach 等で trusted_confirm が取れず _failed_bet_ids に入っている
+                # 場合でも、lpbet が観測されていれば実BETは成立している。
+                # Stake画面で実際にチップが置かれているのに GUI 7-turn / 〇× / WLT が
+                # 全く更新されない症状の主因なので、その状況だけ救済する。
+                if not sent:
+                    failed_info: dict | None = None
+                    consume_failed = getattr(self.bet_executor, "consume_failed_bet", None)
+                    if callable(consume_failed):
+                        try:
+                            failed_info = consume_failed(bet_id)
+                        except Exception:
+                            failed_info = None
+                    failed_reason = str((failed_info or {}).get("reason") or "")
+                    lpbet_observed = bool((failed_info or {}).get("lpbet_observed"))
+                    soft_confirm_ok = (
+                        isinstance(failed_info, dict)
+                        and (
+                            failed_reason
+                            in (
+                                "trusted_bet_not_confirmed",
+                                "lpbet_not_confirmed",
+                            )
+                        )
+                        and (
+                            lpbet_observed
+                            or _env_bool(
+                                "BACOPY_DUAL_SOFT_CONFIRM_ON_LPBET_MISS", False
+                            )
+                        )
+                    )
+                    if soft_confirm_ok:
+                        logger.warning(
+                            f"[SOFT-CONFIRM] resolve continues despite missing trusted confirm: "
+                            f"bet_id={bet_id} reason={failed_reason} "
+                            f"lpbet_observed={lpbet_observed}"
+                        )
+                        sent = True
                 if not sent:
                     logger.info(
                         f"resolve skip(no-sent-bet) {buf.table_name or table_id}: "
@@ -1649,6 +1949,12 @@ class DualLinePragmaticBot(cp.Collector):
                 mark_resolved(bet_id=bet_id, table_id=str(pending.get("table_id") or table_id or ""))
             except Exception:
                 pass
+        self._release_now_lock(
+            decision_id=did,
+            table_id=str(pending.get("table_id") or table_id or ""),
+            bet_id=bet_id,
+            reason="decision_settled",
+        )
 
         table_name = str(pending.get("table_name") or getattr(buf, "table_name", "") or table_id)
         self._post_decision_settlement(
@@ -2336,6 +2642,14 @@ class DualLinePragmaticBot(cp.Collector):
                 f"last_req_age={last_req_age:.1f}s prepared={prepared or '-'} "
                 f"req_target={req_target or '-'} active={active_target or '-'}"
             )
+        lock = self._active_now_lock()
+        if lock:
+            logger.info(
+                f"[PREPOS] skip: NOW lock active "
+                f"lock_did={str(lock.get('decision_id') or '-')[:12]} "
+                f"lock_table={lock.get('table_id') or '-'} incoming={table_id or '-'}"
+            )
+            return
         self._last_preposition_key = current_key
         logger.info(
             f"[PREPOS] requesting switch → {table_name!r} qpid={qpid!r} score={score} "
@@ -2462,6 +2776,10 @@ class DualLinePragmaticBot(cp.Collector):
                     logger.warning(
                         f"[DECISION] SKIP stale: did={did[:12]} age={decision_age:.1f}s max={max_age:.1f}s"
                     )
+                    logger.warning(
+                        f"[AUTO-PROBE] final_click allowed=false reason=decision_stale "
+                        f"did={did[:12]} age={decision_age:.1f}s max={max_age:.1f}s"
+                    )
                     self._api_post(
                         f"/api/decisions/{did}/ack",
                         {
@@ -2482,6 +2800,10 @@ class DualLinePragmaticBot(cp.Collector):
         table_name = str(decision.get("table_name") or "")
         if _is_unsupported_table_name(f"{table_name} {table_id}"):
             logger.warning(f"[DECISION] SKIP unsupported table: did={did[:12]} table={table_name or table_id}")
+            logger.warning(
+                f"[AUTO-PROBE] final_click allowed=false reason=unsupported_table "
+                f"did={did[:12]} table={table_name or table_id}"
+            )
             self._api_post(
                 f"/api/decisions/{did}/ack",
                 {
@@ -2491,6 +2813,36 @@ class DualLinePragmaticBot(cp.Collector):
                         "reason": "unsupported_table",
                     },
                     "status": "skipped_unsupported_table",
+                },
+                base_url=str(decision.get("_source_api_base") or ""),
+                api_key=str(decision.get("_source_api_key") or ""),
+            )
+            return
+
+        now_lock = self._active_now_lock()
+        if now_lock and str(now_lock.get("decision_id") or "") != did:
+            lock_table = str(now_lock.get("table_id") or "").strip()
+            logger.info(
+                f"[DECISION] SKIP: NOW lock active for {did} "
+                f"lock_did={str(now_lock.get('decision_id') or '-')[:12]} "
+                f"lock_table={lock_table or '-'} incoming_table={table_id or '-'}"
+            )
+            logger.info(
+                f"[AUTO-PROBE] final_click allowed=false reason=now_lock_active "
+                f"did={did[:12]} table={table_name or table_id} "
+                f"lock_table={lock_table or '-'}"
+            )
+            self._api_post(
+                f"/api/decisions/{did}/ack",
+                {
+                    "ack": {
+                        "executor_id": "gui-1",
+                        "skipped_at": _utc_now_iso(),
+                        "reason": "now_lock_active",
+                        "lock_decision_id": str(now_lock.get("decision_id") or ""),
+                        "lock_table": lock_table,
+                    },
+                    "status": "skipped_busy",
                 },
                 base_url=str(decision.get("_source_api_base") or ""),
                 api_key=str(decision.get("_source_api_key") or ""),
@@ -2548,6 +2900,36 @@ class DualLinePragmaticBot(cp.Collector):
             f"known_tables={known_tables}"
         )
 
+        visible_hold = getattr(ex, "_visible_bet_hold", {}) or {}
+        hold_target = str(visible_hold.get("table_id") or "").strip()
+        hold_until = float(visible_hold.get("until") or 0.0)
+        hold_remaining = hold_until - time.time()
+        if hold_target and hold_remaining > 0:
+            logger.info(
+                f"[DECISION] SKIP: visible result hold active for {did} "
+                f"hold_table={hold_target} incoming_table={table_id} remaining={hold_remaining:.1f}s"
+            )
+            logger.info(
+                f"[AUTO-PROBE] final_click allowed=false reason=result_hold_active "
+                f"did={did[:12]} table={table_name or table_id} "
+                f"hold_table={hold_target} remaining={hold_remaining:.1f}s"
+            )
+            self._api_post(
+                f"/api/decisions/{did}/ack",
+                {
+                    "ack": {
+                        "executor_id": "gui-1",
+                        "skipped_at": _utc_now_iso(),
+                        "reason": "result_hold_active",
+                        "hold_table": hold_target,
+                    },
+                    "status": "skipped_busy",
+                },
+                base_url=str(decision.get("_source_api_base") or ""),
+                api_key=str(decision.get("_source_api_key") or ""),
+            )
+            return
+
         if (
             getattr(ex, "_multi_lobby_mode", False)
             and str(getattr(ex, "_multi_bet_transport", "") or "") == "click"
@@ -2561,6 +2943,10 @@ class DualLinePragmaticBot(cp.Collector):
 
         if is_bif:
             logger.info(f"[DECISION] SKIP: bet in flight for {did}")
+            logger.info(
+                f"[AUTO-PROBE] final_click allowed=false reason=executor_busy_bet_in_flight "
+                f"did={did[:12]} table={table_name or table_id}"
+            )
             self._api_post(
                 f"/api/decisions/{did}/ack",
                 {
@@ -2603,6 +2989,11 @@ class DualLinePragmaticBot(cp.Collector):
                 )
             else:
                 logger.info(f"[DECISION] WAIT: executor has switch_request for {did}")
+                logger.info(
+                    f"[AUTO-PROBE] now_probe wait reason=switch_request "
+                    f"did={did[:12]} table={table_name or table_id} "
+                    f"request_intent={req_intent or '-'} request_target={req_target or '-'}"
+                )
                 self._last_wait_decision_id = did
                 return
         if switch_in_progress:
@@ -2616,6 +3007,11 @@ class DualLinePragmaticBot(cp.Collector):
                 )
             else:
                 logger.info(f"[DECISION] WAIT: executor switching/preparing; keep decision pending for retry {did}")
+                logger.info(
+                    f"[AUTO-PROBE] now_probe wait reason=switch_in_progress "
+                    f"did={did[:12]} table={table_name or table_id} "
+                    f"active_intent={active_intent or '-'} active_target={active_target or '-'}"
+                )
                 self._last_wait_decision_id = did
                 return
         if isinstance(pending_bet, dict) and pending_bet:
@@ -2642,6 +3038,11 @@ class DualLinePragmaticBot(cp.Collector):
                 if did != getattr(self, "_last_pending_skip_did", ""):
                     logger.info(f"[DECISION] SKIP: pending bet exists (age={p_age:.1f}s) for {did}")
                     self._last_pending_skip_did = did
+                logger.info(
+                    f"[AUTO-PROBE] final_click allowed=false reason=executor_busy_pending_bet "
+                    f"did={did[:12]} table={table_name or table_id} "
+                    f"pending_table={pending_tid or '-'} pending_age={p_age:.1f}s"
+                )
                 self._api_post(
                     f"/api/decisions/{did}/ack",
                     {
@@ -2695,6 +3096,11 @@ class DualLinePragmaticBot(cp.Collector):
                         f"table={table_id} prepared={prepared or '-'} "
                         f"open_gid={open_gid or '-'} open_age={open_age:.1f}s"
                     )
+                    logger.warning(
+                        f"[AUTO-PROBE] final_click allowed=false reason=target_not_prepared "
+                        f"did={did[:12]} table={table_name or table_id} prepared={prepared or '-'} "
+                        f"open_gid={open_gid or '-'} open_age={open_age:.1f}s"
+                    )
                     self._api_post(
                         f"/api/decisions/{did}/ack",
                         {
@@ -2719,6 +3125,16 @@ class DualLinePragmaticBot(cp.Collector):
 
         bet_amount = self.money.next_bet()
         logger.info(f"[BOT] decision received: {did} side={side} table={table_name} amount=${bet_amount}")
+        ms_probe = self.money.status_dict()
+        turns_probe = ms_probe.get("seq7_current_turns") or []
+        logger.info(
+            f"[AUTO-PROBE] bet plan source=vps_decision did={did[:12]} "
+            f"table={table_name or table_id} qpid={table_id or '-'} side={side} "
+            f"planned=${float(bet_amount):.2f} gui_next=${float(ms_probe.get('next_bet') or 0.0):.2f} "
+            f"seq_turn={ms_probe.get('seq_turn')} overshoot={ms_probe.get('seq_overshoot')} "
+            f"turns={''.join(turns_probe) if isinstance(turns_probe, list) else ''} "
+            f"manual_assist={self.manual_assist} manual_assist_auto_click={self.manual_assist_auto_click}"
+        )
 
         metadata = {
             "table_name": table_name,
@@ -2736,7 +3152,19 @@ class DualLinePragmaticBot(cp.Collector):
             "seq_at_predict": str(fa.get("seq_at_predict") or ""),
             "antenna_ok": bool(locals().get("antenna_ok", False)),
         }
+        self._start_now_lock(
+            decision_id=did,
+            table_id=table_id,
+            table_name=table_name,
+            side=side,
+        )
         if self.manual_assist:
+            logger.info(
+                f"[AUTO-PROBE] final_click allowed={str(bool(self.manual_assist_auto_click)).lower()} "
+                f"reason={'manual_assist_auto_click' if self.manual_assist_auto_click else 'manual_assist_autoclick_disabled'} "
+                f"did={did[:12]} table={table_name or table_id} qpid={table_id or '-'} "
+                f"side={side} planned=${bet_amount:.2f}"
+            )
             try:
                 focus_fn = getattr(self.bet_executor, "_request_switch", None)
                 if callable(focus_fn):
@@ -2776,6 +3204,76 @@ class DualLinePragmaticBot(cp.Collector):
             self._send_gui_money_status()
             source_base = str(decision.get("_source_api_base") or "")
             source_key = str(decision.get("_source_api_key") or "")
+            if self.manual_assist_auto_click:
+                # NOW-LOCK を place_bet の前にもう一段固める。
+                # 直前の self._start_now_lock(...) は decision 受付時の lock 始動だが、
+                # place_bet -> send_bet が同期で _try_execute_bet を発火し得るので、
+                # その前に最新の table_id/side で再確定する。
+                self._start_now_lock(
+                    decision_id=did,
+                    table_id=table_id,
+                    table_name=table_name,
+                    side=side,
+                )
+                bet_id = self.bet_executor.place_bet(table_id, side, bet_amount, metadata)
+                self._start_now_lock(
+                    decision_id=did,
+                    table_id=table_id,
+                    table_name=table_name,
+                    side=side,
+                    bet_id=str(bet_id or ""),
+                )
+                self._pending_decisions[did] = {
+                    "side": side, "amount": bet_amount,
+                    "table_id": table_id, "table_name": table_name,
+                    "pattern_key": pattern_key,
+                    "bet_id": str(bet_id or ""), "placed_at": time.time(),
+                    "result_posted": False,
+                    "settlement_posted": False,
+                    "bet_sent_posted": False,
+                    "local_bet_sent": False,
+                    "local_bet_failed": False,
+                    "bet_sent_notified": False,
+                    "source_base_url": source_base,
+                    "source_api_key": source_key,
+                }
+                self.pending[table_id] = {
+                    "side": side,
+                    "pattern_key": pattern_key,
+                    "china_pattern": "",
+                    "china_pred": "",
+                    "big_pattern": "",
+                    "big_pred": "",
+                    "seq_at_predict": "",
+                    "table_id": table_id,
+                    "table_name": table_name,
+                    "predicted_at": _utc_now_iso(),
+                    "predicting_n": None,
+                    "bet_amount": bet_amount,
+                    "bet_id": str(bet_id or ""),
+                    "decision_id": did,
+                }
+                self._api_post(
+                    f"/api/decisions/{did}/ack",
+                    {
+                        "ack": {
+                            "executor_id": "gui-1",
+                            "manual_assist_at": _utc_now_iso(),
+                            "placed_at": _utc_now_iso(),
+                            "auto_bet": True,
+                            "bet_id": str(bet_id or ""),
+                        },
+                        "status": "processing",
+                    },
+                    base_url=source_base,
+                    api_key=source_key,
+                )
+                logger.info(
+                    f"[MANUAL-ASSIST] NOW did={did[:12]} table={table_name or table_id} "
+                    f"side={side} amount=${bet_amount:.2f} auto_bet=enabled bet_id={bet_id or '-'}"
+                )
+                self._save_state()
+                return
             self._api_post(
                 f"/api/decisions/{did}/ack",
                 {
@@ -2794,7 +3292,30 @@ class DualLinePragmaticBot(cp.Collector):
                 f"side={side} amount=${bet_amount:.2f} auto_bet=disabled"
             )
             return
+        logger.info(
+            f"[AUTO-PROBE] final_click allowed=true reason=auto_mode "
+            f"did={did[:12]} table={table_name or table_id} qpid={table_id or '-'} "
+            f"side={side} planned=${bet_amount:.2f}"
+        )
+        # NOW-LOCK は place_bet の前に張る。place_bet -> send_bet -> _try_execute_bet が
+        # bet window が開いている場合 owner thread から同期発火するため、後付けでは
+        # executor 側の _request_switch / _perform_switch.auto_fire 等が他卓へ
+        # focus を奪う可能性がある。
+        self._start_now_lock(
+            decision_id=did,
+            table_id=table_id,
+            table_name=table_name,
+            side=side,
+        )
         bet_id = self.bet_executor.place_bet(table_id, side, bet_amount, metadata)
+        # bet_id を反映するため lock を再設定（既存 lock と同一 decision_id なので上書き OK）
+        self._start_now_lock(
+            decision_id=did,
+            table_id=table_id,
+            table_name=table_name,
+            side=side,
+            bet_id=str(bet_id or ""),
+        )
 
         self._pending_decisions[did] = {
             "side": side, "amount": bet_amount,
@@ -3257,6 +3778,7 @@ class DualLinePragmaticBot(cp.Collector):
             send_msg(
                 {
                     "type": "resolution",
+                    "decision_id": did,
                     "table_id": str(pending.get("table_id") or d.get("table_id") or ""),
                     "table_name": str(pending.get("table_name") or d.get("table_name") or ""),
                     "prediction": str(pending.get("side") or "").upper(),
@@ -3276,6 +3798,20 @@ class DualLinePragmaticBot(cp.Collector):
                     "planned_bet_amount": float(pending.get("amount") or 0),
                 }
             )
+            self._send_manual_assist_item(
+                status="SETTLED",
+                table_id=str(pending.get("table_id") or d.get("table_id") or ""),
+                table_name=str(pending.get("table_name") or d.get("table_name") or ""),
+                qpid=str(pending.get("table_id") or d.get("table_id") or ""),
+                side=str(pending.get("side") or ""),
+                amount=actual_amount,
+                pattern_key=str(pending.get("pattern_key") or ""),
+                decision_id=did,
+                item_id=did,
+                expires_sec=0.0,
+                result=normalized_result,
+                pnl=pnl_delta,
+            )
             self._send_gui_money_status()
 
     def _decisions_poll_loop(self) -> None:
@@ -3283,6 +3819,7 @@ class DualLinePragmaticBot(cp.Collector):
         import urllib.request as _ur
         recent_ids: dict[str, float] = {}
         last_target_log_at = 0.0
+        last_probe_log_at = 0.0
         while not getattr(self, "_stop_decision_poll", False):
             try:
                 targets = self._decision_poll_targets()
@@ -3323,7 +3860,15 @@ class DualLinePragmaticBot(cp.Collector):
                             err_map[err_key] = now_t
                             self._decision_poll_target_error_at = err_map
                         continue
-                    for d in (data.get("decisions") or []):
+                    decisions = data.get("decisions") or []
+                    if (decisions or now - last_probe_log_at >= 30.0):
+                        logger.info(
+                            f"[AUTO-PROBE] now_probe source=wait target={t.get('name') or 'target'} "
+                            f"count={len(decisions) if isinstance(decisions, list) else 0} "
+                            f"recent={len(recent_ids)}"
+                        )
+                        last_probe_log_at = now
+                    for d in decisions:
                         if not isinstance(d, dict):
                             continue
                         did = str(d.get("decision_id") or "")
@@ -3383,7 +3928,15 @@ class DualLinePragmaticBot(cp.Collector):
                 base_url=base,
                 api_key=key,
             )
-            for d in (data.get("decisions") or []):
+            decisions = data.get("decisions") or []
+            last_fallback_probe = float(getattr(self, "_last_fallback_probe_log_at", 0.0) or 0.0)
+            if decisions or now - last_fallback_probe >= 30.0:
+                logger.info(
+                    f"[AUTO-PROBE] now_probe source=pending_fallback target={t.get('name') or 'target'} "
+                    f"count={len(decisions) if isinstance(decisions, list) else 0} recent={len(recent)}"
+                )
+                self._last_fallback_probe_log_at = now
+            for d in decisions:
                 if not isinstance(d, dict):
                     continue
                 if str(d.get("provider") or "") != "pragmatic":
@@ -3502,6 +4055,18 @@ class DualLinePragmaticBot(cp.Collector):
                 _chrome_browser = _playwright_mgr.chromium.connect_over_cdp(cdp_url)
                 contexts = list(getattr(_chrome_browser, "contexts", []) or [])
                 ctx = contexts[0] if contexts else _chrome_browser.new_context()
+                try:
+                    all_pages = list(getattr(ctx, "pages", []) or [])
+                    page_urls = [
+                        str(getattr(p, "url", "") or "")[:160]
+                        for p in all_pages[:8]
+                    ]
+                    logger.info(
+                        f"[CHROME-ATTACH] connected contexts={len(contexts)} "
+                        f"pages={len(all_pages)} urls={page_urls}"
+                    )
+                except Exception as ex:
+                    logger.warning(f"[CHROME-ATTACH] page inventory failed: {ex}")
                 time.sleep(0.5)
             else:
                 _camoufox_mgr = cp.Camoufox(**launch_opts)
@@ -3522,6 +4087,10 @@ class DualLinePragmaticBot(cp.Collector):
                 bet_page = lobby_pages[0] if lobby_pages else (stake_pages[0] if stake_pages else (pages[0] if pages else ctx.new_page()))
                 logger.info(
                     f"[BROWSER] chrome_attach page selected url={str(getattr(bet_page, 'url', '') or '')[:160]}"
+                )
+                logger.info(
+                    f"[CHROME-ATTACH] selected stake_pages={len(stake_pages)} "
+                    f"lobby_pages={len(lobby_pages)} selected_url={str(getattr(bet_page, 'url', '') or '')[:200]}"
                 )
             else:
                 bet_page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -3795,6 +4364,10 @@ class DualLinePragmaticBot(cp.Collector):
                         self._flush_pending_decision_results()
                     except Exception as e:
                         logger.debug(f"[BOT] flush pending results error: {e}")
+                    try:
+                        self._maintain_manual_assist_mode_heartbeat()
+                    except Exception as e:
+                        logger.debug(f"[BOT] manual assist heartbeat error: {e}")
 
                 # ── decision result ポーリング (10秒ごと) ─────────
                 if now - last_result_check >= 10.0:
@@ -3957,6 +4530,22 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["BACOPY_BROWSER"] = str(args.browser).strip()
     if args.chrome_cdp_url:
         os.environ["BACOPY_CHROME_CDP_URL"] = str(args.chrome_cdp_url).strip()
+    browser_mode_for_log = (
+        os.getenv("BACOPY_BROWSER", "")
+        or os.getenv("BACOPY_DUAL_LINE_BROWSER", "")
+        or "camoufox"
+    ).strip()
+    chrome_cdp_for_log = (
+        os.getenv("BACOPY_CHROME_CDP_URL", "")
+        or os.getenv("BACOPY_CHROME_DEBUG_URL", "")
+        or "http://127.0.0.1:9222"
+    ).strip()
+    logger.info(
+        f"[AUTO-PROBE] argv live={args.live} manual_assist={args.manual_assist} "
+        f"browser={browser_mode_for_log or 'camoufox'} "
+        f"cdp={chrome_cdp_for_log if browser_mode_for_log.lower() in ('chrome_attach', 'chrome-cdp', 'cdp') else '-'} "
+        f"money_mode_arg={args.money_mode} bet_mode_arg={args.bet_mode or '-'}"
+    )
 
     if args.reset:
         removed = []

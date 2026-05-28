@@ -730,6 +730,22 @@ function buildSpawnSpec(config) {
     if (config && config.on_limit) args.push('--on-limit', String(config.on_limit));
     // 新規リセットスタート: engine 側 state ファイルも削除する
     if (config && config.resume === false) args.push('--reset');
+
+    const browserMode = String(
+      childEnv.BACOPY_BROWSER ||
+      childEnv.BACOPY_DUAL_LINE_BROWSER ||
+      ''
+    ).trim().toLowerCase();
+    if (browserMode === 'chrome_attach' || browserMode === 'chrome-cdp' || browserMode === 'cdp') {
+      childEnv.BACOPY_BROWSER = 'chrome_attach';
+      const cdpUrl = String(
+        childEnv.BACOPY_CHROME_CDP_URL ||
+        childEnv.BACOPY_CHROME_DEBUG_URL ||
+        'http://127.0.0.1:9222'
+      ).trim();
+      childEnv.BACOPY_CHROME_CDP_URL = cdpUrl;
+      args.push('--browser', 'chrome_attach', '--chrome-cdp-url', cdpUrl);
+    }
   }
 
   if (config && config.allow_switch_table) args.push('--allow-switch-table');
@@ -760,6 +776,16 @@ function buildSpawnSpec(config) {
   const profileDir = path.join(app.getPath('userData'), 'profiles', 'executor_pragmatic');
   try { fs.mkdirSync(profileDir, { recursive: true }); } catch (_) {}
   args.push('--profile-dir', profileDir);
+
+  if (isDualLine) {
+    console.log(
+      '[AUTO-PROBE] spawn dual-line ' +
+      `mode=${modeName || '-'} assist=${isDualLineAssist} auto=${isDualLineAuto} ` +
+      `live=${!!(config && config.live)} browser=${childEnv.BACOPY_BROWSER || childEnv.BACOPY_DUAL_LINE_BROWSER || 'camoufox'} ` +
+      `cdp=${childEnv.BACOPY_CHROME_CDP_URL || childEnv.BACOPY_CHROME_DEBUG_URL || '-'} ` +
+      `engine=${engine.mode} exe=${engine.exe} args=${JSON.stringify(args)}`
+    );
+  }
 
   if (engine.mode === 'packaged') {
     return { exe: engine.exe, cwd: engine.cwd, args, env: childEnv };
@@ -797,6 +823,11 @@ function startBot(config) {
     return;
   }
   const cfgSignature = JSON.stringify(cfg);
+  if (botProcess && botProcess.killed) {
+    console.log('[Main] clearing stale killed botProcess before start');
+    botProcess = null;
+    activeBotConfigSignature = '';
+  }
   if (botProcess && activeBotConfigSignature === cfgSignature) {
     sendToRenderer('agent-message', { type: 'log', message: '[spawn] ignored duplicate start request for active config' });
     return;
@@ -1073,6 +1104,8 @@ function stopBot() {
   try {
     botProcess.kill();
   } catch (_) {}
+  botProcess = null;
+  activeBotConfigSignature = '';
   stopWatchdog();
 }
 
@@ -1443,10 +1476,19 @@ function createWindow() {
 app.whenReady().then(() => {
   console.log('[Main] app ready packaged=' + app.isPackaged + ' resourcesPath=' + process.resourcesPath);
 
-
-
-
-  try { ensureCamoufoxAssets(); } catch (e) { console.warn('[Main] camoufox restore failed:', e.message); }
+  const startupEnv = loadDotEnv();
+  const startupBrowser = String(
+    startupEnv.BACOPY_BROWSER ||
+    startupEnv.BACOPY_DUAL_LINE_BROWSER ||
+    process.env.BACOPY_BROWSER ||
+    process.env.BACOPY_DUAL_LINE_BROWSER ||
+    ''
+  ).trim().toLowerCase();
+  if (startupBrowser === 'chrome_attach' || startupBrowser === 'chrome-cdp' || startupBrowser === 'cdp') {
+    console.log('[Main] chrome_attach configured; skip camoufox asset restore');
+  } else {
+    try { ensureCamoufoxAssets(); } catch (e) { console.warn('[Main] camoufox restore failed:', e.message); }
+  }
   try { cleanupOrphanCamoufox(); } catch (e) { console.warn('[Main] startup cleanup failed:', e.message); }
 
   createWindow();
