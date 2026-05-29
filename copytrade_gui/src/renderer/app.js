@@ -462,6 +462,7 @@ async function startBotFlow({ auto = false } = {}) {
     money_mode: settings.dual_money_mode || 'flat',
     money_unit: settings.dual_unit || 100,
     on_limit: settings.dual_on_limit || 'stop',
+    manual_assist_auto_click: !!settings.manual_assist_auto_click,
   };
   const hasPrev = localStorage.getItem('valhalla_session_state');
   if (hasPrev && !auto) {
@@ -699,6 +700,7 @@ const DEFAULT_SETTINGS = {
   dual_unit: 100,
   dual_live: false,
   dual_on_limit: 'stop',
+  manual_assist_auto_click: false,
 };
 const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small1', 'small6', 'dual_line', 'dual_line_assist', 'dual_line_auto']);
 
@@ -1011,12 +1013,13 @@ $('#btnSettings')?.addEventListener('click', async () => {
   if ($('#inputBetMode')) $('#inputBetMode').value = normalizeBetMode(s.bet_mode);
   $('#inputChipBase').value = s.chip_base;
 
-  // dual-line 設定の表示切替
-  const isDL = normalizeBetMode($('#inputBetMode')?.value) === 'dual_line';
+  // dual-line 設定の表示切替（assist/auto も含めて group を表示する）
+  const isDL = isDualLineBetMode(normalizeBetMode($('#inputBetMode')?.value));
   if ($('#dualLineMoneyGroup')) $('#dualLineMoneyGroup').style.display = isDL ? '' : 'none';
   if ($('#inputDualMoneyMode')) $('#inputDualMoneyMode').value = s.dual_money_mode || 'flat';
   if ($('#inputDualUnit')) $('#inputDualUnit').value = s.dual_unit || 100;
   if ($('#inputDualLive')) $('#inputDualLive').checked = !!s.dual_live;
+  if ($('#inputManualAssistAutoClick')) $('#inputManualAssistAutoClick').checked = !!s.manual_assist_auto_click;
   if ($('#inputOnLimitRestart')) $('#inputOnLimitRestart').checked = s.dual_on_limit === 'restart';
   // dual-line 時 chip_base グループを非表示
   if ($('#chipBaseGroup')) $('#chipBaseGroup').style.display = isDL ? 'none' : '';
@@ -1156,6 +1159,7 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     dual_unit: parseFloat($('#inputDualUnit')?.value || 100),
     dual_live: $('#inputDualLive')?.checked || false,
     dual_on_limit: $('#inputOnLimitRestart')?.checked ? 'restart' : 'stop',
+    manual_assist_auto_click: $('#inputManualAssistAutoClick')?.checked || false,
   };
 
   localStorage.setItem('bacopy_settings', JSON.stringify(settings));

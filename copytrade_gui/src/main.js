@@ -720,7 +720,16 @@ function buildSpawnSpec(config) {
       childEnv.BACOPY_MULTI_DIAGNOSTIC_ONLY = '0';
     }
     if (config && config.live) args.push('--live');
-    if (isDualLineAssist) args.push('--manual-assist');
+    if (isDualLineAssist) {
+      args.push('--manual-assist');
+      // assist モードで NOW シグナル時に自動クリックBETを行うか。
+      // 既定は OFF（オーバーレイ表示のみ・人間が最終クリック）= 安全側。
+      // GUI トグル(config.manual_assist_auto_click) か .env で明示的に ON にしたときだけ
+      // engine が place_bet() を呼ぶ（dual_line_pragmatic_bot.py が本 env を参照）。
+      if (config && config.manual_assist_auto_click) {
+        childEnv.BACOPY_MANUAL_ASSIST_AUTO_CLICK = '1';
+      }
+    }
     if (config && config.no_v2_filter) args.push('--no-v2-filter');
     if (config && config.money_mode) args.push('--money-mode', String(config.money_mode));
     // money_unit 未設定時は chip_base にフォールバック

@@ -408,18 +408,45 @@ async (args) => {
     if (String((tile && tile.id) || '').startsWith('TileHeight-') && !hasBetCells(tile)) return null;
     return target;
   }
-  function centerInScroller(el, sc) {
+  function centerInScroller(el, sc, deadband) {
     if (!el || !sc) return false;
+    // Global calm gate: if the tile is already comfortably within the scroller
+    // viewport, do NOT scroll at all. Only an off-screen/clipped tile triggers a
+    // scroll (the wanted "scroll-to" behavior). This is what stops the constant
+    // re-centering that made the surrounding view drift while watching.
+    if (typeof isTileVisibleEnough === 'function' && isTileVisibleEnough(el, sc, 30)) return false;
+    // deadband: only re-center when the tile drifts MORE than this many px from
+    // the scroller center. A large deadband keeps the page visually calm during
+    // the maintenance loop (the user watches the tile; constant micro-snapping
+    // makes it impossible to read). Default 8 for explicit/initial centering.
+    const db = Math.max(2, Number(deadband) || 8);
     try {
       const outer = snapshotOuterScroll();
       const er = el.getBoundingClientRect();
       const sr = sc.getBoundingClientRect ? sc.getBoundingClientRect() : {top:0, left:0, width:window.innerWidth, height:window.innerHeight};
       const dy = (er.top + er.height / 2) - (sr.top + sr.height / 2);
       const dx = (er.left + er.width / 2) - (sr.left + sr.width / 2);
-      if (Math.abs(dy) > 8) sc.scrollTop = Math.max(0, Number(sc.scrollTop || 0) + dy);
-      if (Math.abs(dx) > 8 && typeof sc.scrollLeft === 'number') sc.scrollLeft = Math.max(0, Number(sc.scrollLeft || 0) + dx);
+      let moved = false;
+      if (Math.abs(dy) > db) { sc.scrollTop = Math.max(0, Number(sc.scrollTop || 0) + dy); moved = true; }
+      if (Math.abs(dx) > db && typeof sc.scrollLeft === 'number') { sc.scrollLeft = Math.max(0, Number(sc.scrollLeft || 0) + dx); moved = true; }
       restoreOuterScroll(outer);
-      return true;
+      return moved;
+    } catch(_) {
+      return false;
+    }
+  }
+  // True when the tile is already comfortably inside the scroller viewport, so
+  // the maintenance hold can SKIP scrolling entirely (no jitter). Only when the
+  // tile is clipped/out of view do we re-center. pad = px of slack at edges.
+  function isTileVisibleEnough(el, sc, pad) {
+    try {
+      const er = el.getBoundingClientRect();
+      const sr = (sc && sc.getBoundingClientRect)
+        ? sc.getBoundingClientRect()
+        : {top: 0, left: 0, bottom: window.innerHeight, right: window.innerWidth};
+      const p = Number.isFinite(Number(pad)) ? Number(pad) : 6;
+      return (er.top >= sr.top - p) && (er.bottom <= sr.bottom + p) &&
+             (er.left >= sr.left - p) && (er.right <= sr.right + p);
     } catch(_) {
       return false;
     }
@@ -429,6 +456,17 @@ async (args) => {
       if (!tile || !sc) return false;
       const qid = String((tile.id || '').replace(/^TileHeight-/, '') || qpid || '');
       const until = Date.now() + Math.max(2000, Number(ttl) || 15000);
+      // Maintenance deadband + cadence. Bigger/slower = calmer page so the
+      // operator can actually watch the tile. The lock's real job is only to
+      // stop the React virtualizer from UNMOUNTING the target tile (which
+      // breaks the bet click), not to pixel-lock it. Tunable from Python env.
+      const recenterDeadband = Math.max(8, Number(args && args.recenterDeadband) || 48);
+      const windowDrift = Math.max(recenterDeadband, Number(args && args.windowDrift) || recenterDeadband);
+      // scrollFight=false (default): install NO scroll-fighting handlers. The
+      // lock then only centers the tile ONCE (visibility-gated). This stops the
+      // wheel/pointer blocking, onScroll snap-back and window.scrollTo restore
+      // that were fighting the operator's own scrolling ("outer keeps moving").
+      const scrollFight = String((args && args.scrollFight) || '') === '1';
       let rafPending = false;
       let recenterBusy = false;
       const recenter = () => {
@@ -441,9 +479,16 @@ async (args) => {
           const lockScroller = lock.scroller || sc;
           if (target && lockScroller) {
             recenterBusy = true;
-            centerInScroller(target, lockScroller);
-            lock.scrollTop = Number(lockScroller.scrollTop || 0);
-            lock.scrollLeft = Number(lockScroller.scrollLeft || 0);
+            // While the tile is on screen, DO NOTHING — no scroll at all. This
+            // is the "outer keeps moving / hard to watch" fix: the lock only
+            // acts when the tile has actually left the viewport.
+            if (!isTileVisibleEnough(target, lockScroller, recenterDeadband)) {
+              const moved = centerInScroller(target, lockScroller, 8);
+              if (moved) {
+                lock.scrollTop = Number(lockScroller.scrollTop || 0);
+                lock.scrollLeft = Number(lockScroller.scrollLeft || 0);
+              }
+            }
             recenterBusy = false;
           } else if (lockScroller) {
             // If a user scrolls far enough to unmount the virtualized tile,
@@ -454,8 +499,10 @@ async (args) => {
             try { lockScroller.scrollLeft = Number(lock.scrollLeft || 0); } catch(_) {}
             recenterBusy = false;
           }
-          if (Math.abs((window.scrollX || 0) - Number(lock.windowX || 0)) > 2 ||
-              Math.abs((window.scrollY || 0) - Number(lock.windowY || 0)) > 2) {
+          // Do not fight tiny window-scroll drift; only restore on large jumps
+          // (e.g. the page auto-scrolled the tile out of view).
+          if (Math.abs((window.scrollX || 0) - Number(lock.windowX || 0)) > windowDrift ||
+              Math.abs((window.scrollY || 0) - Number(lock.windowY || 0)) > windowDrift) {
             window.scrollTo(Number(lock.windowX || 0), Number(lock.windowY || 0));
           }
         } catch(_) {
@@ -529,7 +576,7 @@ async (args) => {
           scheduleRecenter();
         } catch(_) {}
       };
-      if (!window.__bacopyAssistScrollLockInstalled) {
+      if (scrollFight && !window.__bacopyAssistScrollLockInstalled) {
         window.__bacopyAssistScrollLockInstalled = true;
         window.addEventListener('wheel', block, {capture:true, passive:false});
         document.addEventListener('wheel', block, {capture:true, passive:false});
@@ -547,25 +594,27 @@ async (args) => {
         document.addEventListener('mousedown', blockPointer, {capture:true, passive:false});
         window.setInterval(() => {
           scheduleRecenter();
-        }, 60);
+        }, Math.max(120, Number(args && args.recenterMs) || 800));
       }
-      try { sc.addEventListener('wheel', block, {capture:true, passive:false}); } catch(_) {}
-      try { sc.addEventListener('touchmove', block, {capture:true, passive:false}); } catch(_) {}
-      try { sc.addEventListener('pointerdown', blockPointer, {capture:true, passive:false}); } catch(_) {}
-      try { sc.addEventListener('mousedown', blockPointer, {capture:true, passive:false}); } catch(_) {}
-      try { sc.addEventListener('scroll', () => {
-        const lock = window.__bacopyAssistScrollLock || {};
-        if (Number(lock.until || 0) > Date.now()) {
-          if (!recenterBusy) {
-            const target = lock.qpid ? document.getElementById('TileHeight-' + lock.qpid) : document.querySelector('.bacopy-assist-tile');
-            if (!target) {
-              try { sc.scrollTop = Number(lock.scrollTop || 0); } catch(_) {}
-              try { sc.scrollLeft = Number(lock.scrollLeft || 0); } catch(_) {}
+      if (scrollFight) {
+        try { sc.addEventListener('wheel', block, {capture:true, passive:false}); } catch(_) {}
+        try { sc.addEventListener('touchmove', block, {capture:true, passive:false}); } catch(_) {}
+        try { sc.addEventListener('pointerdown', blockPointer, {capture:true, passive:false}); } catch(_) {}
+        try { sc.addEventListener('mousedown', blockPointer, {capture:true, passive:false}); } catch(_) {}
+        try { sc.addEventListener('scroll', () => {
+          const lock = window.__bacopyAssistScrollLock || {};
+          if (Number(lock.until || 0) > Date.now()) {
+            if (!recenterBusy) {
+              const target = lock.qpid ? document.getElementById('TileHeight-' + lock.qpid) : document.querySelector('.bacopy-assist-tile');
+              if (!target) {
+                try { sc.scrollTop = Number(lock.scrollTop || 0); } catch(_) {}
+                try { sc.scrollLeft = Number(lock.scrollLeft || 0); } catch(_) {}
+              }
             }
+            scheduleRecenter();
           }
-          scheduleRecenter();
-        }
-      }, {capture:true, passive:true}); } catch(_) {}
+        }, {capture:true, passive:true}); } catch(_) {}
+      }
       recenter();
       return true;
     } catch(_) {
@@ -975,7 +1024,13 @@ async (args) => {
   if (holdOnly) {
     const target = currentAssistTarget();
     if (target) {
-      centerInScroller(target, cachedScroller);
+      // Only re-center when the tile actually drifted out of view. While it is
+      // visible, do NOT touch scroll — this is what made the "outer" jitter on
+      // every hold cycle. Tunable slack via args.holdVisiblePad.
+      const pad = Number.isFinite(Number(args && args.holdVisiblePad)) ? Number(args.holdVisiblePad) : 24;
+      if (!isTileVisibleEnough(target, cachedScroller, pad)) {
+        centerInScroller(target, cachedScroller, 8);
+      }
       await sleep(40);
       const assisted = applyAssistOverlay(target, cachedScroller);
       return {
@@ -2313,6 +2368,11 @@ class LiveBetExecutor:
             "assistStatus": "NOW" if intent == "manual_assist" else ("READY" if intent == "preposition" else ""),
             "side": side,
             "amount": float(req.get("preselect_amount") or req.get("amount") or 0.0),
+            # Scroll-lock maintenance tuning (calmer = easier to watch the tile).
+            # The lock only needs to keep the tile MOUNTED, not pixel-locked.
+            "recenterMs": int(os.getenv("BACOPY_ASSIST_RECENTER_MS", "400") or 400),
+            "recenterDeadband": int(os.getenv("BACOPY_ASSIST_RECENTER_DEADBAND_PX", "48") or 48),
+            "windowDrift": int(os.getenv("BACOPY_ASSIST_WINDOW_DRIFT_PX", "120") or 120),
         }
         cache_key = str(qpid or table_id or "").strip()
         cached = self._table_focus_cache.get(cache_key) if cache_key else None
@@ -4622,8 +4682,21 @@ class LiveBetExecutor:
     try { btn.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
     const r = btn.getBoundingClientRect();
     if (!rectOk(r)) return null;
+    // Tag the exact, game-id-validated button so the Python side can drive a
+    // Playwright locator.click() on it (trusted, DOM-requeried at click time).
+    // guardGame() already ran in every caller before reaching here, so this
+    // marker is only ever placed on a button whose tile matches expectedGameId.
+    let tagged = false;
+    try {
+      for (const old of document.querySelectorAll('[data-bacopy-bet-btn]')) {
+        old.removeAttribute('data-bacopy-bet-btn');
+      }
+      btn.setAttribute('data-bacopy-bet-btn', '1');
+      tagged = true;
+    } catch(_) { tagged = false; }
     return {ok: true, x: r.left + r.width / 2, y: r.top + r.height / 2,
-            wasActive: wasActive, source: src, btnW: r.width, btnH: r.height};
+            wasActive: wasActive, source: src, btnW: r.width, btnH: r.height,
+            tagged: tagged};
   }
   function geometryCoords(tile, src) {
     if (!tile) return null;
@@ -4785,6 +4858,40 @@ class LiveBetExecutor:
     }
     return null;
   }
+  // Compact multi-baccarat tiles render the real bet zones as <div>s whose text
+  // is exactly プレイヤー/バンカー/タイ (NOT ym_* classed buttons, NOT <button>).
+  // Match by stable text and click the actual zone — this is the spot the human
+  // taps to bet. This is the primary path for these tiles.
+  function tryBetZoneByText(tile, src) {
+    if (!tile) return null;
+    const gameGuard = guardGame(tile, src);
+    if (gameGuard) return gameGuard;
+    const labelMap = {
+      P: ['プレイヤー', 'player'],
+      B: ['バンカー', 'banker'],
+      T: ['タイ', 'tie'],
+      PP: ['プレイヤーペア', 'ｐペア', 'pペア', 'playerpair', 'ppair'],
+      BP: ['バンカーペア', 'ｂペア', 'bペア', 'bankerpair', 'bpair'],
+    };
+    const labels = (labelMap[sideCode] || []).map((s) => norm(s));
+    if (!labels.length) return null;
+    const matches = [];
+    let nodes;
+    try { nodes = tile.querySelectorAll('div, span, button'); } catch (_) { return null; }
+    for (const e of nodes) {
+      const t = norm(e.innerText || e.textContent || '');
+      if (!labels.includes(t)) continue;
+      const r = e.getBoundingClientRect();
+      // Bet zones are sizeable (~60-120px). Exclude tiny labels and oversized wrappers.
+      if (rectOk(r) && r.x >= 0 && r.y >= 0 && r.width >= 30 && r.height >= 30 && r.width <= 280 && r.height <= 220) {
+        matches.push({ el: e, area: r.width * r.height });
+      }
+    }
+    if (!matches.length) return null;
+    // Largest exact-text match = the outermost interactive zone container.
+    matches.sort((a, b) => b.area - a.area);
+    return btnCoords(matches[0].el, false, src);
+  }
 
   let targetTile = null;
   // 1) qpid と一致するタイル内部だけを対象にする。親グリッドへは広げない。
@@ -4792,6 +4899,9 @@ class LiveBetExecutor:
     targetTile = document.getElementById('TileHeight-' + qpid);
     if (targetTile) {
       try { targetTile.scrollIntoView({block:'center', inline:'center'}); } catch(_) {}
+      // Primary: click the real bet zone by its プレイヤー/バンカー/タイ text.
+      const zoneResult = tryBetZoneByText(targetTile, 'qpid_tile_betzone');
+      if (zoneResult) return zoneResult;
       const activePanelResult = tryActivePanelAfterTargetTile(targetTile);
       if (activePanelResult) return activePanelResult;
       const orderedResult = tryOrderedTileButtons(targetTile, 'qpid_tile_ordered');
@@ -4813,6 +4923,8 @@ class LiveBetExecutor:
         }
         if (hasExactChild) continue;
         const tile = enclosingTile(el);
+        const zoneResult = tryBetZoneByText(tile, 'table_name_betzone');
+        if (zoneResult) return zoneResult;
         const activePanelResult = tryActivePanelAfterTargetTile(tile);
         if (activePanelResult) return activePanelResult;
         const orderedResult = tryOrderedTileButtons(tile, 'table_name_tile_ordered');
@@ -4868,18 +4980,43 @@ class LiveBetExecutor:
       parents: parents,
     };
   });
-  const targetDiag = targetTile ? Array.from(targetTile.querySelectorAll('[class]'))
-    .filter((el) => String(el.className || '').includes('ym_'))
-    .slice(0, 18)
-    .map((el) => {
-      const r = el.getBoundingClientRect();
-      return {
-        cls: String(el.className || '').slice(0, 80),
+  // Class-agnostic diagnostic: dump every clickable-looking descendant of the
+  // target tile (BUTTON / role=button / [data-testid] / small visible boxes) so
+  // we can identify the compact multi-baccarat tile's bet buttons even when they
+  // do NOT use ym_* classes. Captured once on not_found to design the selector.
+  const targetDiag = targetTile ? (() => {
+    const out = [];
+    const seen = new Set();
+    const all = Array.from(targetTile.querySelectorAll('*'));
+    for (const el of all) {
+      if (out.length >= 50) break;
+      let r;
+      try { r = el.getBoundingClientRect(); } catch(_) { continue; }
+      if (!r || r.width < 12 || r.height < 12 || r.width > 600) continue;
+      const tag = String(el.tagName || '');
+      const cls = String(el.className || '');
+      const testid = (el.getAttribute && (el.getAttribute('data-testid') || '')) || '';
+      const role = (el.getAttribute && (el.getAttribute('role') || '')) || '';
+      const aria = (el.getAttribute && (el.getAttribute('aria-label') || '')) || '';
+      const clickable = tag === 'BUTTON' || role === 'button' || !!testid ||
+        (el.onclick != null) || /btn|button|spot|bet|wager|cell|chip/i.test(cls);
+      if (!clickable) continue;
+      const key = tag + '|' + cls + '|' + Math.round(r.left) + ',' + Math.round(r.top);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        tag: tag,
+        cls: cls.slice(0, 90),
+        testid: String(testid).slice(0, 50),
+        role: String(role).slice(0, 24),
+        aria: String(aria).slice(0, 40),
         text: String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40),
         x: Math.round(r.left), y: Math.round(r.top),
         w: Math.round(r.width), h: Math.round(r.height),
-      };
-    }) : [];
+      });
+    }
+    return out;
+  })() : [];
 
   return {ok: false, reason: 'not_found',
           tableName: tableName, tableCandidates: Array.from(tableCandidates),
@@ -5291,6 +5428,15 @@ class LiveBetExecutor:
             f"decision={hold_did[:12] or '-'} reason={reason or '-'}"
         )
         self._active_now_bet_hold = {}
+        # Remove the red/blue NOW overlay from the page immediately. The JS-side
+        # removal setTimeout is unreliable because the hold loop kept re-stamping
+        # the overlay token every cycle (TTL never fired) — that left the frame
+        # "stuck" red after the hand ended. Explicit clear here fixes it.
+        if hold_tid:
+            try:
+                self.clear_manual_assist_overlay(hold_tid)
+            except Exception as ex:
+                logger.debug(f"[NOW-BET-HOLD] overlay clear failed: {ex}")
 
     def _maintain_active_now_bet_hold(self, now: float | None = None) -> None:
         hold = self._active_now_bet_hold or {}
@@ -5304,6 +5450,10 @@ class LiveBetExecutor:
         if now >= float(hold.get("until") or 0.0):
             logger.info(f"[NOW-BET-HOLD] expired table={tid}")
             self._active_now_bet_hold = {}
+            try:
+                self.clear_manual_assist_overlay(tid)
+            except Exception:
+                pass
             return
         interval = float(os.getenv("BACOPY_NOW_BET_RECENTER_SEC", "0.5") or 0.5)
         if now - self._last_active_now_bet_center_at < max(0.3, interval):
@@ -5476,20 +5626,150 @@ class LiveBetExecutor:
                     "sideCode": side,
                     "expectedGameId": str(expected_game_id or ""),
                     "staleTileGameIdOk": str(stale_tile_game_id_ok or ""),
-                    # Real-money click path must not use visual-ratio geometry.
-                    # It can focus a compact tile and still report click OK
-                    # without placing an actual wager.
-                    "geometryFallback": "0",
+                    # コンパクトな multi-baccarat タイル (Speed Baccarat 等) には
+                    # ym_yP/ym_yQ クラスのベットボタンが存在せず、ベット領域は
+                    # 座標(visual ratio)でしか特定できない。preposition probe の
+                    # qpid_tile_geometry が安定して P/B 位置を出しており、人間も
+                    # その位置を直接クリックして BET できていた実績がある。
+                    # よって実BET経路でも geometry を許可する (既定ON)。
+                    # game_id ガードが geometryCoords 内で先に走るため別ハンド誤BETは
+                    # 防止され、空振りは lpbet 未確認として検知される。
+                    # サイド誤り防止のため最初の数回はサイドを目視確認すること。
+                    "geometryFallback": os.getenv("BACOPY_CLICK_BET_ALLOW_GEOMETRY", "1").strip(),
                 },
             )
             logger.info(f"[CLICK-BET-JS] qpid={qpid!r} table={table_name!r} coords={res}")
+            if isinstance(res, dict) and res.get("ok") and "geometry" in str(res.get("source") or ""):
+                logger.warning(
+                    f"[CLICK-BET-JS] GEOMETRY click qpid={qpid!r} side={side!r} "
+                    f"src={res.get('source')!r} x={res.get('x')} y={res.get('y')} "
+                    f"— verify side visually on first bets"
+                )
             if not (isinstance(res, dict) and res.get("ok")):
                 self._last_click_bet_error = res if isinstance(res, dict) else {"reason": "invalid_result", "result": repr(res)}
                 return False
 
             btn_x = float(res.get("x", 0))
             btn_y = float(res.get("y", 0))
+            page = frame.page
 
+            # ── Primary path: Playwright TEXT locator scoped to the tile ──
+            # The compact tile's bet zone is a <div> whose text is exactly
+            # プレイヤー/バンカー/タイ. A text locator re-resolves the live DOM at
+            # click time (immune to the React re-render that detaches our marker)
+            # and clicks the actual element (immune to frame/OOPIF page-coord
+            # offset errors that made mouse.click miss). This is the same zone
+            # the human taps — clicking it places a real wager.
+            side_label = {"P": "プレイヤー", "B": "バンカー", "T": "タイ"}.get(str(side or "").upper(), "")
+            use_text_locator = os.getenv("BACOPY_CLICK_BET_TEXT_LOCATOR", "1").strip() != "0"
+            if use_text_locator and side_label and qpid:
+                try:
+                    loc_timeout = int(os.getenv("BACOPY_CLICK_BET_LOCATOR_TIMEOUT_MS", "1800") or 1800)
+                    tile_loc = frame.locator(f'[id="TileHeight-{qpid}"]')
+                    zone = tile_loc.get_by_text(side_label, exact=True).first
+                    zone.click(force=True, timeout=loc_timeout)
+                    self._last_click_bet_page_coords = {
+                        "x": btn_x, "y": btn_y, "qpid": str(qpid or ""),
+                        "side": str(side or ""), "expected_game_id": str(expected_game_id or ""),
+                        "at": time.time(), "method": "text_locator",
+                    }
+                    logger.info(
+                        f"[CLICK-BET-JS] text-locator click OK qpid={qpid!r} side={side!r} "
+                        f"label={side_label!r}"
+                    )
+                    return True
+                except Exception as tex:
+                    logger.warning(
+                        f"[CLICK-BET-JS] text-locator click FAILED ({tex}); "
+                        f"trying marker-locator / mouse.click"
+                    )
+
+            # Diagnostic: when geometry is used (no real button element matched),
+            # reveal what element actually sits at the computed click point AND
+            # where the real bet zones (プレイヤー/バンカー/タイ text) are, so we can
+            # target the element that actually places a wager.
+            if os.getenv("BACOPY_CLICK_BET_POINT_PROBE", "1").strip() != "0" and \
+               isinstance(res, dict) and "geometry" in str(res.get("source") or ""):
+                try:
+                    probe = frame.evaluate(
+                        r"""(a) => {
+                          const out = {atPoint: [], zones: []};
+                          let el = document.elementFromPoint(a.x, a.y);
+                          for (let i = 0; i < 6 && el; i++, el = el.parentElement) {
+                            const r = el.getBoundingClientRect();
+                            out.atPoint.push({
+                              tag: el.tagName,
+                              cls: String(el.className || '').slice(0, 70),
+                              testid: (el.getAttribute && (el.getAttribute('data-testid') || '')) || '',
+                              role: (el.getAttribute && (el.getAttribute('role') || '')) || '',
+                              text: String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24),
+                              x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height),
+                            });
+                          }
+                          let tile = document.elementFromPoint(a.x, a.y);
+                          for (let i = 0; i < 14 && tile; i++, tile = tile.parentElement) {
+                            if (String(tile.id || '').startsWith('TileHeight-')) break;
+                          }
+                          if (tile && tile.querySelectorAll) {
+                            for (const e of tile.querySelectorAll('*')) {
+                              const t = String(e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim();
+                              if (/^(プレイヤー|バンカー|タイ|PLAYER|BANKER|TIE|P PAIR|B PAIR|Ｐペア|Ｂペア)$/i.test(t)) {
+                                const r = e.getBoundingClientRect();
+                                out.zones.push({
+                                  tag: e.tagName,
+                                  cls: String(e.className || '').slice(0, 70),
+                                  testid: (e.getAttribute && (e.getAttribute('data-testid') || '')) || '',
+                                  text: t,
+                                  x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height),
+                                });
+                                if (out.zones.length >= 12) break;
+                              }
+                            }
+                          }
+                          return out;
+                        }""",
+                        {"x": btn_x, "y": btn_y},
+                    )
+                    logger.warning(f"[CLICK-BET-PROBE] geomPoint=({btn_x:.0f},{btn_y:.0f}) result={probe}")
+                except Exception as _pe:
+                    logger.warning(f"[CLICK-BET-PROBE] failed: {_pe}")
+
+            # ── Primary path: Playwright locator.click on the JS-tagged button ──
+            # _JS_BET_COORDS tags the exact, game-id-validated button with
+            # data-bacopy-bet-btn="1". Playwright re-queries the DOM at click
+            # time and dispatches a trusted click. This is the approach that was
+            # stable in ba/executor.py (locator.click(force=True)) and avoids the
+            # absolute-page-coordinate math that is fragile in chrome_attach when
+            # the page/iframe scrolls between coord-read and click.
+            use_locator = os.getenv("BACOPY_CLICK_BET_USE_LOCATOR", "1").strip() != "0"
+            if use_locator and res.get("tagged"):
+                try:
+                    loc_timeout = int(os.getenv("BACOPY_CLICK_BET_LOCATOR_TIMEOUT_MS", "1800") or 1800)
+                    loc = frame.locator('[data-bacopy-bet-btn="1"]').first
+                    loc.click(force=True, timeout=loc_timeout)
+                    self._last_click_bet_page_coords = {
+                        "x": btn_x, "y": btn_y, "qpid": str(qpid or ""),
+                        "side": str(side or ""), "expected_game_id": str(expected_game_id or ""),
+                        "at": time.time(), "method": "locator",
+                    }
+                    logger.info(
+                        f"[CLICK-BET-JS] locator.click OK qpid={qpid!r} side={side!r} "
+                        f"src={res.get('source')!r} wasActive={res.get('wasActive')}"
+                    )
+                    try:
+                        frame.evaluate(
+                            "() => { for (const e of document.querySelectorAll('[data-bacopy-bet-btn]')) e.removeAttribute('data-bacopy-bet-btn'); }"
+                        )
+                    except Exception:
+                        pass
+                    return True
+                except Exception as loc_ex:
+                    logger.warning(
+                        f"[CLICK-BET-JS] locator.click FAILED ({loc_ex}); "
+                        f"falling back to mouse.click(page coords)"
+                    )
+
+            # ── Fallback path: absolute page coords + page.mouse.click ──
             page_x, page_y = btn_x, btn_y
             try:
                 frame_el = frame.frame_element()
@@ -5497,10 +5777,20 @@ class LiveBetExecutor:
                 if bbox:
                     page_x = bbox["x"] + btn_x
                     page_y = bbox["y"] + btn_y
+                    logger.info(
+                        f"[CLICK-BET-JS] frame offset bbox=({bbox['x']:.1f},{bbox['y']:.1f}) "
+                        f"btn=({btn_x:.1f},{btn_y:.1f}) → page=({page_x:.1f},{page_y:.1f})"
+                    )
+                else:
+                    logger.warning(
+                        "[CLICK-BET-JS] frame.bounding_box()=None; using frame-relative coords (click may miss)"
+                    )
             except Exception as _fe:
-                logger.debug(f"[CLICK-BET-JS] frame_element offset failed: {_fe}")
+                logger.warning(
+                    f"[CLICK-BET-JS] frame_element offset FAILED ({_fe}); "
+                    f"using frame-relative coords (click may miss)"
+                )
 
-            page = frame.page
             try:
                 page.mouse.move(page_x, page_y, steps=8)
             except TypeError:
@@ -5514,6 +5804,7 @@ class LiveBetExecutor:
                 "side": str(side or ""),
                 "expected_game_id": str(expected_game_id or ""),
                 "at": time.time(),
+                "method": "mouse",
             }
             logger.info(f"[CLICK-BET-JS] mouse.click at ({page_x:.1f}, {page_y:.1f}) wasActive={res.get('wasActive')}")
             return True
@@ -5724,20 +6015,37 @@ class LiveBetExecutor:
             )
         except Exception as ex:
             logger.info(f"[AUTO-PROBE] chip select scan failed target={chip_str}: {ex}")
-        if self._js_click_selector(frame, chip_sel, "CHIP"):
-            logger.info(f"[{log_prefix}] chip selected via JS mouse: {chip_str} (selector={chip_sel})")
-            try:
-                frame.page.wait_for_timeout(80)
-            except Exception:
-                pass
-            return True
+        # Longer default: the chip locator click was timing out at 800ms in
+        # chrome_attach (OOPIF actionability is slower; a hidden duplicate chip
+        # could also stall scrollIntoViewIfNeeded). 2.5s + visible-first fixes it.
+        chip_timeout_ms = int(float(os.getenv("BACOPY_CHIP_SELECT_TIMEOUT_SEC", "2.5") or 2.5) * 1000)
+        # ── Primary: trusted Playwright click on the stable data-testid. ──
+        # The chip MUST be "held" (isTrusted click) before the bet zone is
+        # clicked, otherwise the wager is never placed (same rule the human
+        # follows: tap a chip first). The legacy _js_click_selector path uses
+        # synthetic events + computed coords, which (a) are not trusted and
+        # (b) miss in the nested OOPIF multibaccarat frame — so the chip was
+        # never actually picked up. Element-direct locator click fixes both.
+        # visible-first avoids grabbing a hidden duplicate chip element.
+        use_locator = os.getenv("BACOPY_CHIP_USE_LOCATOR", "1").strip() != "0"
+        if use_locator:
+            for sel in (f"{chip_sel} >> visible=true", chip_sel):
+                try:
+                    frame.locator(sel).first.click(force=True, timeout=max(800, chip_timeout_ms))
+                    logger.info(f"[{log_prefix}] chip selected (locator trusted): {chip_str} (selector={sel})")
+                    try:
+                        frame.page.wait_for_timeout(80)
+                    except Exception:
+                        pass
+                    return True
+                except Exception as ce:
+                    logger.warning(f"[{log_prefix}] chip locator click failed ({sel}): {ce}")
         try:
-            chip_timeout_ms = int(float(os.getenv("BACOPY_CHIP_SELECT_TIMEOUT_SEC", "0.8") or 0.8) * 1000)
             frame.click(chip_sel, timeout=max(250, chip_timeout_ms))
             logger.info(f"[{log_prefix}] chip selected: {chip_str} (selector={chip_sel})")
             return True
         except Exception as ce:
-            logger.warning(f"[{log_prefix}] chip select failed ({chip_sel}): {ce}")
+            logger.warning(f"[{log_prefix}] chip select failed ({chip_sel}): {ce}; trying JS mouse fallback")
             if self._js_click_selector(frame, chip_sel, "CHIP"):
                 logger.info(f"[{log_prefix}] chip selected via JS mouse: {chip_str} (selector={chip_sel})")
                 try:
@@ -5959,11 +6267,34 @@ class LiveBetExecutor:
 
             if target_qpid and not qpid_matched:
                 try:
-                    retry_sec = float(os.getenv("BACOPY_MULTI_BUTTON_WAIT_SEC", "3.5") or 3.5)
-                    deadline = time.time() + max(0.5, retry_sec)
+                    # Manual-assist 時代、NOW 点灯後は窓が ~12s 開いており人間は余裕で
+                    # 手動 BET できた。自動でも同じ時間予算を使い切るべき。compact tile に
+                    # P/B ボタンがまだ描画されていない (not_found) 場合、窓が開いている間
+                    # ずっとタイルを再アクティブ化しながらボタン出現を待ってクリックする。
+                    # game_id ガードにより窓が閉じて次ハンドへ変わると全クリックが拒否される
+                    # ため、別ハンドへの誤 BET は起きない (最悪でも返却=損失なし)。
+                    retry_sec = float(os.getenv("BACOPY_MULTI_BUTTON_WAIT_SEC", "10.0") or 10.0)
+                    started_reseek = time.time()
+                    deadline = started_reseek + max(0.5, retry_sec)
                     attempt = 0
+
+                    def _window_closed_now() -> bool:
+                        # 「確実に閉じた」時だけ True。状態不明 (open_gid 空) では
+                        # 早すぎる中断を避けるため False を返し、リトライを継続する。
+                        st_w = self._table_states.get(str(target_qpid or "")) or {}
+                        og = str(st_w.get("bets_open_game_id") or "")
+                        cg = str(st_w.get("bets_closed_game_id") or "")
+                        return bool(og and cg and og == cg)
+
                     while time.time() < deadline:
                         attempt += 1
+                        if attempt > 1 and _window_closed_now():
+                            logger.info(
+                                f"[CLICK-BET-RESEEK] stop: bet window closed "
+                                f"qpid={target_qpid!r} attempt={attempt} "
+                                f"elapsed={time.time() - started_reseek:.1f}s"
+                            )
+                            break
                         reseek = frame.evaluate(
                             _MULTI_LOBBY_FOCUS_JS,
                             {
@@ -5977,7 +6308,10 @@ class LiveBetExecutor:
                                             "hintScrollRatio": float((self._table_focus_cache.get(str(target_qpid or ""), {}) or {}).get("scroll_ratio", -1)),
                                         },
                                     )
-                        logger.info(f"[CLICK-BET-RESEEK] qpid={target_qpid!r} attempt={attempt} result={reseek}")
+                        logger.info(
+                            f"[CLICK-BET-RESEEK] qpid={target_qpid!r} attempt={attempt} "
+                            f"elapsed={time.time() - started_reseek:.1f}s/{retry_sec:.0f}s result={reseek}"
+                        )
                         if isinstance(reseek, dict) and reseek.get("found"):
                             try:
                                 frame.page.wait_for_timeout(350)
@@ -5995,10 +6329,16 @@ class LiveBetExecutor:
                             ):
                                 logger.info(
                                     f"[CLICK-BET] JS click OK after reseek: side={side} "
-                                    f"qpid={target_qpid!r} attempt={attempt} click={click_index}/{len(chip_plan)}"
+                                    f"qpid={target_qpid!r} attempt={attempt} "
+                                    f"elapsed={time.time() - started_reseek:.1f}s click={click_index}/{len(chip_plan)}"
                                 )
                                 return True
                         frame.page.wait_for_timeout(250)
+                    logger.warning(
+                        f"[CLICK-BET-RESEEK] exhausted qpid={target_qpid!r} attempts={attempt} "
+                        f"elapsed={time.time() - started_reseek:.1f}s budget={retry_sec:.0f}s "
+                        f"last_err={self._last_click_bet_error}"
+                    )
                 except Exception as ex:
                     logger.warning(f"[CLICK-BET-RESEEK] failed qpid={target_qpid!r}: {ex}")
 

@@ -1066,6 +1066,7 @@ class DualLinePragmaticBot(cp.Collector):
         send_msg(
             {
                 "type": "resolution",
+                "decision_id": str(item.get("decision_id") or item.get("id") or ""),
                 "result": result,
                 "prediction": prediction,
                 "outcome": outcome,
@@ -1699,6 +1700,11 @@ class DualLinePragmaticBot(cp.Collector):
         ms = self.money.status_dict()
         send_msg({
             "type": "resolution",
+            # decision_id を含めないと GUI が manual_assist キュー項目を
+            # SETTLED に遷移できない (app.js の resolution ハンドラは
+            # r.decision_id で item を照合する)。signal panel/SEQ は
+            # money_status から無条件更新されるが、キュー項目の確定には必須。
+            "decision_id": decision_id,
             "table_id": table_id,
             "table_name": buf.table_name or "",
             "prediction": side,
@@ -1993,6 +1999,7 @@ class DualLinePragmaticBot(cp.Collector):
         send_msg(
             {
                 "type": "resolution",
+                "decision_id": str(pending.get("decision_id") or ""),
                 "table_id": str(pending.get("table_id") or table_id),
                 "table_name": table_name,
                 "prediction": side,
