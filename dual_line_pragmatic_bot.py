@@ -24,6 +24,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -93,11 +94,29 @@ _bot_logger = logging.getLogger("dual_line.bot")
 _bot_logger.setLevel(logging.INFO)
 _bot_logger.propagate = False  # root logger に伝播させない
 if not _bot_logger.handlers:
-    _fh = logging.FileHandler(_PERSISTENT_DIR / "dual_line_pragmatic_bot.log", encoding="utf-8")
-    _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    _log_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    # ローテーション付きファイルハンドラ。append モードで全セッション蓄積し
+    # 461MB まで肥大化していたため上限を設ける。既定 25MB x 5 = 約 125MB の
+    # 直近履歴を保持(調査に十分)。起動後の最初の emit で既存の巨大ログは
+    # .1 へ rollover され、backupCount を超えた古い世代から自動削除される。
+    # executor も同一 logger("dual_line.bot")を共有し独自ハンドラを持たないため
+    # 書き手は常に 1 つで、Windows でも rotation の rename 衝突は起きない。
+    try:
+        from logging.handlers import RotatingFileHandler
+        _log_max_mb = float(os.getenv("BACOPY_LOG_MAX_MB", "25") or 25)
+        _log_backups = int(os.getenv("BACOPY_LOG_BACKUPS", "5") or 5)
+        _fh = RotatingFileHandler(
+            _PERSISTENT_DIR / "dual_line_pragmatic_bot.log",
+            maxBytes=int(max(1.0, _log_max_mb) * 1024 * 1024),
+            backupCount=max(1, _log_backups),
+            encoding="utf-8",
+        )
+    except Exception:
+        _fh = logging.FileHandler(_PERSISTENT_DIR / "dual_line_pragmatic_bot.log", encoding="utf-8")
+    _fh.setFormatter(_log_fmt)
     _bot_logger.addHandler(_fh)
     _sh = logging.StreamHandler()
-    _sh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    _sh.setFormatter(_log_fmt)
     _bot_logger.addHandler(_sh)
 logger = _bot_logger
 
@@ -3112,8 +3131,44 @@ class DualLinePragmaticBot(cp.Collector):
             closed_gid = str((st or {}).get("bets_closed_game_id") or "")
             last_open_at = float((st or {}).get("last_bets_open_at") or 0.0)
             open_age = time.time() - last_open_at if last_open_at else 9999.0
-            window_max = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC", "60") or 60)
+            # Speed/Turbo の賭け窓は ~8-15 秒と短い。通常卓の 60s 許容のままだと
+            # 「閉じた窓」や「次の(予想外)ハンド」を active 扱いして best-effort BET
+            # してしまうため、fast 卓は短い窓許容で active 判定を厳格化する。
+            is_fast_table = _is_fast_table_name(table_name) or _is_fast_table_name(table_id)
+            if is_fast_table:
+                window_max = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC_SPEED", "13") or 13)
+            else:
+                window_max = float(os.getenv("BACOPY_BET_WINDOW_MAX_SEC", "60") or 60)
             active_window = bool(open_gid and open_gid != closed_gid and open_age < window_max)
+            # ── fast 卓の遅延内訳計測 (王道: まず原因を定量化) ──
+            # open_age          = 窓open → NOW (botが動いた時点)
+            # window_left       = 窓の残り (負 = 到達時に既に締切)
+            # vps_publish_to_now= VPS captured_at → NOW (network + bot poll 遅延)
+            # open_to_vps_cap   = 窓open → VPS が信号生成 (VPS観測+計算遅延)
+            #   → open_to_vps_cap が既に窓超なら VPS 自体が遅い(Lever3/ローカル信号必須)
+            #   → vps_publish_to_now が大きいなら bot poll/network がボトルネック
+            if is_fast_table:
+                try:
+                    now_ts = time.time()
+                    cap_ts = 0.0
+                    if captured_at:
+                        try:
+                            cap_ts = datetime.fromisoformat(
+                                captured_at.replace("Z", "+00:00")
+                            ).timestamp()
+                        except Exception:
+                            cap_ts = 0.0
+                    vps_to_now = (now_ts - cap_ts) if cap_ts else -1.0
+                    open_to_cap = (cap_ts - last_open_at) if (cap_ts and last_open_at) else -1.0
+                    window_left = (window_max - open_age) if last_open_at else -1.0
+                    logger.warning(
+                        f"[FAST-LATENCY] table={table_name or table_id} did={did[:12]} "
+                        f"open_age={open_age:.1f}s window_max={window_max:.0f}s window_left={window_left:.1f}s "
+                        f"vps_publish_to_now={vps_to_now:.1f}s open_to_vps_cap={open_to_cap:.1f}s "
+                        f"active_window={active_window} prepared_match={prepared == table_id}"
+                    )
+                except Exception as _lat_ex:
+                    logger.debug(f"[FAST-LATENCY] calc failed: {_lat_ex}")
             antenna_ok = False
             try:
                 antenna_fn = getattr(ex, "is_table_in_antenna_zone", None)
@@ -3122,6 +3177,37 @@ class DualLinePragmaticBot(cp.Collector):
             except Exception as ant_ex:
                 logger.debug(f"[DECISION] antenna check failed: {ant_ex}")
             if prepared != table_id and not active_window and not antenna_ok:
+                # Fast(Speed/Turbo)卓は窓が短く、ここで best-effort BET しても
+                # 予想ハンドの窓は既に過ぎている。次の窓で賭けると別の(予想して
+                # いない)ハンドに賭けることになり戦略が壊れるため、未準備かつ窓
+                # 非アクティブなら signal_guard の有無に関わらず必ずスキップする。
+                if is_fast_table:
+                    logger.warning(
+                        f"[DECISION] SKIP fast-table window not active: did={did[:12]} "
+                        f"table={table_name or table_id} prepared={prepared or '-'} "
+                        f"open_gid={open_gid or '-'} open_age={open_age:.1f}s window_max={window_max:.0f}s"
+                    )
+                    logger.warning(
+                        f"[AUTO-PROBE] final_click allowed=false reason=fast_window_closed "
+                        f"did={did[:12]} table={table_name or table_id} "
+                        f"open_age={open_age:.1f}s prepared={prepared or '-'}"
+                    )
+                    self._api_post(
+                        f"/api/decisions/{did}/ack",
+                        {
+                            "ack": {
+                                "executor_id": "gui-1",
+                                "skipped_at": _utc_now_iso(),
+                                "reason": "fast_table_window_closed",
+                                "prepared_table_id": prepared,
+                                "open_age_sec": round(open_age, 2),
+                            },
+                            "status": "skipped_not_prepared",
+                        },
+                        base_url=str(decision.get("_source_api_base") or ""),
+                        api_key=str(decision.get("_source_api_key") or ""),
+                    )
+                    return
                 signal_game_id_preview = str(
                     decision.get("game_id")
                     or fa.get("signal_game_id")
@@ -3606,8 +3692,89 @@ class DualLinePragmaticBot(cp.Collector):
                     p["settlement_posted"] = True
                     p["local_bet_failed"] = True
                     logger.warning(f"[DECISION] result posted error(timeout): {did} age={age:.1f}s")
-        if confirmed_changed:
+        # 継続再スキャン: confirmed 済みだが未決済の pending がある限り毎回 buffer を
+        # 走査する。結果ハンドは BET の約30秒後に届くため、confirmed_changed が True に
+        # なる「BET確認の瞬間」だけ走らせる旧実装では再スキャンが毎回空振りしていた。
+        # _decision_matches_hand は game_id 完全一致を要求するので、誤卓・誤ハンドへの
+        # 着弾は構造的に起きない (settlement_posted で二重決済もガード済み)。
+        has_unsettled_confirmed = any(
+            isinstance(p, dict)
+            and not p.get("settlement_posted")
+            and not p.get("local_bet_failed")
+            and (
+                p.get("local_bet_sent")
+                or p.get("bet_sent_posted")
+                or (isinstance(p.get("confirmed_bet"), dict) and p.get("confirmed_bet"))
+            )
+            for p in self._pending_decisions.values()
+        )
+        if confirmed_changed or has_unsettled_confirmed:
             self._settle_confirmed_decisions_from_buffers()
+        if has_unsettled_confirmed:
+            try:
+                self._diag_unsettled_pending()
+            except Exception as e:
+                logger.debug(f"[DIAG-UNSETTLED] scan error: {e}")
+
+    def _diag_unsettled_pending(self) -> None:
+        """未決済の confirmed bet が残る理由を診断ログ出力する。
+
+        RC1 (matcher が拒否: gid は buffer にあるのにマッチ失敗) と
+        RC2 (結果ハンドがどの buffer にも届いていない) を切り分ける。読み取り専用。
+        """
+        if not self._pending_decisions:
+            return
+        now = time.time()
+        try:
+            min_age = float(os.getenv("BACOPY_DIAG_UNSETTLED_MIN_AGE_SEC", "45") or 45)
+            repeat_sec = float(os.getenv("BACOPY_DIAG_UNSETTLED_REPEAT_SEC", "30") or 30)
+        except Exception:
+            min_age, repeat_sec = 45.0, 30.0
+        logged_at = getattr(self, "_diag_unsettled_logged_at", None)
+        if logged_at is None:
+            logged_at = {}
+            self._diag_unsettled_logged_at = logged_at
+        for did, p in list(self._pending_decisions.items()):
+            if not isinstance(p, dict) or p.get("settlement_posted") or p.get("local_bet_failed"):
+                continue
+            confirmed = p.get("confirmed_bet") if isinstance(p.get("confirmed_bet"), dict) else {}
+            if not (p.get("local_bet_sent") or p.get("bet_sent_posted") or confirmed):
+                continue
+            age = now - float(p.get("placed_at") or now)
+            if age < min_age:
+                continue
+            if now - float(logged_at.get(did, 0.0)) < repeat_sec:
+                continue
+            logged_at[did] = now
+            confirmed_gid = str(
+                (confirmed or {}).get("game_id") or (confirmed or {}).get("lpbet_game_id") or ""
+            ).strip()
+            p_tid = str(p.get("table_id") or "").strip()
+            p_name = str(p.get("table_name") or "").strip()
+            name_norm = re.sub(r"[^a-z0-9]+", "", p_name.lower())
+            gid_found_in = ""
+            bet_buf_info = "NONE"
+            for tid, buf in list(getattr(self, "buffers", {}) or {}).items():
+                hands = list(getattr(buf, "hands", None) or [])
+                gids = [str(h.get("gameId") or "") for h in hands[-40:]]
+                if confirmed_gid and confirmed_gid in gids:
+                    gid_found_in = f"{tid}({getattr(buf, 'table_name', '')})"
+                bnorm = re.sub(r"[^a-z0-9]+", "", str(getattr(buf, "table_name", "") or "").lower())
+                qpid = str(getattr(buf, "qpid_table_id", "") or "")
+                if (name_norm and bnorm == name_norm) or (p_tid and (tid == p_tid or qpid == p_tid)):
+                    bet_buf_info = f"tid={tid} qpid={qpid} hands={len(hands)} last_gids={gids[-3:]}"
+            if not confirmed_gid:
+                verdict = "NO_CONFIRMED_GID(table_id/name match only)"
+            elif gid_found_in:
+                verdict = "RC1_matcher_reject(gid IS in buffer but not matched)"
+            else:
+                verdict = "RC2_result_hand_not_in_any_buffer"
+            logger.warning(
+                f"[DIAG-UNSETTLED] did={did[:12]} age={age:.0f}s side={p.get('side')} "
+                f"table={p_name}({p_tid}) confirmed_gid={confirmed_gid or '-'} "
+                f"gid_found_in={gid_found_in or 'NONE'} bet_buf=[{bet_buf_info}] "
+                f"verdict={verdict}"
+            )
 
     def _check_decision_results(self) -> None:
         """status=done/error/processing の decision を取得して BetManager を更新。"""
