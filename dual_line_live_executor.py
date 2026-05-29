@@ -4515,6 +4515,35 @@ class LiveBetExecutor:
                 }
                 logger.info(f"[LIVE] bet sent OK ck={ck}")
 
+            # ── Partial-bet guard (multi-chip safety) ──
+            # When SEQ progresses past $1 the chip plan needs several clicks
+            # (e.g. $6 = $5 + $1). If a click misses, only part of the wager
+            # lands. Compare the real Stake balance delta to the planned amount
+            # and warn loudly (log + Telegram) on any mismatch — this also
+            # catches the dangerous case where money DID move but the bet was
+            # marked unconfirmed (delta below the 90% confirm threshold).
+            try:
+                _observed = 0.0
+                for _cur, _d in (self._stake_balance_delta_by_currency or {}).items():
+                    if abs(float(_d)) > _observed:
+                        _observed = abs(float(_d))
+                if _observed > 0.01 and abs(_observed - float(amount)) > 0.01:
+                    logger.warning(
+                        f"[PARTIAL-BET] amount mismatch: planned=${float(amount):.2f} "
+                        f"observed_stake_delta=${_observed:.2f} table={tname} "
+                        f"side={side_name} gId={game_id!r} confirmed={bool(trusted_confirm)} "
+                        f"— some chip clicks did not land"
+                    )
+                    try:
+                        self._notify(
+                            f"⚠️ 部分BET検知\n{tname}\n{side_name} 計画${float(amount):.2f} → 実際${_observed:.2f}\n"
+                            f"(一部のチップが乗っていません)"
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             self._consecutive_failures = 0
             if trusted_confirm and bet_id:
                 self._mark_bet_confirmed(bet, trusted_confirm)

@@ -260,6 +260,13 @@ def _send_preposition_legacy(
 
 
 def _send_telegram(text: str) -> bool:
+    """Telegram 通知を送る。
+
+    非ブロッキング: 実送信はデーモンスレッドで行い、bot のメインループ/ポーリング
+    スレッドを絶対に止めない（過去、Telegram が一時的に詰まると通知が「止まった」
+    まま復帰しなかった）。スレッド内で 3 回までリトライし、429(レート制限)は
+    retry_after を尊重。成否は必ずログに残す(これまで成功時は無ログで原因不明だった)。
+    """
     # 優先順位: DUAL_LINE_* → TELEGRAM_* → ADMIN_TELEGRAM_*
     token = (
         os.getenv("DUAL_LINE_BOT_TOKEN", "").strip()
@@ -274,22 +281,54 @@ def _send_telegram(text: str) -> bool:
     if not token or not chat_id:
         logger.warning("[TELEGRAM] send skipped: token/chat_id is not configured")
         return False
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    attempts = max(1, int(os.getenv("BACOPY_TELEGRAM_RETRIES", "3") or 3))
+    timeout_s = float(os.getenv("BACOPY_TELEGRAM_TIMEOUT_SEC", "8") or 8)
+
+    def _worker() -> None:
+        import time as _t
+        try:
+            import requests
+        except Exception as e:
+            logger.warning(f"[TELEGRAM] send skipped: requests import failed: {e}")
+            return
+        for attempt in range(1, attempts + 1):
+            try:
+                r = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=timeout_s)
+                if r.ok:
+                    logger.info(f"[TELEGRAM] sent ok (attempt={attempt})")
+                    return
+                if r.status_code == 429:
+                    retry_after = 1.0
+                    try:
+                        retry_after = float(r.json().get("parameters", {}).get("retry_after", 1.0))
+                    except Exception:
+                        pass
+                    retry_after = min(max(0.5, retry_after), 6.0)
+                    logger.warning(f"[TELEGRAM] rate-limited 429 retry_after={retry_after}s (attempt={attempt})")
+                    _t.sleep(retry_after)
+                    continue
+                logger.warning(
+                    f"[TELEGRAM] send failed status={r.status_code} "
+                    f"response={r.text[:160]!r} (attempt={attempt})"
+                )
+            except Exception as e:
+                logger.warning(f"[TELEGRAM] send error (attempt={attempt}): {e}")
+            if attempt < attempts:
+                _t.sleep(min(1.0 * attempt, 3.0))
+        logger.warning("[TELEGRAM] send giving up after retries")
+
     try:
-        import requests
-        response = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
-            timeout=5,
-        )
-        if not response.ok:
-            logger.warning(
-                f"[TELEGRAM] send failed status={response.status_code} "
-                f"response={response.text[:160]!r}"
-            )
-            return False
+        import threading
+        threading.Thread(target=_worker, daemon=True, name="tg-send").start()
         return True
     except Exception as e:
-        logger.warning(f"[TELEGRAM] send failed: {e}")
+        logger.warning(f"[TELEGRAM] thread spawn failed, sending inline: {e}")
+        try:
+            _worker()
+        except Exception:
+            pass
         return False
 
 
