@@ -4138,6 +4138,37 @@ class LiveBetExecutor:
         else:
             bet_table_id = chosen_table
         if self._multi_lobby_mode and self._multi_bet_transport == "click":
+            # 安全ゲート: マルチプレイ WS が生きていない時はクリックしない。
+            # multi_ws が死んだまま page がマルチエリアを外れると、見当違いの場所を
+            # クリックして誤BET/偽確認(lpbet_chrome_attach)で SEQ が進む事故になる
+            # (2026-05-30 夜の incident)。bet せず failed 扱いでスキップ。env で無効化可。
+            if (
+                not self._is_multi_table_ws
+                and os.getenv("BACOPY_REQUIRE_MULTI_WS_FOR_BET", "1").strip() != "0"
+            ):
+                logger.warning(
+                    f"[TRY-BET] SKIP: multi-table WS not alive (multiplay lost) "
+                    f"table={bet_table_id} side={side} — refuse click to avoid wrong-area bet"
+                )
+                self._mark_bet_failed(
+                    bet, "multi_ws_down", "bet_skipped_multi_ws_down", table_id=bet_table_id
+                )
+                self._clear_active_now_bet_hold(
+                    bet_id=str(bet.get("bet_id") or ""), reason="multi_ws_down"
+                )
+                try:
+                    now_n = time.time()
+                    last_n = float(getattr(self, "_last_multi_ws_down_notify_at", 0.0) or 0.0)
+                    if now_n - last_n >= 300.0:
+                        self._last_multi_ws_down_notify_at = now_n
+                        self._notify(
+                            "⚠️ マルチプレイ未接続\n"
+                            "multi-table WS が切断中のため BET を見送っています。\n"
+                            "GUI でマルチプレイ画面に復帰してください。"
+                        )
+                except Exception:
+                    pass
+                return
             prepared = str(self._prepared_table_id or "")
             active_window = self._is_table_bet_window_open(bet_table_id)
             antenna_ok = self.is_table_in_antenna_zone(bet_table_id, str(side or ""))
