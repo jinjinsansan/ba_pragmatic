@@ -68,11 +68,21 @@
 
 ## 4. 進捗
 
-- [ ] Phase 1: VPS v4 dry-run 並走
-- [ ] Phase 2: mode タグ配信
-- [ ] Phase 3: GUI モードプルダウン
-- [ ] Phase 4: SEQ 開始額 UI
+- [x] Phase 1: VPS v4 dry-run 並走（commit 51c6c78、稼働中・0から蓄積・V2形式累積Telegram）
+- [x] Phase 3a: GUI bot mode フィルタ（commit 5ae2ea5）— `_handle_decision` で選択モードのみBET、既定v3、`set_dual_mode` IPC。**未デプロイ**（bafather engine 再ビルド要）。
+- [ ] Phase 2: VPS v4 publish（mode="v4" タグ、env gated 既定OFF）
+- [ ] Phase 3b: Electron UI（モードプルダウン v3/v4 + SEQ開始額 $1/$3/$6）。実装箇所特定済み: `src/renderer/app.js`(dual_money_mode/dual_unit群, settings), `src/main.js`(ipcMain stdin write), `src/preload.js`。**Electron再ビルド＋RDP検証要**。
 - [ ] Phase 5: forward 検証→採用判定
+
+## ⚠️ 安全なデプロイ順序（厳守・暴発防止）
+v4の5パターンは v3 と共有。順序を誤ると現行エンジンが mode 無視で共有パターンを実BETする。
+```
+① bafather に Phase 3a エンジン(mode フィルタ,既定v3)をデプロイ   ← GUI停止+build_dual.ps1
+② VPS の v4 publish(Phase 2) を有効化（BACOPY_V4_PUBLISH=1）
+③ Electron UI(Phase 3b) をビルド・デプロイ・RDP検証
+④ v4 が Phase 5 検証通過 → GUIで v4 選択して実BET開始
+```
+それまで v4 は dry-run(Phase 1)でライブ蓄積継続。
 
 ## 5. 関連
 - 6パターン根拠: `dual_line_all_patterns_report.html`
