@@ -80,6 +80,7 @@ except Exception as e:
 
 from dual_line_match import (
     LIVE_SIGNAL_PATTERNS,
+    LIVE_SIGNAL_PATTERNS_V4,
     decide,
     live_preposition_for_history,
     score_proximity,
@@ -123,6 +124,7 @@ logger = _bot_logger
 # ── 定数 ─────────────────────────────────────────────────────────────
 
 V2_PATTERNS = LIVE_SIGNAL_PATTERNS
+V4_PATTERNS = LIVE_SIGNAL_PATTERNS_V4
 
 STATE_PATH = _PERSISTENT_DIR / "dual_line_pragmatic_state.json"
 STATE_TMP = _PERSISTENT_DIR / "dual_line_pragmatic_state.tmp"
@@ -429,6 +431,10 @@ class DualLinePragmaticBot(cp.Collector):
     ):
         super().__init__(headless=headless, raw_log=raw_log)
         self.use_v2_filter = use_v2_filter
+        # dual-line モード: "v3"(6パターン, 既定) / "v4"(10パターン)。GUIプルダウンで切替。
+        self.dual_mode = (os.getenv("BACOPY_DUAL_MODE", "v3") or "v3").strip().lower()
+        if self.dual_mode not in ("v3", "v4"):
+            self.dual_mode = "v3"
         self.no_vps_poll = no_vps_poll
         self.manual_assist = bool(manual_assist)
         self.manual_assist_auto_click = bool(
@@ -998,6 +1004,8 @@ class DualLinePragmaticBot(cp.Collector):
                     continue
                 if isinstance(msg, dict) and msg.get("type") == "manual_assist_command":
                     self._handle_manual_assist_command(msg)
+                elif isinstance(msg, dict) and msg.get("type") == "set_dual_mode":
+                    self._set_dual_mode(str(msg.get("mode") or ""))
 
         threading.Thread(target=_loop, name="manual-assist-stdin", daemon=True).start()
 
@@ -1009,6 +1017,24 @@ class DualLinePragmaticBot(cp.Collector):
                 if str(item.get("decision_id") or "") == decision_id:
                     return key, item
         return "", None
+
+    def _set_dual_mode(self, mode: str) -> None:
+        """GUI から dual-line モード(v3=6 / v4=10)を切替。既定 v3。
+        v4 は forward 検証後に使う想定（既定 v3 なので未検証 v4 は暴発しない）。"""
+        m = (mode or "").strip().lower()
+        if m not in ("v3", "v4"):
+            logger.warning(f"[DUAL-MODE] invalid mode ignored: {mode!r}")
+            return
+        if m == getattr(self, "dual_mode", "v3"):
+            return
+        self.dual_mode = m
+        n = len(V4_PATTERNS) if m == "v4" else len(V2_PATTERNS)
+        logger.info(f"[DUAL-MODE] switched to {m} ({n} patterns)")
+        try:
+            send_log(f"デュアルライン モード切替: {m} ({n}パターン)")
+            _send_telegram(f"⚙️ モード切替: {m.upper()} ({n}パターン)")
+        except Exception:
+            pass
 
     def _handle_manual_assist_command(self, msg: dict) -> None:
         if not self.manual_assist:
@@ -2828,8 +2854,19 @@ class DualLinePragmaticBot(cp.Collector):
             logger.warning(f"[DECISION] invalid side={side!r} in {did}")
             return
         pattern_key = str(fa.get("pattern_key") or decision.get("pattern_key") or "")
-        if self.use_v2_filter and pattern_key not in V2_PATTERNS:
-            logger.warning(f"[DECISION] rejected non-whitelist signal: did={did[:12]} pattern={pattern_key or '-'}")
+        # ── モードフィルタ: 選択中モードの decision のみ BET (既定 v3) ──
+        # decision の mode 未指定は v3 扱い(後方互換)。選択モードと不一致なら無視。
+        # これにより未検証 v4 は GUI が v4 を選ばない限り暴発しない。
+        dmode = str(decision.get("mode") or fa.get("mode") or "v3").strip().lower()
+        active_mode = getattr(self, "dual_mode", "v3")
+        if dmode != active_mode:
+            return
+        active_whitelist = V4_PATTERNS if active_mode == "v4" else V2_PATTERNS
+        if self.use_v2_filter and pattern_key not in active_whitelist:
+            logger.warning(
+                f"[DECISION] rejected non-whitelist signal: did={did[:12]} "
+                f"mode={active_mode} pattern={pattern_key or '-'}"
+            )
             return
         captured_at = str(decision.get("captured_at") or "").strip()
         if captured_at:
