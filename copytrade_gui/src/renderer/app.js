@@ -461,6 +461,7 @@ async function startBotFlow({ auto = false } = {}) {
     live: isDLAssist ? true : (settings.dual_live || false),
     money_mode: settings.dual_money_mode || 'flat',
     money_unit: settings.dual_unit || 100,
+    dual_mode: settings.dual_mode || 'v3',
     on_limit: settings.dual_on_limit || 'stop',
     manual_assist_auto_click: !!settings.manual_assist_auto_click,
   };
@@ -698,6 +699,7 @@ const DEFAULT_SETTINGS = {
   mode: 'executor',
   dual_money_mode: 'flat',
   dual_unit: 100,
+  dual_mode: 'v3',
   dual_live: false,
   dual_on_limit: 'stop',
   manual_assist_auto_click: false,
@@ -1157,6 +1159,7 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     mode: isDualLine ? (isDualLineAssist ? 'dual_line_assist' : 'dual_line_auto') : 'executor',
     dual_money_mode: $('#inputDualMoneyMode')?.value || 'flat',
     dual_unit: parseFloat($('#inputDualUnit')?.value || 100),
+    dual_mode: $('#inputDualMode')?.value || 'v3',
     dual_live: $('#inputDualLive')?.checked || false,
     dual_on_limit: $('#inputOnLimitRestart')?.checked ? 'restart' : 'stop',
     manual_assist_auto_click: $('#inputManualAssistAutoClick')?.checked || false,

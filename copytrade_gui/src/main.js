@@ -730,6 +730,9 @@ function buildSpawnSpec(config) {
         childEnv.BACOPY_MANUAL_ASSIST_AUTO_CLICK = '1';
       }
     }
+    // パターンモード v3(6) / v4(10)。エンジンは BACOPY_DUAL_MODE を読む(既定v3)。
+    const dualMode = String((config && config.dual_mode) || 'v3').toLowerCase();
+    childEnv.BACOPY_DUAL_MODE = (dualMode === 'v4') ? 'v4' : 'v3';
     if (config && config.no_v2_filter) args.push('--no-v2-filter');
     if (config && config.money_mode) args.push('--money-mode', String(config.money_mode));
     // money_unit 未設定時は chip_base にフォールバック
