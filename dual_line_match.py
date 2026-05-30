@@ -30,6 +30,23 @@ LIVE_SIGNAL_PATTERNS = frozenset({
     "sansan|telecho|P",
 })
 
+# v4: 勝率≥51% かつ $/BET>0 かつ サンプル≥200 の10パターン
+# (dual_line_all_patterns_report.html / 全データT込み方式で選定)。
+# v3 の niconico|dragon|P(50.5%) は基準未満のため v4 から外れる。
+# v3 と別モードとして並走・forward検証する (PLAN_DUAL_LINE_V4_10PATTERN.md)。
+LIVE_SIGNAL_PATTERNS_V4 = frozenset({
+    "sansan|telecho|P",
+    "niconico|niconico|B",
+    "telecho|niconico|P",
+    "niconico|nikoichi|B",
+    "telecho|niconico|B",
+    "niconico|dragon|B",
+    "niconico|nikoichi|P",
+    "telecho|nikoichi|B",
+    "telecho|telecho|B",
+    "telecho|nikoichi|P",
+})
+
 __all__ = [
     "Decision",
     "decide",
@@ -37,6 +54,7 @@ __all__ = [
     "big_road_predict",
     "score_proximity",
     "LIVE_SIGNAL_PATTERNS",
+    "LIVE_SIGNAL_PATTERNS_V4",
     "live_signal_for_history",
     "live_preposition_for_history",
 ]
