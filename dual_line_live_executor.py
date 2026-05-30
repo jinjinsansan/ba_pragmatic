@@ -1547,6 +1547,9 @@ class LiveBetExecutor:
         # lpbet WS 確認（JS click 後に Pragmatic game client が送る <lpbet> メッセージ）
         self._last_lpbet_gid: str = ""
         self._last_lpbet_at: float = 0.0
+        # 卓(game)ごとの送出 <lpbet> 累計回数。多チップBETで「計画枚数だけ着弾したか」を
+        # 検証し、不足分だけ再クリックするために使う（1チップ着弾＝1 lpbet）。
+        self._lpbet_count_by_gid: dict[str, int] = {}
         self._last_bet_modal_recover_at: float = 0.0
         self._table_states: dict[str, dict[str, Any]] = {}
         self._game_to_table_id: dict[str, str] = {}
@@ -3071,6 +3074,9 @@ class LiveBetExecutor:
             gid = str(m_gid.group(1) if m_gid else "").strip()
             self._last_lpbet_gid = gid
             self._last_lpbet_at = time.time()
+            if gid:
+                # 1チップ着弾ごとに1回。多チップBETの満額検証に使う。
+                self._lpbet_count_by_gid[gid] = self._lpbet_count_by_gid.get(gid, 0) + 1
             logger.info(f"[LPBET-CONFIRM] WS lpbet detected: gId={gid!r} table={ws_table_id!r}")
         if not self._user_id:
             m_uid_any = re.search(r'"(?:userId|uId)"\s*:\s*"([^"]{6,})"', data)
@@ -6508,6 +6514,9 @@ class LiveBetExecutor:
 
         current_selected_chip: float | None = None
         cached_click_coords: dict[str, Any] | None = None
+        # 多チップ満額検証用: この game の送出 <lpbet> 累計のベースライン（着弾チップ数=lpbet増分）
+        _verify_gid = str(expected_game_id or "")
+        _lpbet_base = self._lpbet_count_by_gid.get(_verify_gid, 0) if _verify_gid else 0
 
         def click_cached_side_once(click_index: int) -> bool:
             nonlocal cached_click_coords
@@ -6527,10 +6536,27 @@ class LiveBetExecutor:
                 y = float(coords.get("y") or 0.0)
                 if x <= 0 or y <= 0:
                     return False
+                # ── 座標系の補正（多チップ過少BETの根本修正）──
+                # locator/text_locator 経路は btn の FRAME相対座標を保存する。だが
+                # frame.page.mouse.click() は PAGE(viewport)座標を要求する。マルチロビーの
+                # OOPIF では frame が画面内にオフセット(例 +147,+100)しているため、frame相対を
+                # そのまま渡すと毎回ベットゾーンを外し 2枚目以降が一切着弾しなかった($4→$1)。
+                # iframe オフセットを加算して PAGE 座標に直す。mouse 経路の座標は既に PAGE。
+                meth = str(coords.get("method") or "")
+                if meth in ("text_locator", "locator", "text_locator_landed_after_raise", "locator_landed_after_raise"):
+                    try:
+                        bbox = frame.frame_element().bounding_box()
+                        if bbox:
+                            x = float(bbox["x"]) + x
+                            y = float(bbox["y"]) + y
+                    except Exception as _bx:
+                        logger.debug(f"[CLICK-BET] cached coord frame-offset failed: {_bx}")
+                if x <= 0 or y <= 0:
+                    return False
                 frame.page.mouse.click(x, y)
                 logger.info(
                     f"[CLICK-BET] cached direct click OK: side={side} qpid={target_qpid!r} "
-                    f"click={click_index}/{len(chip_plan)} at=({x:.1f},{y:.1f})"
+                    f"click={click_index}/{len(chip_plan)} at=({x:.1f},{y:.1f}) method={meth or '-'}"
                 )
                 return True
             except Exception as ex:
@@ -6583,6 +6609,72 @@ class LiveBetExecutor:
                 frame.page.wait_for_timeout(max(0, delay_ms))
             except Exception:
                 pass
+
+        # ── 多チップ満額検証 ＋ 不足リトライ ──
+        # 送出 <lpbet> 回数(=実際に乗ったチップ数)を計画枚数と照合し、不足分を再クリックする。
+        # lpbet 反映には ~1.5s の遅延があるため十分待ってから判定（早すぎる誤判定→過大BET防止）。
+        # リトライは「均一プラン($1×N 等)」のみ実施=どのチップが欠けても同一額なので再クリック安全。
+        # 混在プラン($6=$5+$1 等)は欠けたチップ額を特定できないためログのみ（過大BETを作らない）。
+        planned_clicks = len(chip_plan)
+        if _verify_gid and planned_clicks > 1:
+            uniform_plan = len(set(float(d) for d in chip_plan)) == 1
+            rounds = int(os.getenv("BACOPY_CHIP_VERIFY_RETRY_ROUNDS", "2") or 2)
+            settle_ms = int(os.getenv("BACOPY_CHIP_VERIFY_SETTLE_MS", "2500") or 2500)
+            uchip = float(chip_plan[0])
+
+            def _landed_now() -> int:
+                return self._lpbet_count_by_gid.get(_verify_gid, 0) - _lpbet_base
+
+            def _wait_lpbets(target: int) -> int:
+                dl = time.time() + max(0, settle_ms) / 1000.0
+                while time.time() < dl:
+                    if _landed_now() >= target:
+                        break
+                    try:
+                        frame.page.wait_for_timeout(120)
+                    except Exception:
+                        time.sleep(0.12)
+                return _landed_now()
+
+            landed = _wait_lpbets(planned_clicks)
+            for vr in range(rounds):
+                shortfall = planned_clicks - landed
+                if shortfall <= 0:
+                    break
+                if not uniform_plan:
+                    logger.warning(
+                        f"[CLICK-BET-VERIFY] mixed-plan shortfall (no auto-retry): gId={_verify_gid} "
+                        f"landed={landed}/{planned_clicks} plan={plan_summary} amount=${amount:.2f}"
+                    )
+                    break
+                logger.warning(
+                    f"[CLICK-BET-VERIFY] shortfall: gId={_verify_gid} landed={landed}/{planned_clicks} "
+                    f"chip={self._fmt_chip_denom(uchip)} round={vr + 1}/{rounds} — retrying {shortfall} click(s)"
+                )
+                for _ in range(shortfall):
+                    did_click = False
+                    if cached_click_coords is not None:
+                        did_click = click_cached_side_once(planned_clicks)
+                    if not did_click:
+                        if click_side_once(planned_clicks):
+                            c2 = getattr(self, "_last_click_bet_page_coords", None)
+                            if isinstance(c2, dict):
+                                cached_click_coords = dict(c2)
+                    try:
+                        frame.page.wait_for_timeout(max(0, int(os.getenv("BACOPY_CLICK_BET_INTER_CLICK_MS", "45") or 45)))
+                    except Exception:
+                        pass
+                landed = _wait_lpbets(planned_clicks)
+            if landed >= planned_clicks:
+                logger.info(
+                    f"[CLICK-BET-VERIFY] full amount landed: gId={_verify_gid} "
+                    f"chips={landed}/{planned_clicks} amount=${amount:.2f}"
+                )
+            else:
+                logger.warning(
+                    f"[CLICK-BET-VERIFY] STILL short: gId={_verify_gid} landed={landed}/{planned_clicks} "
+                    f"amount=${amount:.2f} — partial bet will be flagged downstream"
+                )
 
         logger.info(f"[CLICK-BET] all planned chip clicks completed: side={side} amount=${amount:.2f} clicks={len(chip_plan)}")
         return True
