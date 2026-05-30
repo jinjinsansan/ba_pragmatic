@@ -5791,7 +5791,7 @@ class LiveBetExecutor:
                         f"[CLICK-BET-JS] text-locator click FAILED ({tex}); "
                         f"checking double-stake guard before fallback"
                     )
-                    if _bet_already_landed(int(os.getenv("BACOPY_CLICK_BET_LANDED_WAIT_MS", "1200") or 1200)):
+                    if _bet_already_landed(int(os.getenv("BACOPY_CLICK_BET_LANDED_WAIT_MS", "2500") or 2500)):
                         self._last_click_bet_page_coords = {
                             "x": btn_x, "y": btn_y, "qpid": str(qpid or ""),
                             "side": str(side or ""), "expected_game_id": _exp_gid,
@@ -5890,7 +5890,7 @@ class LiveBetExecutor:
                         f"[CLICK-BET-JS] locator.click FAILED ({loc_ex}); "
                         f"checking double-stake guard before mouse fallback"
                     )
-                    if _bet_already_landed(int(os.getenv("BACOPY_CLICK_BET_LANDED_WAIT_MS", "1200") or 1200)):
+                    if _bet_already_landed(int(os.getenv("BACOPY_CLICK_BET_LANDED_WAIT_MS", "2500") or 2500)):
                         self._last_click_bet_page_coords = {
                             "x": btn_x, "y": btn_y, "qpid": str(qpid or ""),
                             "side": str(side or ""), "expected_game_id": _exp_gid,
