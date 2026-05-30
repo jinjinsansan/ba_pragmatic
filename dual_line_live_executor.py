@@ -5408,6 +5408,14 @@ class LiveBetExecutor:
         tid = str(table_id or "").strip()
         if not tid:
             return
+        # preposition 先を別卓へ切り替える際、前卓の黄色 overlay を明示削除し、
+        # 信号化しなかった卓に黄色枠が残留するのを防ぐ (2026-05-30)。
+        prev_tid = str((self._assist_focus_hold or {}).get("table_id") or "")
+        if prev_tid and prev_tid != tid:
+            try:
+                self.clear_manual_assist_overlay(prev_tid)
+            except Exception:
+                pass
         hold_sec = float(os.getenv("BACOPY_ASSIST_FOCUS_HOLD_SEC", "45") or 45)
         self._assist_focus_hold = {
             "table_id": tid,
@@ -5606,6 +5614,13 @@ class LiveBetExecutor:
         if now >= float(hold.get("until") or 0.0):
             logger.info(f"[ASSIST-HOLD] expired table={tid}")
             self._assist_focus_hold = {}
+            # NOW-bet hold と同様、maintain ループの再スタンプで JS 側 TTL が不発に
+            # なり preposition 黄色 overlay が残るため、期限切れ時に明示削除する
+            # (予告なしの黄色枠 stuck 修正 2026-05-30)。
+            try:
+                self.clear_manual_assist_overlay(tid)
+            except Exception:
+                pass
             return
         if self._switch_request or self._switch_in_progress:
             return

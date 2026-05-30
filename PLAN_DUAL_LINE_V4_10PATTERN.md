@@ -70,10 +70,10 @@
 
 - [x] Phase 1: VPS v4 dry-run 並走（commit 51c6c78、稼働中・0から蓄積・V2形式累積Telegram）
 - [x] Phase 3a: GUI bot mode フィルタ（commit 5ae2ea5）— `_handle_decision` で選択モードのみBET、既定v3、`set_dual_mode` IPC。**2026-05-30 bafather デプロイ済み**（ローカルPyInstallerビルド→EXEのみ差替, SWAP_OK, app.asar不変, バックアップ有）。
-- [~] Phase 3b: Electron UI（モードプルダウン v3/v4）— **コード実装済み(commit a1b2c3d)・未ビルド未デプロイ**。`index.html` に #inputDualMode (v3/v4) プルダウン、`app.js` 5箇所(default/読込/保存2/起動config)で dual_mode、`main.js` で dual-line spawn 時 `childEnv.BACOPY_DUAL_MODE=v3|v4`。既定v3で挙動不変。node --check OK。**Electron再ビルド(app.asar)→bafatherデプロイ→RDP検証が必要**。SEQ開始額UI($1/$3/$6)は Phase 4 として別途。
-- [~] Phase 2: VPS v4 publish（mode="v4" タグ、env gated 既定OFF）— **コード実装済み・未デプロイ・未有効化**。冪等パッチ `_v4_publish_patch.py` を追加。`_v4_track` 内 signal 確定直後に `_publish_v4_decision` を呼ぶ独立経路。`BACOPY_V4_PUBLISH=1` のときのみ `/api/decisions` へ `source=dual_line_vps_v4_10pattern` / `mode=v4` / `did=dl_v4_*` で配信。**既定OFF=従来と完全同一挙動**。v3(`_publish_live_decision`)には一切非干渉。ローカルで inject+冪等+py_compile 検証済み。⚠️**有効化はデプロイ順序②(Phase 3aデプロイ後)**。
-  - 残課題(有効化前に確認): ① amount は base unit を nominal 送付→GUI(Phase4 SEQ)で再サイズする前提の検証 ② master API が v4 decision を v3 と混在保存する際の resolve/会計分離 ③ GUI が v3 モード中に受けた v4 decision を捨てる挙動の実機確認。
-- [ ] Phase 5: forward 検証→採用判定
+- [x] Phase 3b: Electron UI（モードプルダウン v3/v4）（commit 7d0c2c9）— `index.html` #inputDualMode (v3/v4)、`app.js` 4箇所で dual_mode、`main.js` で dual-line spawn 時 `childEnv.BACOPY_DUAL_MODE=v3|v4`。既定v3で挙動不変。**2026-05-30 17:29 bafather デプロイ済み**（app.asar=204214 差替, ASAR_SWAP_OK, バックアップ `app.asar.bak_20260530_172916`, EXE無干渉）→ **GUI再起動→プルダウン目視確認済**。
+- [x] Phase 2: VPS v4 publish（mode="v4" タグ、env gated）— 冪等パッチ `_v4_publish_patch.py`。`_v4_track` 内 signal 確定直後に `_publish_v4_decision` を呼ぶ独立経路。`BACOPY_V4_PUBLISH=1` のとき `/api/decisions` へ `source=dual_line_vps_v4_10pattern`/`mode=v4`/`did=dl_v4_*` で配信。v3(`_publish_live_decision`)非干渉。**2026-05-30 17:55 VPS有効化済**（パッチ適用 py_compile OK→.env に `BACOPY_V4_PUBLISH=1`→wrapper再起動, bot PID 3251587, v3 state signals=2392/+$4830 + v4 shadow 46 保全）。
+  - 残課題3点=✅全コード検証済: ① amount は受信側ローカルSEQ(L3295)でサイズ=nominal無視で安全 ② master `wait` は `ORDER BY received_at DESC` の pending リスト返し→新規v3常時配信・v4は実行されず会計汚染ゼロ ③ mode フィルタ(L2860-2863)+poll dedup で v3中v4 drop確認。
+- [ ] Phase 5: forward 検証→採用判定（v4 現 46 シグナル → 1000-2000 蓄積後に v3 と勝率比較）
 
 ## ⚠️ 安全なデプロイ順序（厳守・暴発防止）
 v4の5パターンは v3 と共有。順序を誤ると現行エンジンが mode 無視で共有パターンを実BETする。
