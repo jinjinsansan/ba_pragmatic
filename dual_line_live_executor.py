@@ -5692,6 +5692,39 @@ class LiveBetExecutor:
         """BET ボタンの座標を JS で取得し、page.mouse.click() で isTrusted=true クリックする"""
         try:
             self._last_click_bet_error = {}
+            # ── Double-stake guard ──
+            # A Playwright .click(force=True, timeout=...) can physically DISPATCH
+            # the click and THEN raise (timeout on the post-click actionability /
+            # stability wait). The except branches below fall through to the next
+            # click strategy — which clicks the SAME bet zone again, placing a
+            # SECOND wager (observed 2026-05-30: $1 plan → $2 stake, two <lpbet>
+            # frames for one game 14563248719). Before any fallthrough re-click we
+            # verify whether a real <lpbet gId=...> for THIS game already went out
+            # (sniffed at _on_ws_sent L3069 → self._last_lpbet_*). If it did,
+            # the wager already landed → return success and never re-click.
+            _exp_gid = str(expected_game_id or "")
+            _bet_entry_lpbet_at = float(getattr(self, "_last_lpbet_at", 0.0) or 0.0)
+
+            def _bet_already_landed(wait_ms: int = 0) -> bool:
+                # Only safe with a known game id: in multi-lobby other tables never
+                # emit an outgoing <lpbet> unless WE bet them, and one executor bets
+                # one game at a time, so a matching gid newer than entry == our
+                # wager landed. Without an expected gid we cannot disambiguate, so
+                # behave exactly as before (no guard).
+                if not _exp_gid:
+                    return False
+                deadline = time.time() + max(0, int(wait_ms)) / 1000.0
+                while True:
+                    try:
+                        if (float(self._last_lpbet_at or 0.0) > _bet_entry_lpbet_at
+                                and str(self._last_lpbet_gid or "") == _exp_gid):
+                            return True
+                    except Exception:
+                        pass
+                    if time.time() >= deadline:
+                        return False
+                    time.sleep(0.05)
+
             res = frame.evaluate(
                 self._JS_BET_COORDS,
                 {
@@ -5756,7 +5789,21 @@ class LiveBetExecutor:
                 except Exception as tex:
                     logger.warning(
                         f"[CLICK-BET-JS] text-locator click FAILED ({tex}); "
-                        f"trying marker-locator / mouse.click"
+                        f"checking double-stake guard before fallback"
+                    )
+                    if _bet_already_landed(int(os.getenv("BACOPY_CLICK_BET_LANDED_WAIT_MS", "1200") or 1200)):
+                        self._last_click_bet_page_coords = {
+                            "x": btn_x, "y": btn_y, "qpid": str(qpid or ""),
+                            "side": str(side or ""), "expected_game_id": _exp_gid,
+                            "at": time.time(), "method": "text_locator_landed_after_raise",
+                        }
+                        logger.warning(
+                            f"[CLICK-BET-JS] DOUBLE-STAKE GUARD: text-locator raised but "
+                            f"<lpbet gId={_exp_gid}> already sent — wager landed, NOT re-clicking"
+                        )
+                        return True
+                    logger.warning(
+                        "[CLICK-BET-JS] no lpbet yet — falling back to marker-locator / mouse.click"
                     )
 
             # Diagnostic: when geometry is used (no real button element matched),
@@ -5841,7 +5888,21 @@ class LiveBetExecutor:
                 except Exception as loc_ex:
                     logger.warning(
                         f"[CLICK-BET-JS] locator.click FAILED ({loc_ex}); "
-                        f"falling back to mouse.click(page coords)"
+                        f"checking double-stake guard before mouse fallback"
+                    )
+                    if _bet_already_landed(int(os.getenv("BACOPY_CLICK_BET_LANDED_WAIT_MS", "1200") or 1200)):
+                        self._last_click_bet_page_coords = {
+                            "x": btn_x, "y": btn_y, "qpid": str(qpid or ""),
+                            "side": str(side or ""), "expected_game_id": _exp_gid,
+                            "at": time.time(), "method": "locator_landed_after_raise",
+                        }
+                        logger.warning(
+                            f"[CLICK-BET-JS] DOUBLE-STAKE GUARD: locator raised but "
+                            f"<lpbet gId={_exp_gid}> already sent — wager landed, NOT re-clicking"
+                        )
+                        return True
+                    logger.warning(
+                        "[CLICK-BET-JS] no lpbet yet — falling back to mouse.click(page coords)"
                     )
 
             # ── Fallback path: absolute page coords + page.mouse.click ──
@@ -5866,6 +5927,14 @@ class LiveBetExecutor:
                     f"using frame-relative coords (click may miss)"
                 )
 
+            # Final double-stake check: an lpbet may have landed from a prior
+            # path's dispatched-but-raised click while we computed page coords.
+            if _bet_already_landed(0):
+                logger.warning(
+                    f"[CLICK-BET-JS] DOUBLE-STAKE GUARD: <lpbet gId={_exp_gid}> already "
+                    f"sent before mouse fallback — skipping click to avoid double stake"
+                )
+                return True
             try:
                 page.mouse.move(page_x, page_y, steps=8)
             except TypeError:
