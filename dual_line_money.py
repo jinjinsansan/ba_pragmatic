@@ -62,6 +62,7 @@ BET_MODES = {
     "small3": "SMALL SEQ $3 start",
     "small6": "SMALL SEQ $6 start",
     "martingale": "pure Martingale",
+    "dalembert": "D'Alembert (+/-1 unit)",
 }
 ALLOWED_MODES = set(BET_MODES.keys())
 
@@ -165,6 +166,17 @@ class BetManager:
                     return 0.0
                 amount = min(amount, remaining_loss)
             return max(amount, 0.0)
+        elif self.mode == "dalembert":
+            # D'Alembert: 負けで +1 unit, 勝ちで -1 unit。loss_count を段数に使う。
+            # 例 unit=2: 2 -> 4 -> 6 -> 8 -> (勝) 6 -> 4 ...
+            amount = self.unit * (self.loss_count + 1)
+            if self.loss_cut > 0:
+                # 損切り残額を超えるベットは行わない
+                remaining_loss = self.loss_cut + self.session_pnl
+                if remaining_loss <= 0:
+                    return 0.0
+                amount = min(amount, remaining_loss)
+            return max(amount, 0.0)
         else:
             seq = self.current_seq
             if self._seq7_tracker is not None:
@@ -208,10 +220,13 @@ class BetManager:
                 self._seq7_tracker.add_result("player")
                 self.seq_level = self._seq7_tracker.current_unit_idx
             # 従来SEQ: 勝ったら先頭に戻る
-            elif self.mode not in ("flat", "martingale"):
+            elif self.mode not in ("flat", "martingale", "dalembert"):
                 self.seq_level = 0
-            # Martingale: リセット
-            self.loss_count = 0
+            # Martingale: リセット / D'Alembert: 1段下げる(下限0)
+            if self.mode == "dalembert":
+                self.loss_count = max(0, self.loss_count - 1)
+            else:
+                self.loss_count = 0
         else:
             self.total_losses += 1
             self.session_pnl -= amount
@@ -220,10 +235,10 @@ class BetManager:
                 self._seq7_tracker.add_result("banker")
                 self.seq_level = self._seq7_tracker.current_unit_idx
             # 従来SEQ: レベル進行
-            elif self.mode != "flat":
+            elif self.mode not in ("flat", "martingale", "dalembert"):
                 self.seq_level = min(self.seq_level + 1, len(self.current_seq) - 1)
-            # Martingale: 進行
-            if self.mode == "martingale":
+            # Martingale / D'Alembert: 1段上げる
+            if self.mode in ("martingale", "dalembert"):
                 self.loss_count += 1
 
         # 利確 / 損切判定

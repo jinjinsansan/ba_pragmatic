@@ -1426,8 +1426,87 @@ function renderDevSets(sets, current_turns) {
   _streamTurnsInSet = ct.length;
 }
 
+// Set the SIGNAL PANEL header, the 4 cell labels and the stream label so the
+// panel reflects whatever money-management mode is active.
+function _setSigPanel(title, labels, streamLabel) {
+  const t = $('#devPanelTitle'); if (t) t.textContent = title;
+  const ids = ['#sigLabel1', '#sigLabel2', '#sigLabel3', '#sigLabel4'];
+  for (let i = 0; i < 4; i += 1) {
+    const el = $(ids[i]);
+    if (el) el.textContent = labels[i] || '';
+  }
+  const sl = $('#sigStreamLabel'); if (sl) sl.textContent = streamLabel;
+}
+
+function _fmtAmt(v) {
+  return (v % 1 === 0) ? v.toFixed(0) : v.toFixed(1);
+}
+
+// Build the bet ladder for martingale (unit*2^k) / dalembert (unit*(k+1)),
+// marking the current level. Window is sized around the current level.
+function _betLadder(mode, unit, level) {
+  const u = Number(unit) || 1;
+  const cur = Math.max(0, Number(level) || 0);
+  const span = Math.max(cur + 3, 7);
+  const out = [];
+  for (let k = 0; k <= span; k += 1) {
+    const amount = mode === 'martingale' ? u * Math.pow(2, k) : u * (k + 1);
+    out.push({ amount, current: k === cur });
+    if (mode === 'martingale' && k >= 12) break; // cap runaway martingale ladder
+  }
+  return out;
+}
+
+// Render the live progression panel for martingale / dalembert in place of the
+// SEQ ○× stream (which is meaningless for these modes).
+function renderProgressionPanel(ms, mode) {
+  if (!isDevMode()) return;
+  const unit = Number(ms.unit) || 1;
+  const level = Number(ms.loss_count) || 0;
+  const nextBet = Number(ms.next_bet) || 0;
+  const pnl = Number(ms.session_pnl) || 0;
+  if (mode === 'martingale') {
+    _setSigPanel('MARTINGALE', ['LOSSES', 'NEXT $', 'MAX $', 'PNL $'], 'BET LADDER (x2)');
+    const sd = $('#sigDrift');
+    if (sd) sd.textContent = (Number(ms.martingale_max_bet) > 0) ? _fmtAmt(Number(ms.martingale_max_bet)) : '--';
+  } else {
+    _setSigPanel("D'ALEMBERT", ['LEVEL', 'NEXT $', 'STEP $', 'PNL $'], 'BET LADDER (+1u)');
+    const sd = $('#sigDrift');
+    if (sd) sd.textContent = _fmtAmt(unit);
+  }
+  const sc = $('#sigCycle'); if (sc) sc.textContent = String(level);
+  const sr = $('#sigRatio'); if (sr) sr.textContent = _fmtAmt(nextBet);
+  const srd = $('#sigRound');
+  if (srd) { srd.textContent = _fmtAmt(pnl); srd.style.color = pnl >= 0 ? '#00ff88' : '#ff3366'; }
+  const el = $('#sigStream');
+  if (el) {
+    el.innerHTML = '';
+    for (const step of _betLadder(mode, unit, level)) {
+      const span = document.createElement('span');
+      span.textContent = _fmtAmt(step.amount);
+      span.style.display = 'inline-block';
+      span.style.margin = '0 3px';
+      if (step.current) {
+        span.style.color = '#ffcc00';
+        span.style.fontWeight = '700';
+        span.style.textDecoration = 'underline';
+      } else {
+        span.style.color = '#7a8aa0';
+      }
+      el.appendChild(span);
+    }
+  }
+}
+
 function applyMoneyStatusToSignalPanel(ms) {
   if (!ms || typeof ms !== 'object') return;
+  const mode = String(ms.mode || '').toLowerCase();
+  if (mode === 'martingale' || mode === 'dalembert') {
+    renderProgressionPanel(ms, mode);
+    return;
+  }
+  // SEQ / flat: restore the default SEQ labels then render the ○× sets.
+  _setSigPanel('SIGNAL PANEL', ['CYCLE', 'RATIO', 'DRIFT', 'ROUND'], 'STREAM');
   const sets = Array.isArray(ms.seq7_sets) ? ms.seq7_sets : [];
   const turns = Array.isArray(ms.seq7_current_turns) ? ms.seq7_current_turns : [];
   renderDevSets(sets, turns);

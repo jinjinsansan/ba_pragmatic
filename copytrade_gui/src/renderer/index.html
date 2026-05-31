@@ -107,27 +107,27 @@
 
     <!-- Signal Panel (hidden unless dev mode unlocked) -->
     <div class="section glass dev-panel hidden" id="devPanel">
-      <div class="section-header dev-header">SIGNAL PANEL</div>
+      <div class="section-header dev-header" id="devPanelTitle">SIGNAL PANEL</div>
       <div class="signal-grid">
         <div class="signal-cell">
           <div class="signal-value" id="sigCycle">--</div>
-          <div class="signal-label">CYCLE</div>
+          <div class="signal-label" id="sigLabel1">CYCLE</div>
         </div>
         <div class="signal-cell">
           <div class="signal-value" id="sigRatio">--</div>
-          <div class="signal-label">RATIO</div>
+          <div class="signal-label" id="sigLabel2">RATIO</div>
         </div>
         <div class="signal-cell">
           <div class="signal-value" id="sigDrift">--</div>
-          <div class="signal-label">DRIFT</div>
+          <div class="signal-label" id="sigLabel3">DRIFT</div>
         </div>
         <div class="signal-cell">
           <div class="signal-value" id="sigRound">--</div>
-          <div class="signal-label">ROUND</div>
+          <div class="signal-label" id="sigLabel4">ROUND</div>
         </div>
       </div>
       <div class="signal-stream-container">
-        <div class="signal-stream-label">STREAM</div>
+        <div class="signal-stream-label" id="sigStreamLabel">STREAM</div>
         <div class="signal-stream" id="sigStream"></div>
       </div>
     </div>
@@ -311,10 +311,11 @@
                 <option value="small3">SMALL 3 — $3 start (3,5,7...1000)</option>
                 <option value="small6">SMALL 6 — $6 start (6,10,14...2000)</option>
                 <option value="martingale">MARTINGALE — pure double-up</option>
+                <option value="dalembert">D'ALEMBERT — +/-1 unit (2,4,6,8,6,4...)</option>
               </select>
             </div>
             <div class="form-group">
-              <label>Unit Bet ($) — flat / martingale base unit</label>
+              <label>Unit Bet ($) — flat / martingale / dalembert base unit</label>
               <input type="number" id="inputDualUnit" value="100" min="1" step="1">
             </div>
             <div class="form-group">
