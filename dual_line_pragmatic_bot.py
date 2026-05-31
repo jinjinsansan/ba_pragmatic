@@ -3532,8 +3532,200 @@ class DualLinePragmaticBot(cp.Collector):
             f"🎯 BET予約\n{table_name}\nSide: {side} ${bet_amount:.2f}\nstatus: 送信待機\ndecision: {did[:12]}"
         )
 
+    def _settle_pending_from_master(self) -> None:
+        """VPS結果駆動の決済フォールバック (2026-05-31)。
+
+        bafather はSEQをローカルのハンド観測で決済するが、マルチロビーでは賭けた卓の
+        結果(winner+game_id)を取りこぼすことがあり、その decision が settlement_timeout
+        (900s) まで processing で凍結 → SEQ停止 → 未追跡実BET累積 という事故が起きる。
+        一方 VPS は全卓を観測し、_v4_settle_patch で master に status=done + outcome を
+        ~30秒で確実に post している。そこで在庫BET(送信済・未決済)の did について master の
+        done 結果を読み、VPS の outcome と **ローカルの実着弾額(actual_amount)** で SEQ を
+        進める。master への再post はしない (VPS が既に done)。settlement_posted でローカル
+        決済経路と二重適用を防ぐ。"""
+        if os.getenv("BACOPY_MASTER_SETTLE_ENABLE", "1").strip() == "0":
+            return
+        if not self._pending_decisions:
+            return
+        now = time.time()
+        poll_sec = float(os.getenv("BACOPY_MASTER_SETTLE_POLL_SEC", "5") or 5)
+        if now - float(getattr(self, "_last_master_settle_poll_at", 0.0) or 0.0) < poll_sec:
+            return
+        self._last_master_settle_poll_at = now
+        waiting = [
+            (did, p) for did, p in list(self._pending_decisions.items())
+            if isinstance(p, dict)
+            and not p.get("settlement_posted")
+            and not p.get("local_bet_failed")
+            and (
+                p.get("bet_sent_posted")
+                or p.get("local_bet_sent")
+                or (isinstance(p.get("confirmed_bet"), dict) and bool(p.get("confirmed_bet")))
+            )
+        ]
+        if not waiting:
+            return
+        done_map: dict[str, dict] = {}
+        seen_sources: set[tuple[str, str]] = set()
+        for _did, p in waiting:
+            base = str(p.get("source_base_url") or "").rstrip("/")
+            key = str(p.get("source_api_key") or "")
+            sig = (base, key)
+            # 空 base は _api_get が BACOPY_API_URL/master へフォールバックする。
+            # スキップせず最低1回は fetch する (source 未設定でも done を読む)。
+            if sig in seen_sources:
+                continue
+            seen_sources.add(sig)
+            try:
+                data = self._api_get(
+                    "/api/decisions", "status=done&limit=80", base_url=base, api_key=key
+                )
+            except Exception as ex:
+                logger.debug(f"[DECISION] master done fetch failed: {ex}")
+                continue
+            for d in (data.get("decisions") or []):
+                if isinstance(d, dict):
+                    dd = str(d.get("decision_id") or "")
+                    if dd:
+                        done_map[dd] = d
+        for did, p in waiting:
+            rec = done_map.get(did)
+            if not isinstance(rec, dict):
+                continue
+            result_obj = rec.get("result") if isinstance(rec.get("result"), dict) else {}
+            outcome = str(result_obj.get("outcome") or "").upper()
+            if outcome not in ("P", "B", "T"):
+                continue
+            try:
+                self._apply_master_settlement(did, p, outcome, result_obj)
+            except Exception as ex:
+                logger.warning(f"[DECISION] master-driven settle failed did={did[:12]}: {ex}")
+
+    def _apply_master_settlement(self, did: str, p: dict, outcome: str, result_obj: dict) -> None:
+        """master の done outcome + ローカル actual_amount で SEQ/GUI を決済 (master 再postなし)。"""
+        side = str(p.get("side") or "").upper()
+        if side not in ("P", "B"):
+            return
+        bet_id = str(p.get("bet_id") or "")
+        confirmed_info = p.get("confirmed_bet") if isinstance(p.get("confirmed_bet"), dict) else {}
+        if bet_id and hasattr(self.bet_executor, "consume_confirmed_bet"):
+            try:
+                consumed = self.bet_executor.consume_confirmed_bet(bet_id)
+                if isinstance(consumed, dict) and consumed:
+                    confirmed_info = consumed
+            except Exception:
+                pass
+        elif bet_id and hasattr(self.bet_executor, "consume_sent_bet"):
+            try:
+                self.bet_executor.consume_sent_bet(bet_id)
+            except Exception:
+                pass
+        try:
+            confirmed_amount = float((confirmed_info or {}).get("confirmed_amount") or 0.0)
+        except Exception:
+            confirmed_amount = 0.0
+        actual_amount = float(confirmed_amount or p.get("actual_amount") or p.get("amount") or 0.0)
+        planned_amount = float(p.get("amount") or actual_amount or 0.0)
+        tie = outcome == "T"
+        won = None if tie else (outcome == side)
+        result = "TIE" if tie else ("WIN" if won else "LOSE")
+        pnl_delta = (
+            0.0 if tie else (
+                actual_amount * COMMISSION_BANKER if won and side == "B"
+                else actual_amount if won
+                else -actual_amount
+            )
+        )
+        try:
+            if actual_amount > 0:
+                self.money._last_bet_amount = actual_amount
+        except Exception:
+            pass
+        self.money.apply_result(None if tie else bool(won), side=side)
+        if tie:
+            self.ties += 1
+        elif won:
+            self.wins += 1
+        else:
+            self.losses += 1
+        self.total_resolved += 1
+        self.virtual_pnl += pnl_delta
+        mark_resolved = getattr(self.bet_executor, "mark_bet_resolved", None)
+        if callable(mark_resolved):
+            try:
+                mark_resolved(bet_id=bet_id, table_id=str(p.get("table_id") or ""))
+            except Exception:
+                pass
+        self._release_now_lock(
+            decision_id=did,
+            table_id=str(p.get("table_id") or ""),
+            bet_id=bet_id,
+            reason="master_settled",
+        )
+        p["settlement_posted"] = True
+        p["actual_amount"] = actual_amount
+        self._pending_decisions.pop(did, None)
+        self.pending.pop(str(p.get("table_id") or ""), None)
+        self._save_state()
+        ms = self.money.status_dict()
+        table_name = str(p.get("table_name") or p.get("table_id") or "")
+        icon = "✅" if result == "WIN" else ("🔵" if tie else "❌")
+        logger.info(
+            f"[DECISION] master-driven settle: {did} table={table_name} side={side} "
+            f"outcome={outcome} result={result} amount=${actual_amount:.2f} (VPS done)"
+        )
+        try:
+            send_msg(
+                {
+                    "type": "resolution",
+                    "decision_id": str(p.get("decision_id") or did),
+                    "table_id": str(p.get("table_id") or ""),
+                    "table_name": table_name,
+                    "prediction": side,
+                    "outcome": outcome,
+                    "result": result,
+                    "pattern_key": str(p.get("pattern_key") or ""),
+                    "pnl": pnl_delta,
+                    "cumulative_pnl": self.virtual_pnl,
+                    "wins": self.wins,
+                    "losses": self.losses,
+                    "ties": self.ties,
+                    "win_rate": round((self.wins / (self.wins + self.losses) * 100) if (self.wins + self.losses) else 0, 1),
+                    "total_signals": self.total_signals,
+                    "total_resolved": self.total_resolved,
+                    "money_status": ms,
+                    "bet_amount": actual_amount,
+                    "planned_bet_amount": planned_amount,
+                }
+            )
+        except Exception:
+            pass
+        self._send_gui_money_status()
+        try:
+            send_action(
+                f"{icon} {result} {table_name}: {side}→{outcome} "
+                f"pnl=${pnl_delta:+.2f} cum=${self.virtual_pnl:+.2f} (VPS)"
+            )
+            _send_telegram(
+                f"{icon} {result} (VPS決済)\n{table_name}\nPred: {side} → Got: {outcome}\n"
+                f"bet: ${actual_amount:.2f}"
+                + (f" (planned ${planned_amount:.2f})" if abs(actual_amount - planned_amount) > 0.01 else "")
+                + f"\npnl: ${pnl_delta:+.2f} | cum: ${self.virtual_pnl:+.2f}\n"
+                f"W/L/T: {self.wins}/{self.losses}/{self.ties}\nnext: ${ms['next_bet']}"
+            )
+        except Exception:
+            pass
+
     def _flush_pending_decision_results(self) -> None:
         """送信済み/失敗を API に反映して processing 滞留を防ぐ。"""
+        if not self._pending_decisions:
+            return
+        # VPS結果駆動の決済フォールバック: ローカル観測が取りこぼした在庫BETを
+        # master の done outcome で決済し、SEQ凍結→未追跡BET累積を防ぐ。
+        try:
+            self._settle_pending_from_master()
+        except Exception as _mse:
+            logger.debug(f"[DECISION] master-driven settle sweep error: {_mse}")
         if not self._pending_decisions:
             return
         post_timeout = float(os.getenv("BACOPY_DECISION_POST_TIMEOUT_SEC", "180") or 180)
