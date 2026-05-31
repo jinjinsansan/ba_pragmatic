@@ -1240,6 +1240,8 @@ class DualLinePragmaticBot(cp.Collector):
             self._dga_grf = 0
             self._dga_added = 0
             self._dga_stat_at = 0.0
+            self._dga_qpid: dict[str, str] = {}
+            self._dga_mode = os.getenv("BACOPY_DGA_LOCAL_SIGNAL", "").strip().lower()
         self._dga_rx += 1
         wl = LIVE_SIGNAL_PATTERNS_V4 if getattr(self, "dual_mode", "v3") == "v4" else LIVE_SIGNAL_PATTERNS
         for m in frames:
@@ -1251,6 +1253,11 @@ class DualLinePragmaticBot(cp.Collector):
             nm = m.get("tableName")
             if nm:
                 self._dga_names[tid] = str(nm)
+            img = m.get("tableImage")
+            if img and tid not in self._dga_qpid:
+                _mm = re.search(r"/snaps/([^/]+)/", str(img))
+                if _mm:
+                    self._dga_qpid[tid] = str(_mm.group(1))
             if m.get("shuffle") is True:
                 self._dga_seq[tid] = ""
                 self._dga_gids[tid] = set()
@@ -1289,6 +1296,11 @@ class DualLinePragmaticBot(cp.Collector):
                     f"side={sig.get('side')} pattern={sig.get('pattern_key')} "
                     f"seq_len={len(seq)} tail={seq[-12:]}"
                 )
+                if getattr(self, "_dga_mode", "") in ("livecompare", "live"):
+                    try:
+                        self._dga_consider_bet(tid, sig)
+                    except Exception as _e:
+                        logger.debug(f"[DGA-BET] consider error: {_e}")
         _now = time.time()
         if _now - getattr(self, "_dga_stat_at", 0.0) >= 20.0:
             self._dga_stat_at = _now
@@ -1297,13 +1309,43 @@ class DualLinePragmaticBot(cp.Collector):
                 f"results_added={self._dga_added} tables={len(self._dga_seq)}"
             )
 
+    def _dga_consider_bet(self, tid: str, sig: dict) -> None:
+        """Evaluate the local signal as a real bet decision. In 'livecompare' mode
+        it only LOGS the full would-bet (qpid/amount/lock) with NO money — the safe
+        validation of the complete bet pipeline (qpid mapping, supported-table
+        filter, amount, NOW-lock) vs the VPS NOW path. Actual money placement
+        ('live' mode) is wired in a separate increment (needs settlement/landing
+        reconciliation), so it also only logs here for now.
+        """
+        name = self._dga_names.get(tid, "")
+        qpid = self._dga_qpid.get(tid, "")
+        side = str(sig.get("side") or "")
+        pattern = str(sig.get("pattern_key") or "")
+        if side not in ("P", "B"):
+            return
+        if _is_unsupported_table_name(f"{name} {qpid} {tid}"):
+            return  # not a dual-line betting table (Privé / unsupported)
+        lock = self._active_now_lock()
+        lock_note = f"locked({lock.get('table_id') or '-'})" if lock else "free"
+        try:
+            amount = float(self.money.next_bet(side=side))
+        except Exception:
+            amount = 0.0
+        target = qpid or tid
+        mode = getattr(self, "_dga_mode", "")
+        logger.info(
+            f"[DGA-WOULD-BET] table={name or tid} qpid={target} side={side} "
+            f"amount=${amount:.2f} pattern={pattern} lock={lock_note} mode={mode} "
+            f"(NO money — placement wired in next increment)"
+        )
+
     def _maybe_register_dga_callback(self) -> None:
         """Idempotently register the dga local-signal callback when enabled via
         BACOPY_DGA_LOCAL_SIGNAL. Safe to call from any executor-setup site."""
         if getattr(self, "_dga_cb_registered", False):
             return
         if os.getenv("BACOPY_DGA_LOCAL_SIGNAL", "").strip().lower() not in (
-            "1", "shadow", "live", "true", "on",
+            "1", "shadow", "livecompare", "live", "true", "on",
         ):
             return
         setter = getattr(self.bet_executor, "set_dga_result_callback", None)
@@ -4890,6 +4932,14 @@ class DualLinePragmaticBot(cp.Collector):
                         self._check_preposition()
                     except Exception as e:
                         logger.debug(f"[BOT] preposition poll error: {e}")
+                    # dga local-signal: keep the passive observer page alive
+                    # (reopen if the user/Stake closed it). Playwright main thread.
+                    try:
+                        ensure = getattr(self.bet_executor, "_ensure_dga_observer", None)
+                        if callable(ensure):
+                            ensure()
+                    except Exception as e:
+                        logger.debug(f"[BOT] dga observer ensure error: {e}")
 
                 # ── VPS decision short-poll fallback (1秒ごと) ─────────
                 if now - last_decision_fallback_poll >= 1.0:

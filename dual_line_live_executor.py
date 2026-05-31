@@ -2714,19 +2714,58 @@ class LiveBetExecutor:
             logger.warning(f"[DGA-OBS] observer start failed: {e}")
 
     def _start_dga_observer_page(self) -> None:
-        """Open a passive regular-lobby page whose dga data feed streams continuous
+        """Ensure a passive regular-lobby page whose dga data feed streams continuous
         gameResult for all tables (like the VPS collector). Frames are forwarded to
-        the local-signal callback. Idempotent. Disable with BACOPY_DGA_OBSERVER_PAGE=0.
+        the local-signal callback. Idempotent and restart-safe: reuses an existing
+        orphaned lobby page (chrome_attach keeps tabs across engine restarts) instead
+        of accumulating tabs. Disable with BACOPY_DGA_OBSERVER_PAGE=0.
         """
         if os.getenv("BACOPY_DGA_OBSERVER_PAGE", "1").strip().lower() in ("0", "false", "off", "no"):
             return
-        if getattr(self, "_dga_observer_page", None) is not None:
-            return
+        existing = getattr(self, "_dga_observer_page", None)
+        if existing is not None:
+            try:
+                if not existing.is_closed():
+                    return
+            except Exception:
+                return
+            self._dga_observer_page = None
         if self._context is None:
             logger.info("[DGA-OBS] context not ready; observer deferred")
             return
-        # Flag so the context "page" event (→ _attach_page) skips betting hooks
-        # for this passive page. The sync API emits the event during new_page().
+        # Reuse an extra/orphaned lobby page (NOT the betting page) so engine
+        # restarts under chrome_attach do not pile up tabs.
+        betting_ids = set()
+        for bp in (self._lobby_page, self._bet_page):
+            try:
+                if bp is not None:
+                    betting_ids.add(id(bp))
+            except Exception:
+                pass
+        reuse = None
+        try:
+            for p in (self._context.pages or []):
+                try:
+                    if id(p) in betting_ids or p.is_closed():
+                        continue
+                    u = str(getattr(p, "url", "") or "")
+                except Exception:
+                    continue
+                if "pragmatic-play-live-lobby-baccarat" in u:
+                    reuse = p
+                    break
+        except Exception:
+            reuse = None
+        if reuse is not None:
+            self._dga_observer_page = reuse
+            try:
+                reuse.add_init_script("window.open = function(){ return null; };")
+            except Exception:
+                pass
+            self._hook_observer_page_ws(reuse)
+            logger.info(f"[DGA-OBS] reusing existing lobby page as observer (no new tab): {str(getattr(reuse,'url','') or '')[:60]}")
+            return
+        # No reusable page → open a fresh one.
         self._dga_observer_opening = True
         try:
             p2 = self._context.new_page()
@@ -2737,14 +2776,52 @@ class LiveBetExecutor:
         self._dga_observer_page = p2
         self._dga_observer_opening = False
         try:
-            p2.on("websocket", self._on_dga_observer_ws)
+            # Neuter window.open so the lobby cannot spawn extra popup tabs.
+            p2.add_init_script("window.open = function(){ return null; };")
         except Exception:
             pass
+        self._hook_observer_page_ws(p2)
         try:
             p2.goto(PRAGMATIC_BACCARAT_LOBBY_URL, wait_until="domcontentloaded", timeout=30000)
             logger.info("[DGA-OBS] passive observer page opened (regular lobby, continuous dga)")
         except Exception as e:
             logger.warning(f"[DGA-OBS] observer goto slow/failed (WS may still attach): {e}")
+
+    def _hook_observer_page_ws(self, page: Any) -> None:
+        """Hook the dga data WS on the observer page (future + already-open)."""
+        try:
+            page.on("websocket", self._on_dga_observer_ws)
+        except Exception:
+            pass
+        try:
+            for ws in list(getattr(page, "websockets", []) or []):
+                self._on_dga_observer_ws(ws)
+        except Exception:
+            pass
+
+    def _ensure_dga_observer(self) -> None:
+        """Reopen the passive observer page if it was closed (it is the result
+        source). MUST be called from the Playwright main-loop thread.
+        """
+        if getattr(self, "_dga_result_callback", None) is None:
+            return
+        p = getattr(self, "_dga_observer_page", None)
+        if p is not None:
+            try:
+                if not p.is_closed():
+                    return
+            except Exception:
+                pass
+        now = time.time()
+        if now - getattr(self, "_dga_obs_reopen_at", 0.0) < 20.0:
+            return
+        self._dga_obs_reopen_at = now
+        self._dga_observer_page = None
+        logger.info("[DGA-OBS] observer missing/closed — reopening")
+        try:
+            self._start_dga_observer_page()
+        except Exception as e:
+            logger.warning(f"[DGA-OBS] reopen failed: {e}")
 
     def _on_dga_observer_ws(self, ws: Any) -> None:
         """Minimal WS handler for the passive observer page: forward ONLY the dga
