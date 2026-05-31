@@ -2706,6 +2706,46 @@ class LiveBetExecutor:
         # dga lobby WS (/ws パス) は除外。game WS (dga domain + /game パス) は通す
         if "/dga" in url:
             logger.info(f"[WS-FILTER] SKIP /dga path: {url[:80]}")
+            # DIAG (temporary, reversible): sample a few dga frames to confirm the
+            # lobby data feed carries gameResult (winner) locally. We only LOG; the
+            # frame is NOT processed for betting, so existing behaviour is unchanged.
+            try:
+                def _dga_probe(f, _self=self):
+                    try:
+                        body = f if isinstance(f, str) else (getattr(f, "body", "") or "")
+                    except Exception:
+                        body = ""
+                    n = int(getattr(_self, "_dga_diag_count", 0))
+                    if n >= 15 or not body:
+                        return
+                    try:
+                        import json as _json
+                        obj = _json.loads(body)
+                        if not isinstance(obj, dict):
+                            _self._dga_diag_count = n + 1
+                            logger.info(f"[DGA-DIAG] #{n} non-dict={type(obj).__name__}")
+                            return
+                        tid = obj.get("tableId")
+                        gr = obj.get("gameResult")
+                        shuffle = obj.get("shuffle")
+                        if isinstance(gr, list) and gr:
+                            g0 = gr[0] if isinstance(gr[0], dict) else {}
+                            logger.info(
+                                f"[DGA-DIAG] #{n} table={tid} HAS_gameResult len={len(gr)} "
+                                f"first_keys={list(g0.keys())[:10]} winner={g0.get('winner')} shuffle={shuffle}"
+                            )
+                            _self._dga_diag_count = n + 1
+                        else:
+                            # log a few non-result frames too (to see the feed shape)
+                            if n < 6:
+                                logger.info(f"[DGA-DIAG] #{n} table={tid} keys={list(obj.keys())[:14]} shuffle={shuffle}")
+                                _self._dga_diag_count = n + 1
+                    except Exception as _e:
+                        logger.info(f"[DGA-DIAG] #{n} parse_err={_e} head={body[:60]!r}")
+                        _self._dga_diag_count = n + 1
+                ws.on("framereceived", _dga_probe)
+            except Exception as _e:
+                logger.info(f"[DGA-DIAG] probe setup failed: {_e}")
             return
         if "dga." in url and "/game" not in url:
             logger.info(f"[WS-FILTER] SKIP dga non-game: {url[:80]}")
@@ -2929,8 +2969,18 @@ class LiveBetExecutor:
                 now = time.time()
                 if gid:
                     if st:
-                        st["bets_open_game_id"] = gid
+                        # Always refresh liveness so the multi-WS watchdog keeps
+                        # seeing recent betsopen activity on the channel-host state.
                         st["last_bets_open_at"] = now
+                        # Only adopt this game_id onto the channel-host state when the
+                        # event carries no per-table id, or it belongs to the channel
+                        # host itself. In multi-play, ALL tables' betsopen events flow
+                        # through one channel (msg_tid), and the channel host is itself
+                        # a real betting table. Writing every foreign table's game_id
+                        # here clobbered the host's bets_open_game_id and caused
+                        # game_id_mismatch when betting on the channel-host table.
+                        if (not bo_table_id) or (bo_table_id == msg_tid):
+                            st["bets_open_game_id"] = gid
                     if bo_table_id:
                         self._saw_per_table_betsopen = True
                         # betsopen に個別テーブル ID があれば per-table state も更新
