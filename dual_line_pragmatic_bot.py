@@ -83,6 +83,7 @@ from dual_line_match import (
     LIVE_SIGNAL_PATTERNS_V4,
     decide,
     live_preposition_for_history,
+    live_signal_for_history,
     score_proximity,
     chinese_road_predict,
     big_road_predict,
@@ -549,6 +550,7 @@ class DualLinePragmaticBot(cp.Collector):
                 if ctx is not None and not already_set:
                     self.bet_executor.setup(ctx, ws_page)
                     logger.info("[BOT] executor context injected (from _on_ws)")
+                    self._maybe_register_dga_callback()
             except Exception as e:
                 logger.warning(f"[BOT] executor context injection failed: {e}")
 
@@ -1212,6 +1214,103 @@ class DualLinePragmaticBot(cp.Collector):
 
         for table_id in table_ids:
             self._process_table_frame(table_id)
+
+    def _on_dga_frame(self, payload) -> None:
+        """SHADOW (BACOPY_DGA_LOCAL_SIGNAL): build per-table P/B sequences from the
+        dga lobby WS gameResult feed and LOG the live signal that WOULD fire
+        locally. No bets, no settlement, no shared bot state — a pure, isolated
+        validation of local-signal correctness and timing vs the VPS NOW path.
+        The existing v3 VPS-decision path is completely untouched.
+        """
+        try:
+            if isinstance(payload, (dict, list)):
+                msg = payload
+            elif isinstance(payload, (bytes, bytearray)):
+                msg = json.loads(payload.decode("utf-8", "replace"))
+            else:
+                msg = json.loads(payload)
+        except Exception:
+            return
+        frames = msg if isinstance(msg, list) else [msg]
+        if not hasattr(self, "_dga_seq"):
+            self._dga_seq: dict[str, str] = {}
+            self._dga_gids: dict[str, set] = {}
+            self._dga_names: dict[str, str] = {}
+            self._dga_rx = 0
+            self._dga_grf = 0
+            self._dga_added = 0
+            self._dga_stat_at = 0.0
+        self._dga_rx += 1
+        wl = LIVE_SIGNAL_PATTERNS_V4 if getattr(self, "dual_mode", "v3") == "v4" else LIVE_SIGNAL_PATTERNS
+        for m in frames:
+            if not isinstance(m, dict):
+                continue
+            tid = str(m.get("tableId") or "").strip()
+            if not tid:
+                continue
+            nm = m.get("tableName")
+            if nm:
+                self._dga_names[tid] = str(nm)
+            if m.get("shuffle") is True:
+                self._dga_seq[tid] = ""
+                self._dga_gids[tid] = set()
+            gr = m.get("gameResult")
+            if not isinstance(gr, list) or not gr:
+                continue
+            self._dga_grf += 1
+            gids = self._dga_gids.setdefault(tid, set())
+            added = False
+            for h in gr:
+                if not isinstance(h, dict):
+                    continue
+                gid = str(h.get("gameId") or "")
+                if not gid or gid in gids:
+                    continue
+                gids.add(gid)
+                c = _winner_to_char(h.get("winner"))
+                if c in ("P", "B"):
+                    self._dga_seq[tid] = self._dga_seq.get(tid, "") + c
+                    added = True
+                elif c == "T":
+                    added = True
+            if not added:
+                continue
+            self._dga_added += 1
+            seq = self._dga_seq.get(tid, "")
+            if len(seq) < 3:
+                continue
+            try:
+                sig = live_signal_for_history(seq, wl)
+            except Exception:
+                continue
+            if sig:
+                logger.info(
+                    f"[DGA-SIGNAL] tid={tid} name={self._dga_names.get(tid, '?')} "
+                    f"side={sig.get('side')} pattern={sig.get('pattern_key')} "
+                    f"seq_len={len(seq)} tail={seq[-12:]}"
+                )
+        _now = time.time()
+        if _now - getattr(self, "_dga_stat_at", 0.0) >= 20.0:
+            self._dga_stat_at = _now
+            logger.info(
+                f"[DGA-STAT] frames_rx={self._dga_rx} gr_frames={self._dga_grf} "
+                f"results_added={self._dga_added} tables={len(self._dga_seq)}"
+            )
+
+    def _maybe_register_dga_callback(self) -> None:
+        """Idempotently register the dga local-signal callback when enabled via
+        BACOPY_DGA_LOCAL_SIGNAL. Safe to call from any executor-setup site."""
+        if getattr(self, "_dga_cb_registered", False):
+            return
+        if os.getenv("BACOPY_DGA_LOCAL_SIGNAL", "").strip().lower() not in (
+            "1", "shadow", "live", "true", "on",
+        ):
+            return
+        setter = getattr(self.bet_executor, "set_dga_result_callback", None)
+        if callable(setter):
+            setter(self._on_dga_frame)
+            self._dga_cb_registered = True
+            logger.info("[DGA-LOCAL] dga result callback registered (mode=shadow)")
 
     def _on_shoe_change(self, table_id: str, buf):
         self._prev_table_scores.pop(table_id, None)  # 新シューで予告履歴リセット
@@ -4550,6 +4649,10 @@ class DualLinePragmaticBot(cp.Collector):
                 try:
                     self.bet_executor.setup(ctx, bet_page, bet_page)
                     logger.info("[BOT] executor context injected (run)")
+                    # Local-signal (dga) shadow: forward the dga gameResult feed to
+                    # the bot for local signal computation. Default OFF → v3 path
+                    # is unchanged. Set BACOPY_DGA_LOCAL_SIGNAL=shadow to enable.
+                    self._maybe_register_dga_callback()
                 except Exception as e:
                     logger.warning(f"[BOT] executor setup failed: {e}")
 

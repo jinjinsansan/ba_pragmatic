@@ -1925,6 +1925,11 @@ class LiveBetExecutor:
 
     def _attach_page(self, page: Any) -> None:
         """既存/新規ページへ bridge + websocket hook を1回だけ設定。"""
+        # The passive dga observer page must NOT receive the betting WS handler;
+        # it only forwards dga frames via its own minimal _on_dga_observer_ws.
+        if getattr(self, "_dga_observer_opening", False) or page is getattr(self, "_dga_observer_page", None):
+            logger.info("[DGA-OBS] skip betting attach for observer page")
+            return
         try:
             pid = id(page)
             if pid in self._attached_page_ids:
@@ -2695,6 +2700,80 @@ class LiveBetExecutor:
 
     # ── game WS 検出 ─────────────────────────────────────────────────
 
+    def set_dga_result_callback(self, cb) -> None:
+        """Register a callback to receive raw dga lobby WS frames (the gameResult
+        feed). When set, the otherwise-skipped /dga frames are forwarded for local
+        signal computation. When unset (default), /dga stays skipped (v3 behaviour).
+        Also opens a passive regular-lobby observer page so the dga feed streams
+        CONTINUOUSLY (the betting multi-play page only bursts dga once at connect).
+        """
+        self._dga_result_callback = cb
+        try:
+            self._start_dga_observer_page()
+        except Exception as e:
+            logger.warning(f"[DGA-OBS] observer start failed: {e}")
+
+    def _start_dga_observer_page(self) -> None:
+        """Open a passive regular-lobby page whose dga data feed streams continuous
+        gameResult for all tables (like the VPS collector). Frames are forwarded to
+        the local-signal callback. Idempotent. Disable with BACOPY_DGA_OBSERVER_PAGE=0.
+        """
+        if os.getenv("BACOPY_DGA_OBSERVER_PAGE", "1").strip().lower() in ("0", "false", "off", "no"):
+            return
+        if getattr(self, "_dga_observer_page", None) is not None:
+            return
+        if self._context is None:
+            logger.info("[DGA-OBS] context not ready; observer deferred")
+            return
+        # Flag so the context "page" event (→ _attach_page) skips betting hooks
+        # for this passive page. The sync API emits the event during new_page().
+        self._dga_observer_opening = True
+        try:
+            p2 = self._context.new_page()
+        except Exception as e:
+            self._dga_observer_opening = False
+            logger.warning(f"[DGA-OBS] new_page failed: {e}")
+            return
+        self._dga_observer_page = p2
+        self._dga_observer_opening = False
+        try:
+            p2.on("websocket", self._on_dga_observer_ws)
+        except Exception:
+            pass
+        try:
+            p2.goto(PRAGMATIC_BACCARAT_LOBBY_URL, wait_until="domcontentloaded", timeout=30000)
+            logger.info("[DGA-OBS] passive observer page opened (regular lobby, continuous dga)")
+        except Exception as e:
+            logger.warning(f"[DGA-OBS] observer goto slow/failed (WS may still attach): {e}")
+
+    def _on_dga_observer_ws(self, ws: Any) -> None:
+        """Minimal WS handler for the passive observer page: forward ONLY the dga
+        data-feed frames to the local-signal callback. No betting/multiplay logic.
+        """
+        url = str(getattr(ws, "url", "") or "")
+        if "dga.pragmaticplaylive" not in url:
+            return
+        cb = getattr(self, "_dga_result_callback", None)
+        if cb is None:
+            return
+
+        def _fwd(f, _cb=cb):
+            try:
+                body = f if isinstance(f, str) else (getattr(f, "body", "") or "")
+            except Exception:
+                body = ""
+            if body:
+                try:
+                    _cb(body)
+                except Exception as _e:
+                    logger.debug(f"[DGA-OBS] fwd error: {_e}")
+
+        try:
+            ws.on("framereceived", _fwd)
+            logger.info(f"[DGA-OBS] hooked dga WS on observer page: {url[:60]}")
+        except Exception:
+            pass
+
     def _on_ws_event(self, ws: Any) -> None:
         url = str(ws.url or "")
         # 全WSイベントをまず記録（フィルタ前）
@@ -2706,46 +2785,25 @@ class LiveBetExecutor:
         # dga lobby WS (/ws パス) は除外。game WS (dga domain + /game パス) は通す
         if "/dga" in url:
             logger.info(f"[WS-FILTER] SKIP /dga path: {url[:80]}")
-            # DIAG (temporary, reversible): sample a few dga frames to confirm the
-            # lobby data feed carries gameResult (winner) locally. We only LOG; the
-            # frame is NOT processed for betting, so existing behaviour is unchanged.
-            try:
-                def _dga_probe(f, _self=self):
+            # Local-signal mode: when a callback is registered, the dga lobby data
+            # feed (which carries gameResult/winner for ALL tables) is forwarded so
+            # the bot can compute the live signal locally — no VPS round-trip. It is
+            # NOT processed for betting here. When no callback is set (default),
+            # /dga stays skipped → v3 behaviour is byte-identical.
+            cb = getattr(self, "_dga_result_callback", None)
+            if cb is not None:
+                def _dga_forward(f, _cb=cb):
                     try:
                         body = f if isinstance(f, str) else (getattr(f, "body", "") or "")
                     except Exception:
                         body = ""
-                    n = int(getattr(_self, "_dga_diag_count", 0))
-                    if n >= 15 or not body:
-                        return
-                    try:
-                        import json as _json
-                        obj = _json.loads(body)
-                        if not isinstance(obj, dict):
-                            _self._dga_diag_count = n + 1
-                            logger.info(f"[DGA-DIAG] #{n} non-dict={type(obj).__name__}")
-                            return
-                        tid = obj.get("tableId")
-                        gr = obj.get("gameResult")
-                        shuffle = obj.get("shuffle")
-                        if isinstance(gr, list) and gr:
-                            g0 = gr[0] if isinstance(gr[0], dict) else {}
-                            logger.info(
-                                f"[DGA-DIAG] #{n} table={tid} HAS_gameResult len={len(gr)} "
-                                f"first_keys={list(g0.keys())[:10]} winner={g0.get('winner')} shuffle={shuffle}"
-                            )
-                            _self._dga_diag_count = n + 1
-                        else:
-                            # log a few non-result frames too (to see the feed shape)
-                            if n < 6:
-                                logger.info(f"[DGA-DIAG] #{n} table={tid} keys={list(obj.keys())[:14]} shuffle={shuffle}")
-                                _self._dga_diag_count = n + 1
-                    except Exception as _e:
-                        logger.info(f"[DGA-DIAG] #{n} parse_err={_e} head={body[:60]!r}")
-                        _self._dga_diag_count = n + 1
-                ws.on("framereceived", _dga_probe)
-            except Exception as _e:
-                logger.info(f"[DGA-DIAG] probe setup failed: {_e}")
+                    if body:
+                        try:
+                            _cb(body)
+                        except Exception as _e:
+                            logger.debug(f"[DGA-FWD] callback error: {_e}")
+                ws.on("framereceived", _dga_forward)
+                logger.info("[WS-FILTER] /dga forwarded to local-signal callback")
             return
         if "dga." in url and "/game" not in url:
             logger.info(f"[WS-FILTER] SKIP dga non-game: {url[:80]}")
