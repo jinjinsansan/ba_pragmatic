@@ -1558,6 +1558,13 @@ class LiveBetExecutor:
         self._multi_area_ready: bool = False
         self._last_multi_dom_recover_at: float = 0.0
         self._last_multi_fallback_join_at: float = 0.0
+        # マルチプレイ画面から脱落(tab NOT FOUND かつ multi_ws=False)した状態が
+        # 続くと、defer/fallback だけでは復帰できず NOW 昇格不能なデッドロックに
+        # 陥る(2026-05-31 実機: 12:36 脱落→以降 focusmiss 連発で実BETゼロ)。
+        # 連続 NOT FOUND を数えて閾値を超えたらページreload復旧を強制するための状態。
+        self._multi_tab_missing_since: float = 0.0   # 最初に NOT FOUND を観測した時刻(0=未観測)
+        self._multi_tab_missing_count: int = 0        # 連続 NOT FOUND 回数
+        self._last_multi_deadlock_recover_at: float = 0.0
         self._sent_bet_ids: set[str] = set()
         self._confirmed_bets: dict[str, dict[str, Any]] = {}
         self._failed_bet_ids: dict[str, dict[str, Any]] = {}
@@ -2585,9 +2592,51 @@ class LiveBetExecutor:
                 )
                 self._multi_area_ready = True
                 found_tab = True
+                # マルチプレイ画面に復帰できた → デッドロック検知カウンタをリセット
+                self._multi_tab_missing_since = 0.0
+                self._multi_tab_missing_count = 0
                 return
         if not found_tab:
             logger.warning(f"[MULTI-AREA] multi-play tab NOT FOUND in page — may be on wrong page or UI changed")
+            # ── デッドロック検知 → ページreload復旧 ──────────────────────
+            # tab NOT FOUND かつ multi_ws=False が継続する場合、defer(L2198)で
+            # preposition が毎回 return し、_is_multi_table_ws は WS 到達でしか
+            # True にならないため永久に NOW 昇格できない(chicken-and-egg)。
+            # fallback join(_join_table)で復帰できないケースの最終手段として、
+            # 連続 NOT FOUND が閾値を超えたら _recover_pragmatic_lobby で
+            # ページreload→マルチプレイ再入場を強制する。
+            if self._multi_tab_missing_since <= 0.0:
+                self._multi_tab_missing_since = now
+                self._multi_tab_missing_count = 1
+            else:
+                self._multi_tab_missing_count += 1
+            deadlock_enable = os.getenv("BACOPY_MULTI_DEADLOCK_RELOAD_ENABLE", "1").strip() != "0"
+            deadlock_secs = float(os.getenv("BACOPY_MULTI_DEADLOCK_RELOAD_SEC", "90") or 90)
+            deadlock_cooldown = float(os.getenv("BACOPY_MULTI_DEADLOCK_RELOAD_COOLDOWN_SEC", "120") or 120)
+            missing_for = now - self._multi_tab_missing_since
+            if (
+                deadlock_enable
+                and not self._is_multi_table_ws
+                and missing_for >= deadlock_secs
+                and (now - self._last_multi_deadlock_recover_at) >= deadlock_cooldown
+            ):
+                self._last_multi_deadlock_recover_at = now
+                logger.warning(
+                    f"[MULTI-AREA] DEADLOCK: multi-play tab missing for {missing_for:.0f}s "
+                    f"(count={self._multi_tab_missing_count}, multi_ws=False) "
+                    f"— forcing lobby reload recovery"
+                )
+                try:
+                    if self._recover_pragmatic_lobby("multi_tab_deadlock", force=True):
+                        logger.info("[MULTI-AREA] deadlock reload recovery complete — multi state reset")
+                        # 復旧を試みたのでカウンタをリセット(再確立は WS 到達で確定)
+                        self._multi_tab_missing_since = 0.0
+                        self._multi_tab_missing_count = 0
+                        return
+                    logger.warning("[MULTI-AREA] deadlock reload recovery did not complete; will retry after cooldown")
+                except Exception as _dre:
+                    logger.warning(f"[MULTI-AREA] deadlock reload recovery error: {_dre}")
+                return
             allow_fallback_join = os.getenv("BACOPY_MULTI_ALLOW_BLOCKING_FALLBACK_JOIN", "1").strip() != "0"
             try:
                 busy = bool(
