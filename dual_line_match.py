@@ -87,15 +87,22 @@ def score_proximity(history: str, next_n: Optional[int] = None) -> tuple[int, st
     return (0, "")
 
 
-def live_signal_for_history(history: str) -> Optional[dict[str, str]]:
-    """Return an actionable signal only when it is one of the six live patterns."""
+def live_signal_for_history(
+    history: str, patterns: "frozenset[str]" = LIVE_SIGNAL_PATTERNS
+) -> Optional[dict[str, str]]:
+    """Return an actionable signal only when it is one of the live patterns.
+
+    ``patterns`` defaults to the v3 six-pattern whitelist so all existing
+    callers (which pass only ``history``) keep the exact v3 behaviour. Pass
+    ``LIVE_SIGNAL_PATTERNS_V4`` to evaluate the v4 ten-pattern whitelist.
+    """
     seq = "".join(c for c in str(history or "") if c in ("P", "B"))
     d = decide(seq, len(seq) + 1)
     if d.action == "LOOK":
         return None
     side = str(d.bet_side or ("P" if d.action == "BET_P" else "B"))
     pattern_key = f"{d.china_pattern}|{d.big_pattern}|{side}"
-    if pattern_key not in LIVE_SIGNAL_PATTERNS:
+    if pattern_key not in patterns:
         return None
     return {
         "pattern_key": pattern_key,
@@ -105,21 +112,26 @@ def live_signal_for_history(history: str) -> Optional[dict[str, str]]:
     }
 
 
-def live_preposition_for_history(history: str) -> dict[str, Any]:
-    """Find only one/two-hand forecasts that can become a six-pattern signal.
+def live_preposition_for_history(
+    history: str, patterns: "frozenset[str]" = LIVE_SIGNAL_PATTERNS
+) -> dict[str, Any]:
+    """Find only one/two-hand forecasts that can become a live signal.
 
     One-hand forecasts take precedence over two-hand forecasts. Multiple future
     outcomes are kept as candidates; a side is exposed only when all candidates
     resolve to the same bet side.
+
+    ``patterns`` defaults to the v3 six-pattern whitelist (callers passing only
+    ``history`` are unchanged). Pass ``LIVE_SIGNAL_PATTERNS_V4`` for v4 forecasts.
     """
     seq = "".join(c for c in str(history or "") if c in ("P", "B"))
-    if live_signal_for_history(seq) is not None:
+    if live_signal_for_history(seq, patterns) is not None:
         return {"score": 0, "steps_before": 0, "side": "", "candidates": [], "pattern_keys": []}
     for steps_before in (1, 2):
         candidates: dict[tuple[str, str], dict[str, str]] = {}
         for suffix_tuple in product("PB", repeat=steps_before):
             suffix = "".join(suffix_tuple)
-            signal = live_signal_for_history(seq + suffix)
+            signal = live_signal_for_history(seq + suffix, patterns)
             if signal is None:
                 continue
             key = (signal["pattern_key"], signal["side"])
