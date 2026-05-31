@@ -54,7 +54,11 @@ from decision_logger import (
     reconstruct_decisions,
 )
 from snapshot_store import get_snapshot, load_snapshots, update_snapshot
-from dual_line_match import live_preposition_for_history
+from dual_line_match import (
+    live_preposition_for_history,
+    LIVE_SIGNAL_PATTERNS,
+    LIVE_SIGNAL_PATTERNS_V4,
+)
 
 
 _DECISION_WAIT_COND = threading.Condition()
@@ -743,10 +747,27 @@ def _collect_pragmatic_snapshots_for_preposition() -> dict[str, dict[str, Any]]:
     return merged
 
 
-def _build_preposition_payload() -> dict[str, Any]:
+def _build_preposition_payload(mode: str = "v3") -> dict[str, Any]:
+    """Compute the best preposition forecast across active tables.
+
+    ``mode`` selects the pattern whitelist used for the forecast:
+      - "v3" (default): the six-pattern set — byte-identical to the previous
+        behaviour, so all existing v3 receivers are unaffected.
+      - "v4": the ten-pattern set. Used only when the GUI explicitly requests
+        ``/api/preposition?mode=v4`` (v4 dual-mode). The bot-written
+        _PREPOSITION_HINT_FILE shortcut is v3-only, so it is skipped for v4 to
+        avoid serving a v3 hint as a v4 forecast.
+    """
     now_iso = _now_iso()
+    mode = (mode or "v3").strip().lower()
+    if mode != "v4":
+        mode = "v3"
+    patterns = LIVE_SIGNAL_PATTERNS_V4 if mode == "v4" else LIVE_SIGNAL_PATTERNS
+
     direct = _load_json_file(_PREPOSITION_HINT_FILE)
-    if isinstance(direct, dict) and str(direct.get("table_id") or "").strip():
+    # The direct hint file is written by the v3 bot path only; never serve it as
+    # a v4 forecast (would leak v3 patterns into v4 mode).
+    if mode != "v4" and isinstance(direct, dict) and str(direct.get("table_id") or "").strip():
         updated_at = str(direct.get("updated_at") or direct.get("server_updated_at") or "")
         if not updated_at or _age_sec_from_iso(updated_at) <= _PREPOSITION_STALE_SEC:
             table_name = str(direct.get("table_name") or "")
@@ -778,7 +799,7 @@ def _build_preposition_payload() -> dict[str, Any]:
         seq = "".join(c for c in seq_raw if c in ("P", "B"))
         if len(seq) < 3:
             continue
-        preview = live_preposition_for_history(seq)
+        preview = live_preposition_for_history(seq, patterns)
         score = int(preview.get("score") or 0)
         direction = str(preview.get("side") or "")
         if score <= 0:
@@ -1156,7 +1177,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return _send_json(self, 200, {"snapshot": get_snapshot(provider, table_id)})
             return _send_json(self, 200, load_snapshots())
         if u.path == "/api/preposition":
-            return _send_json(self, 200, _build_preposition_payload())
+            qs = parse_qs(u.query or "")
+            prepos_mode = str((qs.get("mode") or [""])[0] or "v3")
+            return _send_json(self, 200, _build_preposition_payload(prepos_mode))
         if u.path == "/api/decisions/pending":
             qs = parse_qs(u.query or "")
             try:

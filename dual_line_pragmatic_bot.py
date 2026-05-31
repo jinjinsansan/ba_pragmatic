@@ -2586,10 +2586,15 @@ class DualLinePragmaticBot(cp.Collector):
         data: dict = {}
         src_name = "default"
         saw_stale_candidate = False
+        # 選択中モードの予告を要求する。v3(既定)は params 無し=従来と同一リクエスト。
+        # v4 のときだけ ?mode=v4 を付け、master が v4(10パターン)で予告計算する。
+        active_mode = getattr(self, "dual_mode", "v3")
+        active_whitelist = V4_PATTERNS if active_mode == "v4" else V2_PATTERNS
+        prepos_params = "mode=v4" if active_mode == "v4" else ""
         for t in targets:
             base = str(t.get("base_url") or "").rstrip("/")
             key = str(t.get("api_key") or "").strip()
-            candidate = self._api_get("/api/preposition", base_url=base, api_key=key)
+            candidate = self._api_get("/api/preposition", params=prepos_params, base_url=base, api_key=key)
             if not isinstance(candidate, dict):
                 continue
             if candidate.get("ok") is False and candidate.get("error"):
@@ -2638,7 +2643,7 @@ class DualLinePragmaticBot(cp.Collector):
             unsupported_name = f"{candidate_name} {table_id_c}".casefold()
             reject_reason = ""
             if self.use_v2_filter and not any(
-                pattern_key in V2_PATTERNS for pattern_key in candidate_patterns
+                pattern_key in active_whitelist for pattern_key in candidate_patterns
             ):
                 reject_reason = "non-whitelist-pattern"
             elif _is_unsupported_table_name(unsupported_name):
