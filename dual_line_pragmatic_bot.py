@@ -3539,6 +3539,42 @@ class DualLinePragmaticBot(cp.Collector):
             return
 
         ex = self.bet_executor
+
+        # ── Manual-assist reachability gate ──────────────────────────────────
+        # The betting Chrome only carries the ~45 tables of its multiplay channel
+        # group. The VPS collector monitors the FULL lobby, so it can issue a NOW
+        # for a table that is simply not present in this betting session's grid
+        # (has_ws=False / last_bets_open='never'). Such a tile can never be found,
+        # centered or bet — the red box flashes then is lost, which is exactly the
+        # "couldn't bet" symptom. The 'prepared' flag is NOT trustworthy here (a
+        # text-fallback click can mark an absent tile prepared), so gate on the
+        # only hard signal: whether this grid ever saw a betsopen for the table.
+        # Skip cleanly (no lock, no box) so the panel keeps scanning for a NOW on
+        # a table the operator can actually bet.
+        if self.manual_assist and getattr(ex, "_multi_lobby_mode", False):
+            _st_reach = (getattr(ex, "_table_states", {}) or {}).get(table_id) or {}
+            _reach_open_at = float(_st_reach.get("last_bets_open_at") or 0.0)
+            if _reach_open_at <= 0.0:
+                logger.warning(
+                    f"[MANUAL-ASSIST] SKIP unreachable table (not in betting grid, "
+                    f"no WS/betsopen): did={did[:12]} table={table_name or table_id} "
+                    f"qpid={table_id}"
+                )
+                self._api_post(
+                    f"/api/decisions/{did}/ack",
+                    {
+                        "ack": {
+                            "executor_id": "gui-1",
+                            "skipped_at": _utc_now_iso(),
+                            "reason": "table_not_in_betting_grid",
+                        },
+                        "status": "skipped_unreachable",
+                    },
+                    base_url=str(decision.get("_source_api_base") or ""),
+                    api_key=str(decision.get("_source_api_key") or ""),
+                )
+                return
+
         if (
             getattr(ex, "_multi_lobby_mode", False)
             and getattr(ex, "_multi_diagnostic_only", False)
