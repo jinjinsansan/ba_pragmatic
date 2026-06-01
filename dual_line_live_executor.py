@@ -18,10 +18,14 @@ import json
 import logging
 import os
 import re
+import socket
 import sqlite3
+import ssl
+import struct
 import threading
 import time
 import base64
+import urllib.request
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timezone
 from typing import Any
@@ -33,6 +37,143 @@ PRAGMATIC_BACCARAT_LOBBY_URL = os.getenv(
     "BACOPY_PRAGMATIC_LOBBY_URL",
     "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat",
 )
+
+# ── 生CDP WebSocket ヘルパ（stdlibのみ） ──────────────────────────────
+# Pragmatic の lobby2 は cross-origin OOPIF。Playwright の page.on("websocket")
+# は OOPIF の dga WS を page に上げず、また hook 前から開いている WS を取り逃す
+# (= 過去シャドウが継続しなかった真因)。CDP /json は iframe を独立 target として
+# webSocketDebuggerUrl 付きで露出するので、そこへ生CDPで接続し Network.enable →
+# webSocketFrameReceived を購読すれば dga gameResult を確実かつ継続的に拾える
+# (_cdp_ws_monitor.py で 60s/109件・10分/1094件 と実証済み)。読み取り専用。
+_CDP_HOST = os.getenv("BACOPY_CDP_HOST", "127.0.0.1")
+_CDP_PORT = int(os.getenv("BACOPY_CDP_PORT", "9222") or 9222)
+
+
+def _cdp_pick_pragmatic_target():
+    """Return the CDP target (dict) for the Pragmatic dga frame, or None.
+    Prefers the persistent lobby2 frame (continuous dga) over a transient
+    multibaccarat frame."""
+    raw = urllib.request.urlopen(f"http://{_CDP_HOST}:{_CDP_PORT}/json", timeout=6).read()
+    targets = json.loads(raw)
+    prag = [t for t in targets if "pragmaticplaylive" in (t.get("url") or "")
+            and t.get("webSocketDebuggerUrl")]
+    if not prag:
+        return None
+    lobby = [t for t in prag if "lobby2" in (t.get("url") or "")]
+    return (lobby or prag)[0]
+
+
+def _cdp_ws_connect(ws_url: str):
+    path = ws_url.split(f"{_CDP_HOST}:{_CDP_PORT}", 1)[1]
+    s = socket.create_connection((_CDP_HOST, _CDP_PORT), timeout=10)
+    key = base64.b64encode(os.urandom(16)).decode()
+    s.sendall((
+        f"GET {path} HTTP/1.1\r\nHost: {_CDP_HOST}:{_CDP_PORT}\r\n"
+        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    ).encode())
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        c = s.recv(4096)
+        if not c:
+            raise RuntimeError("cdp ws handshake closed")
+        buf += c
+    if b" 101 " not in buf.split(b"\r\n", 1)[0]:
+        raise RuntimeError("cdp ws handshake failed")
+    return s
+
+
+def _cdp_ws_send(s, text: str):
+    p = text.encode("utf-8")
+    h = bytearray([0x81])
+    n = len(p)
+    mask = os.urandom(4)
+    if n < 126:
+        h.append(0x80 | n)
+    elif n < 65536:
+        h.append(0x80 | 126); h += struct.pack(">H", n)
+    else:
+        h.append(0x80 | 127); h += struct.pack(">Q", n)
+    h += mask
+    s.sendall(bytes(h) + bytes(b ^ mask[i % 4] for i, b in enumerate(p)))
+
+
+def _cdp_ws_recv_into(s, recv_exact):
+    data = b""
+    while True:
+        b0 = recv_exact(s, 1)[0]
+        fin = b0 & 0x80
+        op = b0 & 0x0F
+        b1 = recv_exact(s, 1)[0]
+        masked = b1 & 0x80
+        ln = b1 & 0x7F
+        if ln == 126:
+            ln = struct.unpack(">H", recv_exact(s, 2))[0]
+        elif ln == 127:
+            ln = struct.unpack(">Q", recv_exact(s, 8))[0]
+        mk = recv_exact(s, 4) if masked else b""
+        pl = recv_exact(s, ln) if ln else b""
+        if masked:
+            pl = bytes(b ^ mk[i % 4] for i, b in enumerate(pl))
+        if op == 0x8:
+            raise RuntimeError("cdp ws server close")
+        if op in (0x9, 0xA):
+            continue
+        data += pl
+        if fin:
+            return data.decode("utf-8", "replace")
+
+
+# ── 直結 dga lobby WS（ブラウザ不要・Stakeセッション不要） ─────────────
+# Pragmatic の dga lobby WS は casinoId だけで購読でき、Stakeログイン/Cookie 不要
+# (= 第2セッションにならない → アンチアビューズの懸念なし)。betting frame が
+# multibaccarat (結果フィード無し) でも、ここから全卓の gameResult を継続受信
+# できる。プロトコルは実機キャプチャ (pragmatic_dumps) から復元:
+#   -> {"type":"statistics"}
+#   -> {"type":"available","casinoId":...}
+#   -> {"type":"subscribe","isDeltaEnabled":true,"casinoId":...,"key":[...],"currency":"USD"}
+#   -> {"type":"ping","pingTime":<ms>}  (~5秒ごと)
+# bafather実測: 60秒/164 gameResult/61卓 (_dga_direct_test.py)。read-only。
+_DGA_WS_HOST = os.getenv("BACOPY_DGA_WS_HOST", "dga.pragmaticplaylive.net")
+_DGA_WS_ORIGIN = os.getenv("BACOPY_DGA_WS_ORIGIN", "https://client.pragmaticplaylive.net")
+_DGA_CASINO_ID = os.getenv("BACOPY_DGA_CASINO_ID", "ppcds00000003709")
+_DGA_TABLE_KEYS = [
+    "007", "415", "440", "488", "489", "490", "461", "468", "466", "455", "454",
+    "402", "442", "403", "404", "441", "401", "4511", "412", "4512", "413", "421",
+    "424", "422", "405", "414", "438", "467", "411", "450", "431", "427", "481",
+    "425", "434", "436", "851", "435", "428", "432", "433", "430", "459", "451",
+    "452", "439", "482", "426", "458", "449", "483", "456", "2101", "476", "460",
+    "480", "479", "499", "484", "477", "496", "453",
+]
+
+
+def _dga_direct_connect():
+    """Open a TLS WebSocket to the Pragmatic dga lobby endpoint and complete the
+    handshake. Returns the connected ssl socket (ready for _cdp_ws_send / the
+    _cdp_ws_recv_into framing). Cert verification is skipped: read-only PUBLIC
+    game-result data, the same endpoint the betting browser already trusts;
+    avoids Windows CA-store issues on bafather."""
+    raw = socket.create_connection((_DGA_WS_HOST, 443), timeout=12)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    s = ctx.wrap_socket(raw, server_hostname=_DGA_WS_HOST)
+    key = base64.b64encode(os.urandom(16)).decode()
+    s.sendall((
+        f"GET /ws HTTP/1.1\r\nHost: {_DGA_WS_HOST}\r\n"
+        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+        f"Origin: {_DGA_WS_ORIGIN}\r\n"
+        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    ).encode())
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        c = s.recv(4096)
+        if not c:
+            raise RuntimeError("dga handshake closed")
+        buf += c
+    if b" 101 " not in buf.split(b"\r\n", 1)[0]:
+        raise RuntimeError("dga handshake not 101")
+    return s
 
 # ── WS Bridge JS ──────────────────────────────────────────────────────
 # context.add_init_script() で全フレームに注入される。
@@ -1182,6 +1323,44 @@ _MULTI_LOBBY_ENSURE_TAB_JS = r"""
     } catch(_) {}
   }
   return { ok:true, clicked:false, active:false, text: found ? 'found' : '' };
+}
+"""
+
+# READ-ONLY DOM probe to identify a reliable ordered-result source from the
+# betting page's OWN multibaccarat tile DOM (single session, no 2nd Pragmatic
+# page). For each of the first few tiles it reports: innerText (aggregate
+# counters), whether the roadmap is canvas/svg/div-rendered, and a structural
+# sample of small "cell-sized" elements (candidate road circles) with their
+# computed colours + position so we can decide if/how to parse an ordered
+# P/B/T sequence. NO clicks, NO state change. Used by _maybe_dom_result_probe.
+_DOM_RESULT_PROBE_JS = r"""
+() => {
+  const tiles = Array.from(document.querySelectorAll('[id^="TileHeight-"]')).slice(0, 3);
+  return tiles.map((t) => {
+    const qpid = String(t.id || '').replace(/^TileHeight-/, '');
+    const text = String(t.innerText || t.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 220);
+    let canvases = 0, svgs = 0;
+    try { canvases = t.querySelectorAll('canvas').length; } catch (_) {}
+    try { svgs = t.querySelectorAll('svg, svg *').length; } catch (_) {}
+    const cells = [];
+    let all = [];
+    try { all = Array.from(t.querySelectorAll('*')); } catch (_) { all = []; }
+    for (const e of all) {
+      let r; try { r = e.getBoundingClientRect(); } catch (_) { continue; }
+      if (!r || r.width < 3 || r.width > 24 || r.height < 3 || r.height > 24) continue;
+      let bg = '', bc = '', col = '';
+      try { const cs = getComputedStyle(e); bg = cs.backgroundColor || ''; bc = cs.borderColor || ''; col = cs.color || ''; } catch (_) {}
+      cells.push({
+        tag: e.tagName,
+        cls: (e.getAttribute && (e.getAttribute('class') || '')) || '',
+        bg: bg, bc: bc, col: col,
+        title: (e.getAttribute && (e.getAttribute('title') || e.getAttribute('aria-label') || e.getAttribute('data-type') || e.getAttribute('data-result') || '')) || '',
+        txt: String(e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 6),
+        x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height),
+      });
+    }
+    return { qpid: qpid, text: text, canvases: canvases, svgs: svgs, cellCount: cells.length, cells: cells.slice(0, 80) };
+  });
 }
 """
 
@@ -2702,16 +2881,110 @@ class LiveBetExecutor:
 
     def set_dga_result_callback(self, cb) -> None:
         """Register a callback to receive raw dga lobby WS frames (the gameResult
-        feed). When set, the otherwise-skipped /dga frames are forwarded for local
-        signal computation. When unset (default), /dga stays skipped (v3 behaviour).
-        Also opens a passive regular-lobby observer page so the dga feed streams
-        CONTINUOUSLY (the betting multi-play page only bursts dga once at connect).
+        feed) for local signal computation. When unset (default), /dga stays
+        skipped (v3 behaviour, byte-identical).
+
+        Result source = a DIRECT TLS WS to the Pragmatic dga lobby endpoint
+        (headless, casinoId-keyed, no browser, NO Stake session) on a background
+        thread (proven: 164 gameResult / 60s / 61 tables). Fully decoupled from
+        the betting Chrome, so it streams even while the betting frame sits in
+        multibaccarat (which carries NO gameResult). The old passive-observer-page
+        approach opened a 2nd Pragmatic lobby session and triggered Stake's "no
+        games" anti-abuse block (2026-06-01) — retired; used only if
+        BACOPY_DGA_LEGACY_OBSERVER=1.
         """
         self._dga_result_callback = cb
+        if os.getenv("BACOPY_DGA_LEGACY_OBSERVER", "").strip().lower() in ("1", "true", "on"):
+            try:
+                self._start_dga_observer_page()
+            except Exception as e:
+                logger.warning(f"[DGA-OBS] legacy observer start failed: {e}")
+            return
         try:
-            self._start_dga_observer_page()
+            self._start_dga_direct_source()
         except Exception as e:
-            logger.warning(f"[DGA-OBS] observer start failed: {e}")
+            logger.warning(f"[DGA-DIRECT] source start failed: {e}")
+
+    def _start_dga_direct_source(self) -> None:
+        """Start the background thread that maintains a DIRECT dga lobby WS
+        (headless, no browser, no Stake session) and forwards every gameResult
+        frame to the local-signal callback. Fully decoupled from the betting
+        Chrome — works regardless of whether the betting frame is lobby2 or
+        multibaccarat. Idempotent. Disable with BACOPY_DGA_DIRECT_SOURCE=0."""
+        if os.getenv("BACOPY_DGA_DIRECT_SOURCE", "1").strip().lower() in ("0", "false", "off", "no"):
+            logger.info("[DGA-DIRECT] disabled via BACOPY_DGA_DIRECT_SOURCE=0")
+            return
+        if getattr(self, "_dga_direct_thread", None) is not None:
+            return
+        self._dga_direct_stop = False
+        t = threading.Thread(target=self._dga_direct_loop, name="dga-direct-source", daemon=True)
+        self._dga_direct_thread = t
+        t.start()
+        logger.info("[DGA-DIRECT] background direct dga WS source started")
+
+    def _dga_direct_loop(self) -> None:
+        """Maintain a direct TLS WS to the Pragmatic dga lobby: subscribe to all
+        tables, keepalive-ping (~5s, separate thread), and forward gameResult
+        frames to _dga_result_callback. Auto-reconnects on drop. Read-only."""
+        def recv_exact(s, n):
+            o = b""
+            while len(o) < n:
+                c = s.recv(n - len(o))
+                if not c:
+                    raise RuntimeError("dga ws closed")
+                o += c
+            return o
+
+        backoff = 2.0
+        while not getattr(self, "_dga_direct_stop", False):
+            s = None
+            ping_stop = {"v": False}
+            try:
+                s = _dga_direct_connect()
+                _cdp_ws_send(s, json.dumps({"type": "statistics"}))
+                _cdp_ws_send(s, json.dumps({"type": "available", "casinoId": _DGA_CASINO_ID}))
+                _cdp_ws_send(s, json.dumps({
+                    "type": "subscribe", "isDeltaEnabled": True,
+                    "casinoId": _DGA_CASINO_ID, "key": _DGA_TABLE_KEYS, "currency": "USD",
+                }))
+                logger.info(f"[DGA-DIRECT] connected + subscribed ({len(_DGA_TABLE_KEYS)} tables)")
+                backoff = 2.0
+
+                def _ping(_s=s, _stop=ping_stop):
+                    n = 0
+                    while not _stop["v"] and not getattr(self, "_dga_direct_stop", False):
+                        try:
+                            _cdp_ws_send(_s, json.dumps({"type": "ping", "pingTime": int(time.time() * 1000)}))
+                        except Exception:
+                            return
+                        n += 1
+                        time.sleep(5)
+                threading.Thread(target=_ping, name="dga-direct-ping", daemon=True).start()
+
+                s.settimeout(45)
+                while not getattr(self, "_dga_direct_stop", False):
+                    msg = _cdp_ws_recv_into(s, recv_exact)
+                    if "gameResult" in msg or "tableName" in msg:
+                        cb = getattr(self, "_dga_result_callback", None)
+                        if cb is not None:
+                            try:
+                                cb(msg)
+                            except Exception as _e:
+                                logger.debug(f"[DGA-DIRECT] callback error: {_e}")
+            except Exception as e:
+                logger.info(f"[DGA-DIRECT] stream ended ({e}); reconnecting in {backoff:.0f}s")
+            finally:
+                ping_stop["v"] = True
+                try:
+                    if s is not None:
+                        s.close()
+                except Exception:
+                    pass
+            if getattr(self, "_dga_direct_stop", False):
+                break
+            time.sleep(backoff)
+            backoff = min(backoff * 1.5, 20.0)
+        logger.info("[DGA-DIRECT] source loop stopped")
 
     def _start_dga_observer_page(self) -> None:
         """Ensure a passive regular-lobby page whose dga data feed streams continuous
@@ -2802,7 +3075,15 @@ class LiveBetExecutor:
     def _ensure_dga_observer(self) -> None:
         """Reopen the passive observer page if it was closed (it is the result
         source). MUST be called from the Playwright main-loop thread.
+
+        RETIRED: the local-signal result source is now the raw-CDP Network
+        subscription (_start_dga_cdp_source), a single session. The observer page
+        opened a 2nd Pragmatic lobby session and triggered Stake's "no games"
+        anti-abuse block (2026-06-01). This main-loop hook is a no-op unless
+        BACOPY_DGA_LEGACY_OBSERVER=1 — so it can NEVER reopen the 2nd session.
         """
+        if os.getenv("BACOPY_DGA_LEGACY_OBSERVER", "").strip().lower() not in ("1", "true", "on"):
+            return
         if getattr(self, "_dga_result_callback", None) is None:
             return
         p = getattr(self, "_dga_observer_page", None)
@@ -2851,6 +3132,45 @@ class LiveBetExecutor:
         except Exception:
             pass
 
+    def _maybe_dom_result_probe(self) -> None:
+        """READ-ONLY, env-gated DOM probe (BACOPY_DOM_RESULT_PROBE=1). Dumps the
+        multibaccarat tile roadmap structure so we can design a reliable ordered
+        result source from the betting page's OWN DOM (single session, no 2nd
+        Pragmatic page). Off by default → v3 path byte-identical. Throttled +
+        capped like the prior DGA-DIAG probe; performs NO clicks and changes no
+        betting behaviour. MUST be called from the Playwright main-loop thread.
+        """
+        if os.getenv("BACOPY_DOM_RESULT_PROBE", "").strip().lower() not in ("1", "true", "on", "yes"):
+            return
+        now = time.time()
+        if now - getattr(self, "_dom_probe_at", 0.0) < 20.0:
+            return
+        self._dom_probe_at = now
+        if getattr(self, "_dom_probe_count", 0) >= 8:
+            return
+        try:
+            frame = self._find_pragmatic_frame()
+        except Exception as e:
+            logger.info(f"[DOM-PROBE] frame lookup error: {e}")
+            return
+        if frame is None:
+            logger.info("[DOM-PROBE] no multibaccarat frame yet")
+            return
+        try:
+            res = frame.evaluate(_DOM_RESULT_PROBE_JS)
+        except Exception as e:
+            logger.warning(f"[DOM-PROBE] evaluate error: {e}")
+            return
+        self._dom_probe_count = getattr(self, "_dom_probe_count", 0) + 1
+        try:
+            tiles = len(res) if isinstance(res, list) else 0
+            logger.info(
+                f"[DOM-PROBE] #{self._dom_probe_count} tiles={tiles} "
+                f"{json.dumps(res, ensure_ascii=False)[:3600]}"
+            )
+        except Exception:
+            logger.info(f"[DOM-PROBE] #{self._dom_probe_count} {str(res)[:3000]}")
+
     def _on_ws_event(self, ws: Any) -> None:
         url = str(ws.url or "")
         # 全WSイベントをまず記録（フィルタ前）
@@ -2862,13 +3182,13 @@ class LiveBetExecutor:
         # dga lobby WS (/ws パス) は除外。game WS (dga domain + /game パス) は通す
         if "/dga" in url:
             logger.info(f"[WS-FILTER] SKIP /dga path: {url[:80]}")
-            # Local-signal mode: when a callback is registered, the dga lobby data
-            # feed (which carries gameResult/winner for ALL tables) is forwarded so
-            # the bot can compute the live signal locally — no VPS round-trip. It is
-            # NOT processed for betting here. When no callback is set (default),
-            # /dga stays skipped → v3 behaviour is byte-identical.
+            # The local-signal result source is the dedicated DIRECT dga WS
+            # (_dga_direct_loop), the SINGLE writer into _on_dga_frame. We do NOT
+            # also forward the betting page's /dga here: a 2nd writer thread would
+            # race on the per-table sequence dicts (GIL doesn't make get+append
+            # atomic). Forward only in legacy-observer mode for backward compat.
             cb = getattr(self, "_dga_result_callback", None)
-            if cb is not None:
+            if cb is not None and os.getenv("BACOPY_DGA_LEGACY_OBSERVER", "").strip().lower() in ("1", "true", "on"):
                 def _dga_forward(f, _cb=cb):
                     try:
                         body = f if isinstance(f, str) else (getattr(f, "body", "") or "")
@@ -2880,7 +3200,7 @@ class LiveBetExecutor:
                         except Exception as _e:
                             logger.debug(f"[DGA-FWD] callback error: {_e}")
                 ws.on("framereceived", _dga_forward)
-                logger.info("[WS-FILTER] /dga forwarded to local-signal callback")
+                logger.info("[WS-FILTER] /dga forwarded to local-signal callback (legacy)")
             return
         if "dga." in url and "/game" not in url:
             logger.info(f"[WS-FILTER] SKIP dga non-game: {url[:80]}")

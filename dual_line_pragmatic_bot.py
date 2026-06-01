@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -1236,12 +1236,20 @@ class DualLinePragmaticBot(cp.Collector):
             self._dga_seq: dict[str, str] = {}
             self._dga_gids: dict[str, set] = {}
             self._dga_names: dict[str, str] = {}
+            self._dga_clean: set[str] = set()  # tables seen shuffle => true shoe-start
             self._dga_rx = 0
             self._dga_grf = 0
             self._dga_added = 0
             self._dga_stat_at = 0.0
             self._dga_qpid: dict[str, str] = {}
             self._dga_mode = os.getenv("BACOPY_DGA_LOCAL_SIGNAL", "").strip().lower()
+            # Phase 2b live execution: the dga source runs on a BACKGROUND thread,
+            # so it cannot call place_bet (Playwright = main loop only). It enqueues
+            # bet/settle requests here; the main loop drains and executes them.
+            self._dga_bet_q: deque = deque()     # pending bet requests (bg -> main)
+            self._dga_settle_q: deque = deque()  # pending settle requests (bg -> main)
+            self._dga_bets: dict[str, dict] = {} # tid -> open bet {bet_id, side, ...}
+            self._dga_lock = threading.Lock()
         self._dga_rx += 1
         wl = LIVE_SIGNAL_PATTERNS_V4 if getattr(self, "dual_mode", "v3") == "v4" else LIVE_SIGNAL_PATTERNS
         for m in frames:
@@ -1261,6 +1269,19 @@ class DualLinePragmaticBot(cp.Collector):
             if m.get("shuffle") is True:
                 self._dga_seq[tid] = ""
                 self._dga_gids[tid] = set()
+                # A shuffle marks a TRUE shoe-start.
+                self._dga_clean.add(tid)
+            # SNAPSHOT-TRUST: the direct dga source opens a FRESH subscribe, whose
+            # first per-table frame is the current shoe from hand 1 (the same feed
+            # the VPS collector builds full shoes from, and the same basis VPS NOW
+            # uses — it does NOT wait for a shuffle). So the first time we see a
+            # table we trust its seeded sequence as a correct shoe-start. Without
+            # this, only freshly-shuffled (short) tables are "clean" and the long
+            # mid-shoe sequences that actually hit patterns get gated out (= the
+            # cause of 0 signals observed 2026-06-01). Validated vs VPS NOW in
+            # shadow before any real betting.
+            if tid not in self._dga_clean and tid not in self._dga_seq:
+                self._dga_clean.add(tid)
             gr = m.get("gameResult")
             if not isinstance(gr, list) or not gr:
                 continue
@@ -1275,6 +1296,16 @@ class DualLinePragmaticBot(cp.Collector):
                     continue
                 gids.add(gid)
                 c = _winner_to_char(h.get("winner"))
+                # Phase 2b settlement: the first NEW result on a table that has an
+                # open dga bet IS that bet's outcome. Hand the outcome to the main
+                # loop (which owns the money model + executor confirmation check).
+                if c in ("P", "B", "T"):
+                    with self._dga_lock:
+                        open_bet = self._dga_bets.pop(tid, None)
+                    if open_bet is not None:
+                        self._dga_settle_q.append(
+                            {"tid": tid, "outcome": c, "bet": open_bet, "gid": gid}
+                        )
                 if c in ("P", "B"):
                     self._dga_seq[tid] = self._dga_seq.get(tid, "") + c
                     added = True
@@ -1286,6 +1317,10 @@ class DualLinePragmaticBot(cp.Collector):
             seq = self._dga_seq.get(tid, "")
             if len(seq) < 3:
                 continue
+            # SAFETY: never compute a signal on a sequence that started mid-shoe.
+            # Only tables seen shuffling this session have a correct shoe-start.
+            if tid not in self._dga_clean:
+                continue
             try:
                 sig = live_signal_for_history(seq, wl)
             except Exception:
@@ -1293,6 +1328,7 @@ class DualLinePragmaticBot(cp.Collector):
             if sig:
                 logger.info(
                     f"[DGA-SIGNAL] tid={tid} name={self._dga_names.get(tid, '?')} "
+                    f"qpid={self._dga_qpid.get(tid, '?')} "
                     f"side={sig.get('side')} pattern={sig.get('pattern_key')} "
                     f"seq_len={len(seq)} tail={seq[-12:]}"
                 )
@@ -1306,17 +1342,14 @@ class DualLinePragmaticBot(cp.Collector):
             self._dga_stat_at = _now
             logger.info(
                 f"[DGA-STAT] frames_rx={self._dga_rx} gr_frames={self._dga_grf} "
-                f"results_added={self._dga_added} tables={len(self._dga_seq)}"
+                f"results_added={self._dga_added} tables={len(self._dga_seq)} "
+                f"clean={len(self._dga_clean)}"
             )
 
     def _dga_consider_bet(self, tid: str, sig: dict) -> None:
-        """Evaluate the local signal as a real bet decision. In 'livecompare' mode
-        it only LOGS the full would-bet (qpid/amount/lock) with NO money — the safe
-        validation of the complete bet pipeline (qpid mapping, supported-table
-        filter, amount, NOW-lock) vs the VPS NOW path. Actual money placement
-        ('live' mode) is wired in a separate increment (needs settlement/landing
-        reconciliation), so it also only logs here for now.
-        """
+        """Runs on the BACKGROUND dga thread. In 'live' it ENQUEUES the bet for the
+        main loop (Playwright owns place_bet + the money model). In 'livecompare'
+        it only logs the would-bet. Never touches money or the executor here."""
         name = self._dga_names.get(tid, "")
         qpid = self._dga_qpid.get(tid, "")
         side = str(sig.get("side") or "")
@@ -1325,19 +1358,163 @@ class DualLinePragmaticBot(cp.Collector):
             return
         if _is_unsupported_table_name(f"{name} {qpid} {tid}"):
             return  # not a dual-line betting table (Privé / unsupported)
+        target = qpid or tid
+        mode = getattr(self, "_dga_mode", "")
+        if mode == "live":
+            # One bet at a time: the single BetManager (SEQ/D'Alembert) progression
+            # requires it, and the NOW-lock enforces it at place time. Skip if this
+            # table already has an open bet or is already queued.
+            with self._dga_lock:
+                if tid in self._dga_bets:
+                    return
+                if any(r.get("tid") == tid for r in self._dga_bet_q):
+                    return
+                self._dga_bet_q.append({
+                    "tid": tid, "qpid": qpid, "side": side, "pattern": pattern,
+                    "name": name, "ts": time.time(),
+                })
+            logger.info(
+                f"[DGA-BET-Q] table={name or tid} qpid={target} side={side} pattern={pattern}"
+            )
+            return
+        # livecompare: read-only would-bet log (no money mutation)
         lock = self._active_now_lock()
         lock_note = f"locked({lock.get('table_id') or '-'})" if lock else "free"
+        try:
+            amount = float(self.money._compute_next_bet())
+        except Exception:
+            amount = 0.0
+        logger.info(
+            f"[DGA-WOULD-BET] table={name or tid} qpid={target} side={side} "
+            f"amount=${amount:.2f} pattern={pattern} lock={lock_note} mode={mode}"
+        )
+
+    def _dga_main_pump(self) -> None:
+        """Main-loop (Playwright thread) drain of the dga bet/settle queues. Places
+        real bets and settles the money model. Only active in 'live' mode."""
+        if getattr(self, "_dga_mode", "") != "live":
+            return
+        while True:
+            try:
+                req = self._dga_bet_q.popleft()
+            except IndexError:
+                break
+            try:
+                self._dga_place_one(req)
+            except Exception as e:
+                logger.warning(f"[DGA-BET] place error: {e}")
+        while True:
+            try:
+                s = self._dga_settle_q.popleft()
+            except IndexError:
+                break
+            try:
+                self._dga_settle_one(s)
+            except Exception as e:
+                logger.warning(f"[DGA-SETTLE] error: {e}")
+
+    def _dga_place_one(self, req: dict) -> None:
+        tid = str(req.get("tid") or "")
+        qpid = str(req.get("qpid") or "")
+        side = str(req.get("side") or "")
+        name = str(req.get("name") or "")
+        pattern = str(req.get("pattern") or "")
+        target = qpid or tid
+        with self._dga_lock:
+            if tid in self._dga_bets:
+                return
+        # One bet at a time (money model + NOW-lock). Hold off while any lock is up.
+        lock = self._active_now_lock()
+        if lock:
+            logger.info(f"[DGA-BET] skip place table={name or target}: NOW-lock held by {lock.get('table_id') or '-'}")
+            return
+        # Drop a stale signal (don't bet a hand that already resolved).
+        age = time.time() - float(req.get("ts") or 0.0)
+        max_age = float(os.getenv("BACOPY_DGA_MAX_AGE_SEC", "12") or 12)
+        if age > max_age:
+            logger.info(f"[DGA-BET] skip place table={name or target}: signal stale age={age:.1f}s")
+            return
         try:
             amount = float(self.money.next_bet(side=side))
         except Exception:
             amount = 0.0
-        target = qpid or tid
-        mode = getattr(self, "_dga_mode", "")
+        if amount <= 0:
+            logger.info(f"[DGA-BET] skip place table={name or target}: amount<=0 (limit reached?)")
+            return
+        self._start_now_lock(decision_id=f"dga_{tid}", table_id=target, table_name=name or target, side=side)
+        md = {"table_name": name, "qpid_table_id": qpid}
+        bet_id = self.bet_executor.place_bet(target, side, amount, md)
+        with self._dga_lock:
+            self._dga_bets[tid] = {
+                "bet_id": str(bet_id or ""), "side": side, "amount": amount,
+                "qpid": target, "name": name, "placed_at": time.time(),
+            }
         logger.info(
-            f"[DGA-WOULD-BET] table={name or tid} qpid={target} side={side} "
-            f"amount=${amount:.2f} pattern={pattern} lock={lock_note} mode={mode} "
-            f"(NO money — placement wired in next increment)"
+            f"[DGA-BET-PLACE] table={name or target} qpid={target} side={side} "
+            f"amount=${amount:.2f} bet_id={bet_id}"
         )
+        # Feed the operator panel so the dga NOW bet shows like a normal signal
+        # (dga is the single source of truth for panel + bets in live mode).
+        self.total_signals += 1
+        try:
+            self._send_manual_assist_item(
+                status="NOW", table_id=tid, table_name=name, qpid=target,
+                side=side, amount=amount, pattern_key=pattern,
+                decision_id=f"dga_{tid}", source="dga", expires_sec=30.0,
+            )
+            self._send_gui_money_status()
+        except Exception as e:
+            logger.debug(f"[DGA-BET] panel update error: {e}")
+
+    def _dga_settle_one(self, s: dict) -> None:
+        tid = str(s.get("tid") or "")
+        outcome = str(s.get("outcome") or "")
+        bet = s.get("bet") or {}
+        bet_id = str(bet.get("bet_id") or "")
+        side = str(bet.get("side") or "")
+        name = str(bet.get("name") or tid)
+        # Only settle the money model if the wager actually LANDED (confirmed via
+        # the lpbet WS). Settling a bet that never clicked would corrupt SEQ.
+        confirmed = None
+        consume = getattr(self.bet_executor, "consume_confirmed_bet", None)
+        if callable(consume) and bet_id:
+            confirmed = consume(bet_id)
+        if not confirmed:
+            logger.info(
+                f"[DGA-SETTLE] table={name} bet_id={bet_id} NOT confirmed (did not land) "
+                f"→ no money change; lock released"
+            )
+            self._release_dga_lock(tid)
+            return
+        if outcome == "T":
+            self.money.apply_result(None, side=side)
+            res = "PUSH"
+        else:
+            won = (outcome == side)
+            self.money.apply_result(won, side=side)
+            res = "WIN" if won else "LOSE"
+        try:
+            nxt = float(self.money._compute_next_bet())
+        except Exception:
+            nxt = 0.0
+        logger.info(
+            f"[DGA-SETTLE] table={name} side={side} outcome={outcome} {res} "
+            f"pnl=${self.money.session_pnl:+.2f} next=${nxt:.2f} "
+            f"W/L/T={self.money.total_wins}/{self.money.total_losses}/{self.money.total_ties}"
+        )
+        try:
+            self._send_gui_money_status()
+        except Exception:
+            pass
+        self._release_dga_lock(tid)
+
+    def _release_dga_lock(self, tid: str) -> None:
+        with self._dga_lock:
+            self._dga_bets.pop(tid, None)
+        lock = self._now_lock if isinstance(self._now_lock, dict) else {}
+        if lock and str(lock.get("decision_id") or "") == f"dga_{tid}":
+            self._now_lock = {}
+            logger.info(f"[DGA-SETTLE] NOW-lock released (dga_{tid})")
 
     def _maybe_register_dga_callback(self) -> None:
         """Idempotently register the dga local-signal callback when enabled via
@@ -1392,6 +1569,15 @@ class DualLinePragmaticBot(cp.Collector):
         if table_id in self.pending:
             pending = self.pending.pop(table_id)
             self._resolve_prediction(table_id, buf, pending, outcome_char, new_hand)
+
+        # Phase 2b: in dga-live mode the local-signal PLACEMENT path stands down so
+        # the same hand is not bet twice (the direct-dga path places the identical
+        # signal, earlier). Settlement/resolve above still runs harmlessly (dga bets
+        # live in self._dga_bets, not self.pending). VPS path is stopped in
+        # _handle_decision; these are the only two place_bet-initiating paths.
+        if getattr(self, "_dga_mode", "") == "live" or \
+                os.getenv("BACOPY_DGA_LOCAL_SIGNAL", "").strip().lower() == "live":
+            return
 
         # 2) observed_sequence を構築
         seq_chars = []
@@ -2687,7 +2873,14 @@ class DualLinePragmaticBot(cp.Collector):
             self._last_remote_signal_log_at = now
 
     def _check_preposition(self) -> None:
-        """VPS の事前入場指示をポーリング。score=1 遷移時に対象テーブルへ事前入場して待機。"""
+        """VPS の事前入場指示をポーリング。score=1 遷移時に対象テーブルへ事前入場して待機。
+
+        Phase 2b note: preposition does NOT place bets — it only positions (scroll)
+        and shows the yellow forecast overlay. It is KEPT ON in dga-live mode: the
+        pre-positioning actually WIDENS the placement window (the candidate tile is
+        already in view when its NOW signal fires), which helps multi-chip landing,
+        and it restores the operator's normal yellow-box display.
+        """
         now_ts = time.time()
         if not self.bet_executor.is_live:
             last = float(getattr(self, "_last_preposition_skip_log_at", 0.0) or 0.0)
@@ -2990,6 +3183,12 @@ class DualLinePragmaticBot(cp.Collector):
     def _handle_decision(self, decision: dict) -> None:
         """VPS からの BET decision を受け取り、executor 経由で BET 実行。"""
         if not self.bet_executor.is_live:
+            return
+        # Phase 2b: when the local dga signal drives betting ('live'), the VPS NOW
+        # path MUST stand down — otherwise the same hand is bet twice. The dga path
+        # places the identical signal locally (validated) and earlier.
+        if getattr(self, "_dga_mode", "") == "live" or \
+                os.getenv("BACOPY_DGA_LOCAL_SIGNAL", "").strip().lower() == "live":
             return
         did = str(decision.get("decision_id") or "")
         fa = decision.get("friend_action") or {}
@@ -4940,6 +5139,15 @@ class DualLinePragmaticBot(cp.Collector):
                             ensure()
                     except Exception as e:
                         logger.debug(f"[BOT] dga observer ensure error: {e}")
+                    # READ-ONLY DOM probe (BACOPY_DOM_RESULT_PROBE=1, default off):
+                    # capture the betting-page tile roadmap structure to design a
+                    # single-session ordered-result source. No betting impact.
+                    try:
+                        probe = getattr(self.bet_executor, "_maybe_dom_result_probe", None)
+                        if callable(probe):
+                            probe()
+                    except Exception as e:
+                        logger.debug(f"[BOT] dom probe error: {e}")
 
                 # ── VPS decision short-poll fallback (1秒ごと) ─────────
                 if now - last_decision_fallback_poll >= 1.0:
@@ -4948,6 +5156,14 @@ class DualLinePragmaticBot(cp.Collector):
                         self._poll_pending_decisions_fallback()
                     except Exception as e:
                         logger.debug(f"[BOT] fallback decision poll error: {e}")
+
+                # ── Phase 2b: dga local-signal bet/settle pump (every loop, low
+                # latency so the multi-chip placement gets the full window). Only
+                # active in BACOPY_DGA_LOCAL_SIGNAL=live; no-op otherwise. ──
+                try:
+                    self._dga_main_pump()
+                except Exception as e:
+                    logger.debug(f"[BOT] dga pump error: {e}")
 
                 # ── collector 停滞時の remote snapshot 補助シグナル (2秒ごと) ──
                 if now - last_remote_signal_poll >= 2.0:
