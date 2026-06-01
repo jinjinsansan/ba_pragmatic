@@ -10,6 +10,9 @@
   <!-- Flash overlay for win/lose -->
   <div class="flash-overlay" id="flashOverlay"></div>
 
+  <!-- NOW ambience: full-window glow while a NOW is active (red=BANKER / blue=PLAYER). Pure CSS via :has(). -->
+  <div class="now-ambience" aria-hidden="true"></div>
+
   <!-- Neon perimeter (animated only when window is focused) -->
   <div class="neon-frame" id="neonFrame" aria-hidden="true"></div>
 
@@ -64,9 +67,9 @@
   </div>
 
   <!-- Main -->
-  <div class="main-content hidden" id="mainContent">
+  <div class="main-content hidden" id="mainContent" data-screen-label="main">
 
-    <!-- Live Action Feed -->
+    <!-- Status strip -->
     <div class="action-bar" id="actionBar">
       <span class="action-dot"></span>
       <span class="action-text" id="actionText">Initializing...</span>
@@ -76,11 +79,38 @@
       </span>
     </div>
 
-    <!-- Stats Row -->
+    <!-- ★ NOW / Manual Assist (hero) + WIN/LOSE/TIE -->
+    <div class="section glass manual-assist-panel hidden" id="manualAssistPanel">
+      <div class="manual-assist-header">
+        <div>
+          <div class="section-header manual-assist-title">MANUAL ASSIST</div>
+          <div class="manual-assist-summary" id="manualAssistSummary">Waiting for queue</div>
+        </div>
+        <div class="manual-assist-mode" id="manualAssistMode">ASSIST</div>
+      </div>
+      <div class="manual-assist-queue" id="manualAssistQueue">
+        <div class="manual-assist-empty">No manual targets</div>
+      </div>
+      <div class="manual-result-row">
+        <button class="manual-result-btn win" id="manualResultWin">WIN</button>
+        <button class="manual-result-btn lose" id="manualResultLose">LOSE</button>
+        <button class="manual-result-btn tie" id="manualResultTie">TIE</button>
+      </div>
+    </div>
+
+    <!-- Key metrics -->
     <div class="stats-row">
+      <div class="stat-card accent">
+        <div class="stat-label">SESSION (TO RESET)</div>
+        <div class="stat-value" id="sessionPnl">$0.00</div>
+      </div>
       <div class="stat-card">
         <div class="stat-label">BALANCE</div>
         <div class="stat-value" id="balance">$0.00</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">WIN RATE</div>
+        <div class="stat-value" id="winRate">-</div>
       </div>
       <div class="stat-card master-card master-unknown" id="masterCard" title="Master connection / control status">
         <div class="stat-label">MASTER</div>
@@ -90,22 +120,32 @@
         <div class="stat-label">SERVICE CREDIT</div>
         <div class="stat-value" id="creditBalance">-</div>
       </div>
-      <div class="stat-card accent">
-        <div class="stat-label">SESSION (TO RESET)</div>
-        <div class="stat-value" id="sessionPnl">$0.00</div>
-      </div>
       <div class="stat-card">
         <div class="stat-label">BETS</div>
         <div class="stat-value" id="betCount">0W / 0L</div>
         <div id="testCounter" style="display:none; font-size:11px; color:#ffaa00; margin-top:6px; letter-spacing:1px;">🧪 TEST: 0W 0L 0T</div>
       </div>
-      <div class="stat-card">
-        <div class="stat-label">WIN RATE</div>
-        <div class="stat-value" id="winRate">-</div>
+    </div>
+
+    <!-- Live Feed -->
+    <div class="section glass">
+      <div class="section-header">LIVE FEED</div>
+      <div class="feed-row" id="feedRow">
+        <span class="feed-cursor"></span>
       </div>
     </div>
 
-    <!-- Signal Panel (hidden unless dev mode unlocked) -->
+    <!-- Daily P&L -->
+    <div class="section glass daily-section">
+      <div class="section-header">
+        DAILY TOTAL <span class="today-pnl" id="todayPnl">$0</span>
+      </div>
+      <div class="daily-row" id="dailyRow">
+        <div class="daily-empty">No history yet</div>
+      </div>
+    </div>
+
+    <!-- Signal Panel (developer / secondary) -->
     <div class="section glass dev-panel hidden" id="devPanel">
       <div class="section-header dev-header" id="devPanelTitle">SIGNAL PANEL</div>
       <div class="signal-grid">
@@ -129,43 +169,6 @@
       <div class="signal-stream-container">
         <div class="signal-stream-label" id="sigStreamLabel">STREAM</div>
         <div class="signal-stream" id="sigStream"></div>
-      </div>
-    </div>
-
-    <!-- Dual-Line Manual Assist -->
-    <div class="section glass manual-assist-panel hidden" id="manualAssistPanel">
-      <div class="manual-assist-header">
-        <div>
-          <div class="section-header manual-assist-title">MANUAL ASSIST</div>
-          <div class="manual-assist-summary" id="manualAssistSummary">Waiting for queue</div>
-        </div>
-        <div class="manual-assist-mode" id="manualAssistMode">ASSIST</div>
-      </div>
-      <div class="manual-assist-queue" id="manualAssistQueue">
-        <div class="manual-assist-empty">No manual targets</div>
-      </div>
-      <div class="manual-result-row">
-        <button class="manual-result-btn win" id="manualResultWin">WIN</button>
-        <button class="manual-result-btn lose" id="manualResultLose">LOSE</button>
-        <button class="manual-result-btn tie" id="manualResultTie">TIE</button>
-      </div>
-    </div>
-
-    <!-- Daily P&L -->
-    <div class="section glass daily-section">
-      <div class="section-header">
-        DAILY TOTAL <span class="today-pnl" id="todayPnl">$0</span>
-      </div>
-      <div class="daily-row" id="dailyRow">
-        <div class="daily-empty">No history yet</div>
-      </div>
-    </div>
-
-    <!-- Current Round (last 10 results) -->
-    <div class="section glass">
-      <div class="section-header">LIVE FEED</div>
-      <div class="feed-row" id="feedRow">
-        <span class="feed-cursor"></span>
       </div>
     </div>
 
