@@ -1676,15 +1676,16 @@ function renderManualAssistPanel() {
               $${amount}${remain ? ` | ${remain}s` : ''}${pattern ? ` | ${esc(pattern)}` : ''}
             </div>
           </div>
-          <div class="manual-item-actions">
-            <button class="manual-mini-btn" data-manual-action="take" data-id="${esc(item.id)}" ${canTake ? '' : 'disabled'}>TAKE</button>
-          </div>
+          <div class="manual-item-actions"></div>
         </div>
       `;
     }).join('');
   }
 
-  const resultEnabled = !!taken;
+  // WIN/LOSE/TIE are ALWAYS pressable (no TAKE step required). The human bets
+  // a NOW manually and taps the result to advance the SEQ/D'Alembert progression.
+  // Skipping (break/away) = simply not tapping = progression unchanged.
+  const resultEnabled = true;
   $('#manualResultWin')?.toggleAttribute('disabled', !resultEnabled);
   $('#manualResultLose')?.toggleAttribute('disabled', !resultEnabled);
   $('#manualResultTie')?.toggleAttribute('disabled', !resultEnabled);
@@ -1738,15 +1739,20 @@ for (const [id, result] of [
   document.addEventListener('click', (ev) => {
     const target = ev.target;
     if (!target || target.id !== id) return;
-    const item = manualAssistItems.find((it) => it.id === activeManualItemId);
-    if (!item || _manualNormalizeStatus(item.status) !== 'TAKEN') return;
+    // No TAKE required: apply the result to the most relevant NOW item (its side
+    // + amount), or standalone if none (engine falls back to the current next_bet).
+    const item = getManualResultTarget();
     addLog(`[DL Assist] ${result} selected${item ? ` for ${item.table_name || item.table_id || ''}` : ''}`, 'info');
     sendManualAssistCommand({
       action: 'result',
       result,
-      id: item.id,
-      decision_id: item.decision_id || '',
+      id: item ? item.id : '',
+      side: item ? (item.side || '') : '',
+      decision_id: item ? (item.decision_id || '') : '',
     });
+    // Optimistically settle locally so a second tap does not re-resolve the same
+    // NOW; the engine's resolution message confirms and updates W/L/T + next bet.
+    if (item) { item.status = 'SETTLED'; renderManualAssistPanel(); }
   });
 }
 

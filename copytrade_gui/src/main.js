@@ -975,7 +975,11 @@ function _doStartBot(config, generation = _botGeneration) {
     botProcess = spawn(spec.exe, spec.args, {
       cwd: spec.cwd,
       env: spec.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // stdin MUST be a writable pipe: the GUI delivers manual-assist commands
+      // (WIN/LOSE result, set_dual_mode) by writing JSON lines to botProcess.stdin
+      // (see the 'manual-assist-command' IPC handler). With stdin:'ignore' the
+      // engine never received these → WIN/LOSE did nothing and SEQ never advanced.
+      stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
   } catch (err) {

@@ -1767,6 +1767,11 @@ class LiveBetExecutor:
         # the executor only reads it to drop competing focus/auto-fire while a NOW
         # decision is locked to a single table.
         self._bot_now_lock: dict[str, Any] = {}
+        # Bot-registered callback fired when the NOW-locked hand ends (detected via
+        # betsopen gameId advance). Speed/multiplay tables never deliver a winner-
+        # bearing hand to the bot's _on_new_hand, so betsopen is the only reliable
+        # hand-boundary signal for auto-clearing the red/blue assist overlay.
+        self._now_lock_release_cb = None
         self._last_lobby_scroll_probe_at: float = 0.0
         self._multi_tile_snapshot: dict[str, Any] = {}
         self._multi_tile_snapshot_at: float = 0.0
@@ -2562,6 +2567,11 @@ class LiveBetExecutor:
             "assistStatus": "NOW" if intent == "manual_assist" else ("READY" if intent == "preposition" else ""),
             "side": side,
             "amount": float(req.get("preselect_amount") or req.get("amount") or 0.0),
+            # NOW overlay lifetime ≈ one hand (default 70s). Covers betsopen→result
+            # + operator reaction, then auto-clears so a skipped NOW does not block
+            # the view forever. Matches the NOW-lock window (which suppresses scroll
+            # for the hand). Tunable via BACOPY_ASSIST_NOW_TTL_MS.
+            "nowTtlMs": int(os.getenv("BACOPY_ASSIST_NOW_TTL_MS", "70000") or 70000),
             # Scroll-lock maintenance tuning (calmer = easier to watch the tile).
             # The lock only needs to keep the tile MOUNTED, not pixel-locked.
             "recenterMs": int(os.getenv("BACOPY_ASSIST_RECENTER_MS", "400") or 400),
@@ -3456,6 +3466,47 @@ class LiveBetExecutor:
                         f"[BETSOPEN] table={msg_tid} game={gid} bo_table={bo_table_id!r} "
                         f"bo_keys={list(bo.keys())} pending_bet={bool(self._pending_bet)}"
                     )
+                    # ── Manual-assist: auto-clear the NOW (red/blue) overlay when the
+                    # locked hand ends. Speed/multiplay tables never deliver a winner-
+                    # bearing hand to the bot's _on_new_hand, so betsopen gameId
+                    # advancement on the locked table is the only reliable hand-end
+                    # signal. The bet hand = the operator's lpbet gid captured after the
+                    # lock (else the first betsopen seen after the lock); once a DIFFERENT
+                    # gameId opens, that hand resolved → ask the bot to release the lock.
+                    # Visual only — the money/SEQ progression stays WIN/LOSE-driven.
+                    try:
+                        _blk = self._bot_now_lock or {}
+                        _lk_tid = str(_blk.get("table_id") or "")
+                        _bo_eff = bo_table_id or msg_tid
+                        if _lk_tid and _bo_eff and _lk_tid == _bo_eff:
+                            _set_at = float(_blk.get("set_at") or 0.0)
+                            _bet_gid = str(_blk.get("bet_gid") or "")
+                            if not _bet_gid:
+                                if self._last_lpbet_gid and self._last_lpbet_at >= _set_at:
+                                    _bet_gid = str(self._last_lpbet_gid)
+                                else:
+                                    _bet_gid = gid
+                                _blk["bet_gid"] = _bet_gid
+                                logger.info(
+                                    f"[NOW-LOCK] bet-hand gid={_bet_gid} table={_lk_tid} "
+                                    f"lpbet={self._last_lpbet_gid or '-'}"
+                                )
+                            elif gid != _bet_gid and (now - _set_at) > 2.0:
+                                logger.info(
+                                    f"[NOW-LOCK] hand-end via betsopen table={_lk_tid} "
+                                    f"bet_gid={_bet_gid} new_gid={gid}"
+                                )
+                                # Clear the mirror first so a rapid follow-up betsopen
+                                # cannot re-fire before the bot processes the release.
+                                self._bot_now_lock = {}
+                                _cb = self._now_lock_release_cb
+                                if callable(_cb):
+                                    try:
+                                        _cb(str(_blk.get("decision_id") or ""), _lk_tid, gid)
+                                    except Exception as _e:
+                                        logger.debug(f"[NOW-LOCK] release cb failed: {_e}")
+                    except Exception as _ex:
+                        logger.debug(f"[NOW-LOCK] betsopen hand-end check failed: {_ex}")
                     pending_target = ""
                     if isinstance(self._pending_bet, dict):
                         pending_target = str(self._pending_bet.get("table_id") or "")
@@ -6091,6 +6142,11 @@ class LiveBetExecutor:
             tid, str(hold.get("table_name") or tid), click=False, source="now_bet_hold"
         )
 
+    def set_now_lock_release_cb(self, fn) -> None:
+        """Register the bot callback invoked on betsopen-detected hand-end so the
+        red/blue assist overlay clears without waiting for the 80s lock timer."""
+        self._now_lock_release_cb = fn if callable(fn) else None
+
     def set_bot_now_lock(
         self,
         *,
@@ -6106,12 +6162,20 @@ class LiveBetExecutor:
         if not tid and not did:
             self._bot_now_lock = {}
             return
+        # Preserve hand-end tracking across re-stamp calls for the same decision
+        # (set_at = when the lock began; bet_gid = the hand the operator bet on).
+        prev = self._bot_now_lock or {}
+        same = bool(prev) and str(prev.get("decision_id") or "") == did
+        set_at = float(prev.get("set_at") or 0.0) if same else time.time()
+        bet_gid = str(prev.get("bet_gid") or "") if same else ""
         self._bot_now_lock = {
             "decision_id": did,
             "table_id": tid,
             "table_name": str(table_name or tid),
             "side": str(side or "").upper(),
             "until": float(until or 0.0),
+            "set_at": set_at,
+            "bet_gid": bet_gid,
         }
         logger.info(
             f"[BOT-NOW-LOCK] mirror set did={did[:12] or '-'} table={tid or '-'} "
@@ -6141,6 +6205,24 @@ class LiveBetExecutor:
             f"table={lock_tid or '-'} reason={reason or '-'}"
         )
         self._bot_now_lock = {}
+
+    def release_assist_now(self, qpid: str = "") -> None:
+        """Bot calls this when the locked hand has resolved (hand-end detected
+        from the result feed) or on the operator's WIN/LOSE. Stop the assist
+        focus-hold for the tile and remove the NOW (red/blue) overlay so the
+        view returns to normal scanning. This only clears the VISUAL lock —
+        the money progression stays operator-driven via WIN/LOSE."""
+        tid = str(qpid or "").strip()
+        hold = self._assist_focus_hold or {}
+        hold_tid = str(hold.get("table_id") or "")
+        if hold and (not tid or hold_tid == tid):
+            logger.info(f"[ASSIST-HOLD] release (hand-end/result) table={hold_tid or tid or '-'}")
+            self._assist_focus_hold = {}
+        if tid:
+            try:
+                self.clear_manual_assist_overlay(tid)
+            except Exception as ex:
+                logger.debug(f"[MANUAL-ASSIST] release_assist_now clear failed target={tid}: {ex}")
 
     def _bot_now_lock_active(self) -> dict[str, Any]:
         lock = self._bot_now_lock or {}

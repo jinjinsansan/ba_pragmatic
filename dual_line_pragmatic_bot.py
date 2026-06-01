@@ -445,6 +445,13 @@ class DualLinePragmaticBot(cp.Collector):
                 or _env_bool("BACOPY_CHROME_ASSIST_AUTO_CLICK", False)
             )
         )
+        # HARD OVERRIDE → PURE manual-assist (no auto-click) regardless of GUI
+        # config or other envs. The bot must NOT click bets: it only shows the NOW
+        # signal + amount and tracks SEQ/D'Alembert via the operator's WIN/LOSE
+        # taps. (Auto-click was silently ON, making the bot auto-bet with the
+        # unreliable geometry clicker AND breaking the manual overlay/WIN flow.)
+        if _env_bool("BACOPY_MANUAL_NO_AUTOCLICK", False):
+            self.manual_assist_auto_click = False
         self.notify_signal = notify_signal
         self.notify_resolution = notify_resolution
         self.notify_tie = notify_tie
@@ -842,11 +849,25 @@ class DualLinePragmaticBot(cp.Collector):
         side: str = "",
         bet_id: str = "",
         hold_sec: float | None = None,
+        match_table_id: str = "",
+        signal_game_id: str = "",
     ) -> None:
         tid = str(table_id or "").strip()
         did = str(decision_id or "").strip()
         if not tid and not did:
             return
+        # match_table_id = the COLLECTOR table_id that _on_new_hand fires with
+        # (can differ from `tid`, which is the QPID used for executor overlay /
+        # focus-hold keying in multi-area lobby). signal_game_id = the gameId of
+        # the signal hand; the NEXT new hand on match_table_id is the bet hand,
+        # so its arrival == hand-end. Preserve both across re-stamp calls (the
+        # auto path calls _start_now_lock twice: pre-bet then with bet_id).
+        prev = self._now_lock if isinstance(self._now_lock, dict) else {}
+        mtid = str(match_table_id or "").strip()
+        sgid = str(signal_game_id or "").strip()
+        if (not mtid or not sgid) and prev and str(prev.get("decision_id") or "") == did:
+            mtid = mtid or str(prev.get("match_table_id") or "")
+            sgid = sgid or str(prev.get("signal_game_id") or "")
         sec = float(hold_sec if hold_sec is not None else os.getenv("BACOPY_NOW_LOCK_MAX_SEC", "65") or 65)
         until_ts = time.time() + max(30.0, sec)
         self._now_lock = {
@@ -857,6 +878,8 @@ class DualLinePragmaticBot(cp.Collector):
             "bet_id": str(bet_id or ""),
             "started_at": time.time(),
             "until": until_ts,
+            "match_table_id": mtid,
+            "signal_game_id": sgid,
         }
         logger.info(
             f"[NOW-LOCK] start did={did[:12] or '-'} table={tid or '-'} "
@@ -924,6 +947,39 @@ class DualLinePragmaticBot(cp.Collector):
                 mirror_fn(decision_id=lock_did, table_id=lock_tid, reason=reason or "")
         except Exception as ex:
             logger.debug(f"[NOW-LOCK] executor mirror clear failed: {ex}")
+        # Visually remove the red/blue NOW box and stop the focus-hold so the
+        # view resumes scanning (overlay/hold are keyed by QPID = lock_tid).
+        try:
+            assist_fn = getattr(self.bet_executor, "release_assist_now", None)
+            if callable(assist_fn) and lock_tid:
+                assist_fn(lock_tid)
+        except Exception as ex:
+            logger.debug(f"[NOW-LOCK] assist overlay release failed: {ex}")
+
+    def _on_executor_hand_end(self, decision_id: str = "", qpid: str = "", gid: str = "") -> None:
+        """Executor detected (via betsopen gameId advance) that the NOW-locked
+        hand ended. Drop the red/blue overlay so the view resumes scanning. This
+        is the reliable hand-end path for Speed/multiplay tables, where the
+        winner-bearing hand never reaches _on_new_hand. Visual only — the money
+        progression stays operator-driven via WIN/LOSE. Pure-manual mode only."""
+        if not (self.manual_assist and not self.manual_assist_auto_click):
+            return
+        try:
+            lock = self._now_lock if isinstance(self._now_lock, dict) else {}
+            if not lock:
+                return
+            lk_did = str(lock.get("decision_id") or "")
+            lk_tid = str(lock.get("table_id") or "")
+            if decision_id and lk_did and decision_id != lk_did:
+                return
+            if qpid and lk_tid and qpid != lk_tid:
+                return
+            logger.info(
+                f"[NOW-LOCK] hand-end clear (betsopen) qpid={qpid or lk_tid} gid={gid or '-'}"
+            )
+            self._release_now_lock(decision_id=lk_did, reason="hand_ended")
+        except Exception as ex:
+            logger.debug(f"[NOW-LOCK] executor hand-end clear failed: {ex}")
 
     def _expire_manual_assist_ready(
         self,
@@ -1139,6 +1195,28 @@ class DualLinePragmaticBot(cp.Collector):
         item["status"] = "SETTLED"
         item["manual_result"] = result
         item["settled_at"] = _utc_now_iso()
+
+        # Release the NOW lock held for this manual NOW so preposition/scroll
+        # resumes and the next NOW can take the screen. Match by the item's
+        # decision_id/id, or its table, against the active lock.
+        try:
+            lock = self._now_lock if isinstance(self._now_lock, dict) else {}
+            iid = str(item.get("decision_id") or item.get("id") or "")
+            itbl = str(item.get("qpid") or item.get("table_id") or "")
+            if lock and (
+                (iid and str(lock.get("decision_id") or "") == iid)
+                or (itbl and str(lock.get("table_id") or "") == itbl)
+            ):
+                # Release by the lock's own decision_id (guaranteed match) so the
+                # red/blue overlay + focus-hold are also cleared (via executor
+                # release_assist_now in _release_now_lock), not just the bot lock.
+                self._release_now_lock(
+                    decision_id=str(lock.get("decision_id") or ""),
+                    reason="manual_result",
+                )
+                logger.info("[MANUAL-ASSIST] NOW-lock released on result")
+        except Exception:
+            pass
 
         prediction = "BANKER" if side.startswith("B") else "PLAYER"
         if result == "TIE":
@@ -1444,6 +1522,31 @@ class DualLinePragmaticBot(cp.Collector):
         if age > max_age:
             logger.info(f"[DGA-BET] skip place table={name or target}: signal stale age={age:.1f}s")
             return
+        # Fast-table warm gate (mode B): a Speed/Turbo table (~13s window) only lands
+        # the multi-chip bet if its tile is already prepared (in view). If cold, the
+        # scroll + multi-chip clicks exceed the window → skip instead of wasting a
+        # miss/partial. Regular tables (~60s window) are always placed. Reuses the
+        # executor's _prepared_table_id (the warm tile) + recent betsopen window.
+        if os.getenv("BACOPY_DGA_FAST_REQUIRE_WARM", "1").strip().lower() in ("1", "true", "on", "yes") \
+                and _is_fast_table_name(f"{name} {tid}"):
+            ex = self.bet_executor
+            prepared = str(getattr(ex, "_prepared_table_id", "") or "")
+            warm = (prepared == target)
+            if not warm:
+                try:
+                    st = (getattr(ex, "_table_states", {}) or {}).get(target) or {}
+                    last_open = float(st.get("last_bets_open_at") or 0.0)
+                    warm = bool(last_open) and (time.time() - last_open) < float(
+                        os.getenv("BACOPY_DGA_FAST_WARM_WINDOW_SEC", "9") or 9
+                    )
+                except Exception:
+                    warm = False
+            if not warm:
+                logger.info(
+                    f"[DGA-BET] skip cold fast table (not warm): {name or target} "
+                    f"prepared={prepared or '-'}"
+                )
+                return
         try:
             amount = float(self.money.next_bet(side=side))
         except Exception:
@@ -1610,6 +1713,54 @@ class DualLinePragmaticBot(cp.Collector):
         if not outcome_char:
             self._diag_skip("no_outcome", f"table={buf.table_name or table_id}")
             return
+
+        # ── Manual-assist: auto-clear the NOW (red/blue) box on hand-end ──
+        # This very callback means the locked table just produced a NEW hand
+        # result. The signal hand was already consumed before the NOW was
+        # issued, so any later new hand on the locked table IS the hand the
+        # operator bet on → it just resolved. Clear the visual lock so the view
+        # resumes scanning. We do NOT touch the money progression: that stays
+        # operator-driven via WIN/LOSE (we never know if they actually wagered).
+        # Gated to pure-manual mode (no auto-click) to leave auto/VPS settlement
+        # untouched. Matched on the collector table_id; the signal_game_id guard
+        # rejects a re-delivery of the signal hand itself.
+        if self.manual_assist and not self.manual_assist_auto_click:
+            try:
+                lock = self._active_now_lock()
+                if lock:
+                    # now-lock の table_id は両経路とも QPID。VPS 経路は
+                    # table_id=qpid、local 経路は table_id=target_id(=qpid)。
+                    # _on_new_hand の buf.qpid_table_id と照合する(match_table_id
+                    # 方式は VPS 経路で未設定→不成立だった)。collector key の
+                    # table_id 引数とも一致し得るので両方を許容する。
+                    lock_qpid = str(lock.get("table_id") or "")
+                    buf_qpid = str(getattr(buf, "qpid_table_id", "") or "")
+                    this_gid = str(new_hand.get("gameId") or new_hand.get("game_id") or "")
+                    lk_sgid = str(lock.get("signal_game_id") or "")
+                    started = float(lock.get("started_at") or 0.0)
+                    same_table = bool(lock_qpid) and (
+                        lock_qpid == buf_qpid or lock_qpid == str(table_id)
+                    )
+                    # started_at>1s: 同一 _on_new_hand 呼び出しで lock 開始と同時に
+                    # クリアするのを防ぐ。signal_game_id!=: シグナルハンド自身の
+                    # 再配信を弾く保険。
+                    if (
+                        same_table
+                        and this_gid
+                        and this_gid != lk_sgid
+                        and (time.time() - started) > 1.0
+                    ):
+                        logger.info(
+                            f"[NOW-LOCK] hand-end clear qpid={lock_qpid} "
+                            f"gid={this_gid} sig_gid={lk_sgid or '-'} "
+                            f"side={lock.get('side') or '-'}"
+                        )
+                        self._release_now_lock(
+                            decision_id=str(lock.get("decision_id") or ""),
+                            reason="hand_ended",
+                        )
+            except Exception as ex:
+                logger.debug(f"[NOW-LOCK] hand-end clear failed: {ex}")
 
         # LIVE GUI mode receives VPS decisions, then confirms the actual Stake bet
         # via Pragmatic game WS.  In multi-area lobby the collector key can differ
@@ -1819,9 +1970,24 @@ class DualLinePragmaticBot(cp.Collector):
                 )
                 self._save_state()
                 return
+            # Manual (no auto-click): hold a NOW lock so (a) the assist overlay is
+            # actively maintained + centered on the tile for the hand (not just the
+            # 65s passive TTL), and (b) preposition/focus is suppressed so the view
+            # does NOT scroll away to other forecasts mid-hand. Released on the
+            # operator's WIN/LOSE in _handle_manual_assist_command; auto-expires
+            # after BACOPY_NOW_LOCK_MAX_SEC if they walk away.
+            self._start_now_lock(
+                decision_id=local_id,
+                table_id=target_id,
+                table_name=buf.table_name or "",
+                side=bet_side,
+                match_table_id=table_id,
+                signal_game_id=str(bet_metadata.get("source_last_game_id") or ""),
+            )
             logger.info(
                 f"[MANUAL-ASSIST] local NOW id={local_id} table={buf.table_name or table_id} "
-                f"side={bet_side} amount=${bet_amount:.2f} auto_bet=disabled"
+                f"side={bet_side} amount=${bet_amount:.2f} auto_bet=disabled "
+                f"(NOW-lock held: overlay maintained, no scroll until result)"
             )
             return
         logger.info(
@@ -2945,6 +3111,16 @@ class DualLinePragmaticBot(cp.Collector):
                 logger.info("[PREPOS] skip: executor is not live")
                 self._last_preposition_skip_log_at = now_ts
             return
+        # NOW-lock active → the operator is on the NOW tile (red/blue box) for the
+        # current hand. Do NOT scroll/yellow-box other forecasts mid-hand: that
+        # would move the view away from the tile being bet. Resume once the lock is
+        # released (WIN/LOSE result) or expires.
+        if self._active_now_lock():
+            last = float(getattr(self, "_last_preposition_skip_log_at", 0.0) or 0.0)
+            if now_ts - last >= 30.0:
+                logger.info("[PREPOS] skip: NOW-lock active (no scroll mid-hand)")
+                self._last_preposition_skip_log_at = now_ts
+            return
         try:
             # has_pending_bet also includes queued/preposition switch requests in the
             # live executor.  Preposition should only be blocked by an actual BET
@@ -3737,6 +3913,7 @@ class DualLinePragmaticBot(cp.Collector):
             table_id=table_id,
             table_name=table_name,
             side=side,
+            signal_game_id=str(metadata.get("signal_game_id") or ""),
         )
         if self.manual_assist:
             logger.info(
@@ -4837,6 +5014,18 @@ class DualLinePragmaticBot(cp.Collector):
         self._pending_decisions: dict[str, dict] = {}
         self._last_preposition_key: str = ""
         self._stop_decision_poll = False
+
+        # Manual-assist: let the executor tell us when the NOW-locked hand ended
+        # (detected via betsopen gameId advance — Speed/multiplay tables never
+        # deliver a winner-bearing hand to _on_new_hand). Clears the red/blue
+        # overlay only; SEQ stays operator-driven via WIN/LOSE.
+        try:
+            _rel = getattr(self.bet_executor, "set_now_lock_release_cb", None)
+            if callable(_rel):
+                _rel(self._on_executor_hand_end)
+                logger.info("[NOW-LOCK] executor hand-end release callback registered")
+        except Exception as _e:
+            logger.debug(f"[NOW-LOCK] release cb registration failed: {_e}")
 
         cp.init_db()
         profile = profile_dir or cp.DEFAULT_PROFILE
