@@ -1358,6 +1358,16 @@ class DualLinePragmaticBot(cp.Collector):
             return
         if _is_unsupported_table_name(f"{name} {qpid} {tid}"):
             return  # not a dual-line betting table (Privé / unsupported)
+        # Regular-tables-only toggle (BACOPY_DGA_REGULAR_ONLY=1): skip Speed/Turbo
+        # (fast ~13s window) and bet only regular tables (~60s window in existing
+        # window logic) where the cold focus + multi-chip click sequence (~19s
+        # worst case) fits comfortably. Edge is table-type independent (verified),
+        # so this trades signal volume for reliable multi-chip landing. Reuses the
+        # existing _is_fast_table_name().
+        if os.getenv("BACOPY_DGA_REGULAR_ONLY", "0").strip().lower() in ("1", "true", "on", "yes") \
+                and _is_fast_table_name(f"{name} {tid}"):
+            logger.info(f"[DGA-BET-Q] skip fast table (regular-only): {name or tid}")
+            return
         target = qpid or tid
         mode = getattr(self, "_dga_mode", "")
         if mode == "live":
@@ -3079,6 +3089,15 @@ class DualLinePragmaticBot(cp.Collector):
         )
         if _is_unsupported_table_name(f"{table_name} {qpid} {table_id}"):
             logger.info(f"[PREPOS] ignored unsupported table: {table_name or table_id}")
+            return
+        # Regular-only: when dga betting is restricted to regular tables, don't
+        # pre-position / yellow-box Speed/Turbo tables either. Otherwise the yellow
+        # box appears on tables dga will never bet (confusing), AND positioning to a
+        # Speed tile leaves the next regular NOW cold. Keep preposition on regular
+        # tables so it warms the tiles dga actually bets.
+        if os.getenv("BACOPY_DGA_REGULAR_ONLY", "0").strip().lower() in ("1", "true", "on", "yes") \
+                and _is_fast_table_name(f"{table_name} {table_id}"):
+            logger.info(f"[PREPOS] skip fast table (regular-only): {table_name or table_id}")
             return
         direction = str(data.get("direction") or "").upper()
         pattern_keys = sorted(str(x) for x in (data.get("pattern_keys") or []) if str(x))
