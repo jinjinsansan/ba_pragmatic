@@ -88,7 +88,7 @@ from dual_line_match import (
     chinese_road_predict,
     big_road_predict,
 )
-from dual_line_money import BetManager, ALLOWED_MODES as MONEY_MODES, BET_MODES
+from dual_line_money import BetManager, ALLOWED_MODES as MONEY_MODES, BET_MODES, BANKER_COMMISSION
 
 # ── Logger 設定 ──────────────────────────────────────────────────────
 # collector_pragmatic.py の basicConfig と競合しないよう dedicated logger を使う
@@ -1447,7 +1447,7 @@ class DualLinePragmaticBot(cp.Collector):
         with self._dga_lock:
             self._dga_bets[tid] = {
                 "bet_id": str(bet_id or ""), "side": side, "amount": amount,
-                "qpid": target, "name": name, "placed_at": time.time(),
+                "qpid": target, "name": name, "pattern": pattern, "placed_at": time.time(),
             }
         logger.info(
             f"[DGA-BET-PLACE] table={name or target} qpid={target} side={side} "
@@ -1486,13 +1486,25 @@ class DualLinePragmaticBot(cp.Collector):
             )
             self._release_dga_lock(tid)
             return
+        amount = float(bet.get("amount") or 0.0)
+        pattern = str(bet.get("pattern") or "")
         if outcome == "T":
             self.money.apply_result(None, side=side)
-            res = "PUSH"
+            res, pnl = "TIE", 0.0
+            self.ties += 1
         else:
             won = (outcome == side)
             self.money.apply_result(won, side=side)
-            res = "WIN" if won else "LOSE"
+            if won:
+                res = "WIN"
+                pnl = amount * (BANKER_COMMISSION if side.upper() in ("B", "BANKER") else 1.0)
+                self.wins += 1
+            else:
+                res = "LOSE"
+                pnl = -amount
+                self.losses += 1
+        self.total_resolved += 1
+        self.virtual_pnl += pnl
         try:
             nxt = float(self.money._compute_next_bet())
         except Exception:
@@ -1502,10 +1514,45 @@ class DualLinePragmaticBot(cp.Collector):
             f"pnl=${self.money.session_pnl:+.2f} next=${nxt:.2f} "
             f"W/L/T={self.money.total_wins}/{self.money.total_losses}/{self.money.total_ties}"
         )
+        # Drive the GUI LIVE FEED (WLT + win/loss flash). app.js matches the queue
+        # item by decision_id (dga_<tid>) and flashes green/red on result; the
+        # signal panel/SEQ update unconditionally from money_status.
+        n_nt = self.wins + self.losses
+        wr = self.wins / n_nt * 100 if n_nt else 0.0
+        try:
+            send_msg({
+                "type": "resolution",
+                "decision_id": f"dga_{tid}",
+                "table_id": tid,
+                "table_name": name,
+                "prediction": side,
+                "outcome": outcome,
+                "result": res,
+                "pattern_key": pattern,
+                "pnl": pnl,
+                "cumulative_pnl": self.virtual_pnl,
+                "wins": self.wins,
+                "losses": self.losses,
+                "ties": self.ties,
+                "win_rate": round(wr, 1),
+                "total_signals": self.total_signals,
+                "total_resolved": self.total_resolved,
+                "money_status": self.money.status_dict(),
+                "bet_amount": amount,
+                "planned_bet_amount": amount,
+            })
+            icon = "✅" if res == "WIN" else ("🔵" if res == "TIE" else "❌")
+            send_action(
+                f"{icon} {res} {name}: {side}→{outcome} pnl=${pnl:+.2f} "
+                f"cum=${self.virtual_pnl:+.2f} ({self.wins}W/{self.losses}L/{self.ties}T {wr:.1f}%)"
+            )
+        except Exception as e:
+            logger.debug(f"[DGA-SETTLE] resolution emit error: {e}")
         try:
             self._send_gui_money_status()
         except Exception:
             pass
+        self._save_state()
         self._release_dga_lock(tid)
 
     def _release_dga_lock(self, tid: str) -> None:
