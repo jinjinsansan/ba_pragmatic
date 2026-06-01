@@ -284,6 +284,8 @@
           <div class="form-group">
             <label>BET MODE</label>
             <select id="inputBetMode">
+              <option value="dual_line">デュアルラインアシスト</option>
+              <!-- 旧モード(レガシー)は廃止。コード互換のため値のみコメントアウトで保持:
               <option value="flat_1usd">TEST — $1 fixed</option>
               <option value="seq_user10">SEQ — $10 start (10,20,30...)</option>
               <option value="newseq">NewSEQ — $10 start (10,30,50...)</option>
@@ -292,32 +294,56 @@
               <option value="small02">SMALL0.2 — $0.20 start (0.2,0.4...66.6)</option>
               <option value="small1">SMALL1 — $1 start (derived from SMALL3, max 333)</option>
               <option value="small6">SMALL6 — $6 start (derived from SMALL3, max 2000)</option>
+              -->
             </select>
           <!-- dual-line 専用: 資金管理モード -->
           <div id="dualLineMoneyGroup" style="display:none;">
             <div class="form-group">
-              <label>PATTERN MODE</label>
+              <label>パターン</label>
               <select id="inputDualMode">
-                <option value="v3">v3 — 6 patterns (実績ベースライン)</option>
-                <option value="v4">v4 — 10 patterns (検証中)</option>
+                <option value="v3">6パターン</option>
+                <option value="v4">10パターン</option>
               </select>
             </div>
             <div class="form-group">
-              <label>DUAL-LINE MONEY MODE</label>
-              <select id="inputDualMoneyMode">
-                <option value="flat">FLAT — 1 unit fixed</option>
-                <option value="small02">SMALL 0.2 — $0.20 start (0.2,0.4...66.6)</option>
-                <option value="small1">SMALL 1 — $1 start (SEQ7 overshoot / first 7 bets = $1)</option>
-                <option value="small3">SMALL 3 — $3 start (3,5,7...1000)</option>
-                <option value="small6">SMALL 6 — $6 start (6,10,14...2000)</option>
-                <option value="martingale">MARTINGALE — pure double-up</option>
-                <option value="dalembert">D'ALEMBERT — +/-1 unit (2,4,6,8,6,4...)</option>
+              <label>MONEY MODE</label>
+              <select id="inputMoneyType">
+                <option value="seq">SEQ（スモールSEQ）</option>
+                <option value="other">フラット / マーチンゲール / ダランベール</option>
               </select>
             </div>
-            <div class="form-group">
-              <label>Unit Bet ($) — flat / martingale / dalembert base unit</label>
+            <div class="form-group" id="seqVariantGroup">
+              <label>SEQ タイプ</label>
+              <select id="inputSeqVariant">
+                <option value="small02">スモールSEQ 0.2$</option>
+                <option value="small1">スモールSEQ 1$</option>
+                <option value="small3">スモールSEQ 3$</option>
+                <option value="small6">スモールSEQ 6$</option>
+              </select>
+            </div>
+            <div class="form-group" id="flatVariantGroup" style="display:none;">
+              <label>進行タイプ</label>
+              <select id="inputFlatVariant">
+                <option value="flat">フラット（1ユニット固定）</option>
+                <option value="martingale">マーチンゲール（倍がけ）</option>
+                <option value="dalembert">ダランベール（±1ユニット: 2,4,6,8,6,4...）</option>
+              </select>
+            </div>
+            <div class="form-group" id="dualUnitGroup" style="display:none;">
+              <label>1ユニットあたりの金額 ($)</label>
               <input type="number" id="inputDualUnit" value="100" min="1" step="1">
             </div>
+            <!-- 確定 money mode 値(非表示)。上の SEQ/進行 コントロールが駆動。
+                 旧UIのIDを維持して app.js の読み書きを壊さない。 -->
+            <select id="inputDualMoneyMode" style="display:none;">
+              <option value="flat">flat</option>
+              <option value="small02">small02</option>
+              <option value="small1">small1</option>
+              <option value="small3">small3</option>
+              <option value="small6">small6</option>
+              <option value="martingale">martingale</option>
+              <option value="dalembert">dalembert</option>
+            </select>
             <div class="form-group">
               <label class="checkbox-label">
                 <input type="checkbox" id="inputDualLive"> LIVE Mode (real bets)
@@ -331,6 +357,9 @@
           </div>
                     </div>
 
+          <!-- ▼ 旧モード専用の設定群。ユーザ要望で非表示(コード互換のため DOM は保持) ▼
+               損切り/利確/Executor ID/Label/Stake名/テーブル絞り込み/AutoClick待ち/Headless 等 -->
+          <div style="display:none" aria-hidden="true" id="legacySettingsHidden">
           <!-- BET単位(=chip_base) は廃止: モード側で金額を固定/SEQで決定する -->
           <div class="form-group" id="chipBaseGroup" style="display:none;">
             <label>Base Bet ($)</label>
@@ -393,6 +422,7 @@
               <input type="checkbox" id="inputHeadless"> Headless (not recommended)
             </label>
           </div>
+          </div><!-- ▲ /legacySettingsHidden ▲ -->
           <button class="btn btn-start" id="btnSaveSettings" style="width:100%;margin-top:12px;">SAVE</button>
         </div>
 

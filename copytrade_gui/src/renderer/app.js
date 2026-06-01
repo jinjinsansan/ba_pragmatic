@@ -670,9 +670,9 @@ function showContinueDialog() {
 
 const DEFAULT_SETTINGS = {
   chip_base: 1,
-  profit_target: 50,
+  profit_target: 0,
   profit_session_limit: 0,
-  loss_cut: 200,
+  loss_cut: 0,
   executor_id: 'gui-1',
   executor_label: 'MAIN-PC',
   stake_username: '',
@@ -695,9 +695,9 @@ const DEFAULT_SETTINGS = {
 
   headless: false,
   dry_run: false,
-  bet_mode: 'flat_1usd',
-  mode: 'executor',
-  dual_money_mode: 'flat',
+  bet_mode: 'dual_line',
+  mode: 'dual_line_assist',
+  dual_money_mode: 'small1',
   dual_unit: 100,
   dual_mode: 'v3',
   dual_live: false,
@@ -719,27 +719,20 @@ function isDualLineAssistBetMode(mode) {
 }
 
 function _ensureDualLineOption() {
+  // BET MODE はデュアルラインアシストのみ。旧 auto / legacy オプションは追加しない。
   const sel = $('#inputBetMode');
   if (!sel) return;
   let hasDual = false;
-  let hasAuto = false;
   for (const opt of sel.options) {
     if (opt.value === 'dual_line') {
       hasDual = true;
-      opt.textContent = 'DUAL-LINE Assist — manual final BET';
+      opt.textContent = 'デュアルラインアシスト';
     }
-    if (opt.value === 'dual_line_auto') hasAuto = true;
   }
   if (!hasDual) {
     const opt = document.createElement('option');
     opt.value = 'dual_line';
-    opt.textContent = 'DUAL-LINE Assist — manual final BET';
-    sel.appendChild(opt);
-  }
-  if (!hasAuto) {
-    const opt = document.createElement('option');
-    opt.value = 'dual_line_auto';
-    opt.textContent = 'DUAL-LINE Auto — experimental';
+    opt.textContent = 'デュアルラインアシスト';
     sel.appendChild(opt);
   }
 }
@@ -759,7 +752,64 @@ setTimeout(() => {
   $('#inputDualLive')?.addEventListener('change', function() {
     if ($('#inputDryRun')) $('#inputDryRun').checked = !this.checked;
   });
+  // MONEY MODE: SEQ / 非SEQ の二段ゲート
+  $('#inputMoneyType')?.addEventListener('change', () => { _applyMoneyTypeVisibility(); _commitMoneyMode(); });
+  $('#inputSeqVariant')?.addEventListener('change', _commitMoneyMode);
+  $('#inputFlatVariant')?.addEventListener('change', _commitMoneyMode);
 }, 100);
+
+// MONEY MODE 二段ゲート: 「SEQ」選択時はスモールSEQ(0.2/1/3/6)、非SEQ時は
+// フラット/マーチン/ダランベール＋ユニット額入力。確定値は隠し select
+// #inputDualMoneyMode に集約し、保存/読込ロジックを壊さない。
+function _applyMoneyTypeVisibility() {
+  const seq = ($('#inputMoneyType')?.value || 'seq') === 'seq';
+  if ($('#seqVariantGroup')) $('#seqVariantGroup').style.display = seq ? '' : 'none';
+  if ($('#flatVariantGroup')) $('#flatVariantGroup').style.display = seq ? 'none' : '';
+  if ($('#dualUnitGroup')) $('#dualUnitGroup').style.display = seq ? 'none' : '';
+}
+function _commitMoneyMode() {
+  const seq = ($('#inputMoneyType')?.value || 'seq') === 'seq';
+  const val = seq
+    ? ($('#inputSeqVariant')?.value || 'small1')
+    : ($('#inputFlatVariant')?.value || 'flat');
+  if ($('#inputDualMoneyMode')) $('#inputDualMoneyMode').value = val;
+}
+function _loadMoneyModeUI(mode) {
+  const m = String(mode || 'small1');
+  const isSeq = m.indexOf('small') === 0;  // small02/small1/small3/small6
+  if ($('#inputMoneyType')) $('#inputMoneyType').value = isSeq ? 'seq' : 'other';
+  if (isSeq) { if ($('#inputSeqVariant')) $('#inputSeqVariant').value = m; }
+  else { if ($('#inputFlatVariant')) $('#inputFlatVariant').value = m; }
+  if ($('#inputDualMoneyMode')) $('#inputDualMoneyMode').value = m;
+  _applyMoneyTypeVisibility();
+}
+
+// NOW 通知音: NOW(赤/青枠)が新規に出た時に2音チャイムを鳴らす。
+// Web Audio で生成(アセット不要・オフライン可)。同一 NOW の再配信では鳴らさない。
+let _nowAudioCtx = null;
+let _lastNowSoundId = '';
+function playNowSound() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    _nowAudioCtx = _nowAudioCtx || new AC();
+    const ctx = _nowAudioCtx;
+    if (ctx.state === 'suspended') { try { ctx.resume(); } catch (_) {} }
+    const t0 = ctx.currentTime;
+    [[880, 0.0], [1320, 0.14]].forEach(([freq, dt]) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0 + dt);
+      gain.gain.exponentialRampToValueAtTime(0.4, t0 + dt + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.45);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t0 + dt);
+      osc.stop(t0 + dt + 0.47);
+    });
+  } catch (_) { /* sound is best-effort */ }
+}
 
 function normalizeProfitSessionLimit(value) {
   const n = Number.isFinite(Number(value)) ? Math.floor(Number(value)) : 0;
@@ -1018,7 +1068,7 @@ $('#btnSettings')?.addEventListener('click', async () => {
   // dual-line 設定の表示切替（assist/auto も含めて group を表示する）
   const isDL = isDualLineBetMode(normalizeBetMode($('#inputBetMode')?.value));
   if ($('#dualLineMoneyGroup')) $('#dualLineMoneyGroup').style.display = isDL ? '' : 'none';
-  if ($('#inputDualMoneyMode')) $('#inputDualMoneyMode').value = s.dual_money_mode || 'flat';
+  _loadMoneyModeUI(s.dual_money_mode || 'small1');
   if ($('#inputDualUnit')) $('#inputDualUnit').value = s.dual_unit || 100;
   if ($('#inputDualLive')) $('#inputDualLive').checked = !!s.dual_live;
   if ($('#inputManualAssistAutoClick')) $('#inputManualAssistAutoClick').checked = !!s.manual_assist_auto_click;
@@ -1134,15 +1184,18 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
   try { document.activeElement?.blur?.(); } catch {}
   await new Promise((r) => setTimeout(r, 0));
 
+  // 二段ゲートの選択を確定 money mode へ反映してから読む
+  _commitMoneyMode();
   const selectedBetMode = normalizeBetMode($('#inputBetMode')?.value);
   const isDualLine = isDualLineBetMode(selectedBetMode);
   const isDualLineAssist = isDualLineAssistBetMode(selectedBetMode);
   const settings = {
     // bet_mode が金額を決めるため chip_base は固定 (UIも非表示)
     chip_base: isDualLine ? parseFloat($('#inputDualUnit')?.value || 100) : 1,
-    profit_target: (v => Number.isFinite(v) ? v : 50)(parseFloat($('#inputProfitTarget').value)),
-    profit_session_limit: normalizeProfitSessionLimit($('#inputProfitSessionLimit')?.value),
-    loss_cut: (v => Number.isFinite(v) ? v : 200)(parseFloat($('#inputLossCut').value)),
+    // 損切り/利確はUIから削除 = 無効(0)。リスク管理は手動(WIN/LOSE/STOP)。
+    profit_target: 0,
+    profit_session_limit: 0,
+    loss_cut: 0,
     dry_run: $('#inputDryRun').checked,
     bet_mode: selectedBetMode,
     executor_id: $('#inputExecutorId').value.trim(),
@@ -2191,6 +2244,14 @@ window.valhalla.onAgentMessage((msg) => {
       manualAssistEnabled = true;
       manualAssistEnabledAt = Date.now();
       const status = String(msg.status || '').toUpperCase();
+      // NOW(赤/青枠)が新規に出たら通知音。同一NOWの再配信では鳴らさない。
+      if (status === 'NOW') {
+        const _nowId = String(msg.id || msg.decision_id || '');
+        if (_nowId && _nowId !== _lastNowSoundId) {
+          _lastNowSoundId = _nowId;
+          playNowSound();
+        }
+      }
       const side = String(msg.side || '?').toUpperCase();
       const amount = Number.isFinite(Number(msg.amount)) ? Number(msg.amount).toFixed(2) : '0.00';
       const table = msg.table_name || msg.table_id || msg.qpid || '?';
@@ -2281,7 +2342,12 @@ window.valhalla.onAgentMessage((msg) => {
 
       const modal = $('#settingsModal');
       const modalOpen = modal && !modal.classList.contains('hidden');
-      if (!modalOpen && $('#inputBetMode')) $('#inputBetMode').value = nextMode;
+      // BET MODE はデュアルラインアシスト固定。select に存在する値のみ反映する
+      // (旧モード値が来ても単一オプションを壊さない)。
+      const _sel = $('#inputBetMode');
+      if (!modalOpen && _sel && [..._sel.options].some(o => o.value === nextMode)) {
+        _sel.value = nextMode;
+      }
       _streamSetSize = _setSizeForMode(nextMode);
       addLog(`BET mode → ${nextMode}`, 'info');
       break;
