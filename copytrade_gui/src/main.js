@@ -488,6 +488,91 @@ function _resolveSupportKeyPath(rawPath) {
   return path.join(repoRoot(), rawPath);
 }
 
+// ── CDP Chrome (port 9222) one-click launcher ───────────────────────────────
+// The distributed dual-line manual-assist build attaches the engine to a Chrome
+// running with --remote-debugging-port=9222. We launch that Chrome here so the
+// user only double-clicks the GUI icon (no separate task/script). No-op when a
+// CDP endpoint is already listening on the port (e.g. an existing cdp_chrome
+// task on the admin box) — it never double-binds the port.
+function _cdpPortFromUrl(u) {
+  try { const m = String(u || '').match(/:(\d{2,5})(?:\/|$)/); return m ? parseInt(m[1], 10) : 9222; } catch (_) { return 9222; }
+}
+function isCdpUp(port) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const http = require('http');
+      const req = http.get({ host: '127.0.0.1', port, path: '/json/version', timeout: 1500 }, (res) => {
+        res.resume();
+        finish(res.statusCode === 200);
+      });
+      req.on('error', () => finish(false));
+      req.on('timeout', () => { try { req.destroy(); } catch (_) {} finish(false); });
+    } catch (_) { finish(false); }
+  });
+}
+function findChromeExe() {
+  const cands = [
+    process.env.BACOPY_CHROME_EXE,
+    path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    process.env['LOCALAPPDATA'] ? path.join(process.env['LOCALAPPDATA'], 'Google', 'Chrome', 'Application', 'chrome.exe') : '',
+  ];
+  for (const c of cands) { try { if (c && fs.existsSync(c)) return c; } catch (_) {} }
+  return '';
+}
+let _cdpChromeLaunching = false;
+async function ensureCdpChrome(envFile) {
+  if (_cdpChromeLaunching) return false;
+  _cdpChromeLaunching = true;
+  try {
+    const env = envFile || {};
+    const cdpUrl = String(env.BACOPY_CHROME_CDP_URL || process.env.BACOPY_CHROME_CDP_URL || 'http://127.0.0.1:9222');
+    const port = _cdpPortFromUrl(cdpUrl);
+    if (await isCdpUp(port)) { console.log('[cdp-chrome] CDP already up on ' + port + ' — skip launch'); return true; }
+    const exe = findChromeExe();
+    if (!exe) {
+      console.warn('[cdp-chrome] chrome.exe not found');
+      try { sendToRenderer('agent-message', { type: 'log', message: '[起動] Google Chrome が見つかりません。インストールしてください。' }); } catch (_) {}
+      return false;
+    }
+    const profileDir = String(
+      env.BACOPY_CHROME_PROFILE_DIR || process.env.BACOPY_CHROME_PROFILE_DIR
+      || path.join(app.getPath('userData'), 'cdp_chrome_profile')
+    );
+    try { fs.mkdirSync(profileDir, { recursive: true }); } catch (_) {}
+    const lobby = String(
+      env.BACOPY_LOBBY_URL || process.env.BACOPY_LOBBY_URL
+      || 'https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat'
+    );
+    const args = [
+      `--remote-debugging-port=${port}`,
+      `--user-data-dir=${profileDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-session-crashed-bubble',
+      '--restore-last-session=false',
+      lobby,
+    ];
+    console.log('[cdp-chrome] launching ' + exe + ' port=' + port + ' profile=' + profileDir);
+    const proc = spawn(exe, args, { detached: true, stdio: 'ignore', windowsHide: false });
+    proc.unref();
+    try { sendToRenderer('agent-message', { type: 'log', message: '[起動] CDP Chrome を起動しました（初回は Stake にログインしてください）' }); } catch (_) {}
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      if (await isCdpUp(port)) { console.log('[cdp-chrome] CDP up on ' + port); return true; }
+    }
+    console.warn('[cdp-chrome] CDP did not come up within 15s');
+    return false;
+  } catch (e) {
+    console.warn('[cdp-chrome] ensure failed:', e && e.message);
+    return false;
+  } finally {
+    _cdpChromeLaunching = false;
+  }
+}
+
 function startSupportTunnel() {
   if (_supportTunnelProc) return;
   const envFile = loadDotEnv();
@@ -1502,6 +1587,9 @@ app.whenReady().then(() => {
   ).trim().toLowerCase();
   if (startupBrowser === 'chrome_attach' || startupBrowser === 'chrome-cdp' || startupBrowser === 'cdp') {
     console.log('[Main] chrome_attach configured; skip camoufox asset restore');
+    // One-click: launch the CDP Chrome (port 9222) the engine attaches to.
+    // No-op if 9222 is already up (admin box runs it via a task).
+    ensureCdpChrome(startupEnv).catch((e) => console.warn('[cdp-chrome] ensure error:', e && e.message));
   } else {
     try { ensureCamoufoxAssets(); } catch (e) { console.warn('[Main] camoufox restore failed:', e.message); }
   }
