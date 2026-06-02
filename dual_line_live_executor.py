@@ -6224,6 +6224,38 @@ class LiveBetExecutor:
             except Exception as ex:
                 logger.debug(f"[MANUAL-ASSIST] release_assist_now clear failed target={tid}: {ex}")
 
+    def read_bet_history(self) -> list:
+        """READ-ONLY: extract the Stake 'Bet History' (My Bets) rows from the
+        top lobby page DOM for billing. Returns a list of
+        {uuid, cells:[game,time,stake,mult,payout]}. Empty on any failure.
+        Bet rows carry a per-row UUID (data-test-id); the header row does not.
+        No clicks / no navigation — pure DOM read."""
+        page = self._lobby_page or self._bet_page
+        if page is None:
+            return []
+        js = r"""
+        () => {
+          const rows = [];
+          for (const tb of Array.from(document.querySelectorAll('table'))) {
+            for (const tr of Array.from(tb.querySelectorAll('tr'))) {
+              let uuid = '';
+              try { for (const a of tr.attributes) { if (/^data-test-id$/i.test(a.name)) { uuid = a.value; break; } } } catch(_) {}
+              if (!uuid) continue;
+              let cells = [];
+              try { for (const c of tr.querySelectorAll('td')) cells.push((c.textContent||'').trim()); } catch(_) {}
+              if (cells.length >= 4) rows.push({ uuid: uuid, cells: cells });
+            }
+          }
+          return rows;
+        }
+        """
+        try:
+            res = page.evaluate(js)
+            return res if isinstance(res, list) else []
+        except Exception as ex:
+            logger.debug(f"[BILLING] read_bet_history failed: {ex}")
+            return []
+
     def _bot_now_lock_active(self) -> dict[str, Any]:
         lock = self._bot_now_lock or {}
         if not lock:

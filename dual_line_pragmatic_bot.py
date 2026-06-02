@@ -2750,6 +2750,134 @@ class DualLinePragmaticBot(cp.Collector):
             logger.error(f"[DECISION-PUBLISH] failed did={did} base={base_url} result={result}")
             return ""
 
+    # ── 課金: Stake「ベット履歴」DOMから realized PnL を集計 (Step 1: log-only) ──
+    # 口座の全バカラBETの純損益 net=stake*(mult-1) を UUID 重複排除で日次集計。
+    # WIN/LOSEボタン非依存・入出金除外。後で daily_pnl を /api/session-state へ送る。
+    @staticmethod
+    def _billing_num(s):
+        try:
+            m = re.search(r"-?\d[\d,]*\.?\d*", str(s).replace(",", ""))
+            return float(m.group(0)) if m else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _billing_is_baccarat(game) -> bool:
+        g = str(game or "")
+        return ("baccarat" in g.lower()) or ("バカラ" in g)
+
+    @staticmethod
+    def _billing_jst_date() -> str:
+        # JST = UTC+9; avoid timedelta import by shifting the epoch.
+        return time.strftime("%Y-%m-%d", time.gmtime(time.time() + 9 * 3600))
+
+    def _load_billing_state(self) -> None:
+        self._billing_seen: set = set()
+        self._billing_seen_order: list = []
+        self._billing_daily_pnl: float = 0.0
+        self._billing_daily_date: str = self._billing_jst_date()
+        self._billing_prev_pnl: float = 0.0
+        self._billing_prev_date: str = ""
+        self._billing_count: int = 0
+        self._billing_seeded: bool = False
+        p = getattr(self, "_billing_state_path", None)
+        try:
+            if p and Path(p).exists():
+                d = json.loads(Path(p).read_text(encoding="utf-8"))
+                self._billing_seen_order = list(d.get("seen") or [])
+                self._billing_seen = set(self._billing_seen_order)
+                self._billing_daily_pnl = float(d.get("daily_pnl") or 0.0)
+                self._billing_daily_date = str(d.get("daily_date") or self._billing_jst_date())
+                self._billing_prev_pnl = float(d.get("prev_pnl") or 0.0)
+                self._billing_prev_date = str(d.get("prev_date") or "")
+                self._billing_count = int(d.get("count") or 0)
+                self._billing_seeded = True  # prior state exists → do NOT reseed
+                logger.info(
+                    f"[BILLING] state loaded: daily_pnl={self._billing_daily_pnl:+.4f} "
+                    f"date={self._billing_daily_date} seen={len(self._billing_seen)} n={self._billing_count}"
+                )
+        except Exception as ex:
+            logger.warning(f"[BILLING] state load failed: {ex}")
+
+    def _save_billing_state(self) -> None:
+        p = getattr(self, "_billing_state_path", None)
+        if not p:
+            return
+        try:
+            Path(p).write_text(json.dumps({
+                "seen": self._billing_seen_order[-3000:],
+                "daily_pnl": round(self._billing_daily_pnl, 8),
+                "daily_date": self._billing_daily_date,
+                "prev_pnl": round(self._billing_prev_pnl, 8),
+                "prev_date": self._billing_prev_date,
+                "count": self._billing_count,
+            }), encoding="utf-8")
+        except Exception as ex:
+            logger.debug(f"[BILLING] state save failed: {ex}")
+
+    def _poll_bet_history_billing(self) -> None:
+        try:
+            reader = getattr(self.bet_executor, "read_bet_history", None)
+            if not callable(reader):
+                return
+            rows = reader() or []
+            if not rows:
+                return
+            # JST 深夜ロールオーバー
+            today = self._billing_jst_date()
+            if self._billing_daily_date and today != self._billing_daily_date:
+                self._billing_prev_pnl = self._billing_daily_pnl
+                self._billing_prev_date = self._billing_daily_date
+                self._billing_daily_pnl = 0.0
+                self._billing_daily_date = today
+                logger.info(
+                    f"[BILLING] JST rollover -> {today} (prev {self._billing_prev_date} "
+                    f"pnl={self._billing_prev_pnl:+.4f})"
+                )
+            # 初回のみ: 既存(開始前)のBETを seen に入れて課金対象外にする
+            # (開始後の新規BETから課金。連続稼働前提なので実害は初回のみ)。
+            if not self._billing_seeded:
+                for r in rows:
+                    u = str(r.get("uuid") or "")
+                    if u and u not in self._billing_seen:
+                        self._billing_seen.add(u)
+                        self._billing_seen_order.append(u)
+                self._billing_seeded = True
+                self._save_billing_state()
+                logger.info(
+                    f"[BILLING] seeded {len(self._billing_seen)} pre-existing bets "
+                    f"(not billed); counting NEW bets from now"
+                )
+                return
+            added = 0
+            for r in rows:
+                u = str(r.get("uuid") or "")
+                c = r.get("cells") or []
+                if not u or u in self._billing_seen or len(c) < 4:
+                    continue
+                self._billing_seen.add(u)
+                self._billing_seen_order.append(u)
+                game = c[0] if len(c) > 0 else ""
+                stake = self._billing_num(c[2]) if len(c) > 2 else None
+                mult = self._billing_num(c[3]) if len(c) > 3 else None
+                if stake is None or mult is None or not self._billing_is_baccarat(game):
+                    continue
+                net = stake * (mult - 1.0)
+                self._billing_daily_pnl += net
+                self._billing_count += 1
+                added += 1
+                logger.info(
+                    f"[BILLING] new bet game={game!r} stake={stake:.4f} mult={mult:.2f} "
+                    f"net={net:+.4f} -> daily_pnl={self._billing_daily_pnl:+.4f} (n={self._billing_count})"
+                )
+            if added:
+                if len(self._billing_seen_order) > 6000:
+                    self._billing_seen_order = self._billing_seen_order[-3000:]
+                    self._billing_seen = set(self._billing_seen_order)
+                self._save_billing_state()
+        except Exception as ex:
+            logger.debug(f"[BILLING] poll error: {ex}")
+
     # ── 状態保存/復元 ──────────────────────────────────────────────
 
     def _save_state(self):
@@ -5077,6 +5205,10 @@ class DualLinePragmaticBot(cp.Collector):
             shutil.copytree(str(cp.SOURCE_PROFILE), str(profile))
         logger.info(f"DB initialized. Profile: {profile}")
 
+        # 課金: ベット履歴集計の状態ファイル(プロファイル配下) を準備して復元。
+        self._billing_state_path = Path(profile) / "dual_line_billing_state.json"
+        self._load_billing_state()
+
         launch_opts: dict = {
             "headless": self.headless,
             "persistent_context": True,
@@ -5278,6 +5410,7 @@ class DualLinePragmaticBot(cp.Collector):
             last_prepos_check = time.time() - 10  # 初回即チェック
             last_result_check = time.time()
             last_result_flush_check = time.time()
+            last_billing_poll = 0.0
             last_remote_signal_poll = time.time() - 5
             last_decision_fallback_poll = time.time() - 5
             last_tick_diag = 0.0
@@ -5483,6 +5616,11 @@ class DualLinePragmaticBot(cp.Collector):
                         self._check_decision_results()
                     except Exception as e:
                         logger.debug(f"[BOT] result poll error: {e}")
+
+                # ── 課金: ベット履歴 realized PnL 集計 (6秒ごと・log-only) ──
+                if self.bet_executor.is_live and now - last_billing_poll >= 6.0:
+                    last_billing_poll = now
+                    self._poll_bet_history_billing()
 
                 # ── 定期ステータスレポート ───────────────────────
                 if now - last_report >= report_interval:
