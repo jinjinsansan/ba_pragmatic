@@ -2878,6 +2878,43 @@ class DualLinePragmaticBot(cp.Collector):
         except Exception as ex:
             logger.debug(f"[BILLING] poll error: {ex}")
 
+    def _sync_billing_session_state(self) -> None:
+        """Step 2: realized daily_bet_pnl を bafather /api/session-state へ POST。
+        settle cron の最優先課金ソース(daily_bet_pnl)で、サーバが管理者設定の
+        profit_share_rate を適用。email+api_key 未設定なら送らずペイロードをログ
+        のみ(配布前/未プロビジョニング機での誤送信防止)。"""
+        try:
+            state = {
+                "daily_bet_pnl": round(float(self._billing_daily_pnl), 4),
+                "daily_bet_pnl_date": self._billing_daily_date,
+                "prev_daily_bet_pnl": round(float(self._billing_prev_pnl), 4),
+                "prev_daily_bet_pnl_date": self._billing_prev_date,
+                "total_bets": int(self._billing_count),
+                "last_updated_at": _utc_now_iso(),
+            }
+            email = getattr(self, "_billing_email", "")
+            key = getattr(self, "_billing_api_key", "")
+            if not email or not key:
+                logger.info(f"[BILLING-SYNC] not sent (no email/api_key); payload={json.dumps(state)}")
+                return
+            import urllib.request as _ur
+            url = f"{getattr(self, '_billing_site', 'https://www.bafather.uk').rstrip('/')}/api/session-state"
+            body = json.dumps({"email": email, "api_key": key, "session_state": state}).encode("utf-8")
+            req = _ur.Request(
+                url, data=body,
+                headers={"Content-Type": "application/json", "User-Agent": "LAPLACE-dualline/1.0"},
+                method="POST",
+            )
+            with _ur.urlopen(req, timeout=10) as resp:
+                ok = (getattr(resp, "status", 200) == 200)
+            logger.info(
+                f"[BILLING-SYNC] posted daily_bet_pnl={state['daily_bet_pnl']:+.4f} "
+                f"date={state['daily_bet_pnl_date']} n={state['total_bets']} "
+                f"email={email[:6]}... ok={ok}"
+            )
+        except Exception as ex:
+            logger.warning(f"[BILLING-SYNC] post failed: {ex}")
+
     # ── 状態保存/復元 ──────────────────────────────────────────────
 
     def _save_state(self):
@@ -5208,6 +5245,25 @@ class DualLinePragmaticBot(cp.Collector):
         # 課金: ベット履歴集計の状態ファイル(プロファイル配下) を準備して復元。
         self._billing_state_path = Path(profile) / "dual_line_billing_state.json"
         self._load_billing_state()
+        # 課金送信(Step 2)の認証情報。per-user .env の BACOPY_USER_EMAIL を優先、
+        # 無ければ BACOPY_SUPPORT_USER_EMAIL。両方無ければ送らずログのみ。
+        self._billing_email = (
+            os.getenv("BACOPY_USER_EMAIL", "").strip()
+            or os.getenv("BACOPY_SUPPORT_USER_EMAIL", "").strip()
+        )
+        self._billing_api_key = (
+            os.getenv("LAPLACE_SITE_API_KEY", "").strip()
+            or os.getenv("LAPLACE_API_KEY", "").strip()
+        )
+        self._billing_site = (
+            os.getenv("LAPLACE_SITE_URL", "").strip()
+            or os.getenv("BACOPY_SESSION_SITE_URL", "").strip()
+            or "https://www.bafather.uk"
+        )
+        logger.info(
+            f"[BILLING-SYNC] config email={'set' if self._billing_email else 'MISSING'} "
+            f"api_key={'set' if self._billing_api_key else 'MISSING'} site={self._billing_site}"
+        )
 
         launch_opts: dict = {
             "headless": self.headless,
@@ -5411,6 +5467,7 @@ class DualLinePragmaticBot(cp.Collector):
             last_result_check = time.time()
             last_result_flush_check = time.time()
             last_billing_poll = 0.0
+            last_billing_sync = 0.0
             last_remote_signal_poll = time.time() - 5
             last_decision_fallback_poll = time.time() - 5
             last_tick_diag = 0.0
@@ -5617,10 +5674,15 @@ class DualLinePragmaticBot(cp.Collector):
                     except Exception as e:
                         logger.debug(f"[BOT] result poll error: {e}")
 
-                # ── 課金: ベット履歴 realized PnL 集計 (6秒ごと・log-only) ──
+                # ── 課金: ベット履歴 realized PnL 集計 (6秒ごと) ──
                 if self.bet_executor.is_live and now - last_billing_poll >= 6.0:
                     last_billing_poll = now
                     self._poll_bet_history_billing()
+
+                # ── 課金: session-state を bafather へ同期 (60秒ごと) ──
+                if self.bet_executor.is_live and now - last_billing_sync >= 60.0:
+                    last_billing_sync = now
+                    self._sync_billing_session_state()
 
                 # ── 定期ステータスレポート ───────────────────────
                 if now - last_report >= report_interval:
