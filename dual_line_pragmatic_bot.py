@@ -2780,6 +2780,13 @@ class DualLinePragmaticBot(cp.Collector):
         self._billing_prev_date: str = ""
         self._billing_count: int = 0
         self._billing_seeded: bool = False
+        # 残高(リアルタイム表示用) — Stake口座WSの捕捉値から取得して送る
+        self._billing_currency: str = ""
+        self._billing_current_balance = None      # float | None
+        self._billing_last_balance_at: float = 0.0
+        self._billing_balance_open = None          # float | None (JST日初の残高)
+        self._billing_balance_open_date: str = ""
+        self._billing_balance_seen: bool = False
         p = getattr(self, "_billing_state_path", None)
         try:
             if p and Path(p).exists():
@@ -2791,6 +2798,9 @@ class DualLinePragmaticBot(cp.Collector):
                 self._billing_prev_pnl = float(d.get("prev_pnl") or 0.0)
                 self._billing_prev_date = str(d.get("prev_date") or "")
                 self._billing_count = int(d.get("count") or 0)
+                if d.get("balance_open") is not None:
+                    self._billing_balance_open = float(d.get("balance_open"))
+                self._billing_balance_open_date = str(d.get("balance_open_date") or "")
                 self._billing_seeded = True  # prior state exists → do NOT reseed
                 logger.info(
                     f"[BILLING] state loaded: daily_pnl={self._billing_daily_pnl:+.4f} "
@@ -2811,12 +2821,61 @@ class DualLinePragmaticBot(cp.Collector):
                 "prev_pnl": round(self._billing_prev_pnl, 8),
                 "prev_date": self._billing_prev_date,
                 "count": self._billing_count,
+                "balance_open": (round(self._billing_balance_open, 8)
+                                 if self._billing_balance_open is not None else None),
+                "balance_open_date": self._billing_balance_open_date,
             }), encoding="utf-8")
         except Exception as ex:
             logger.debug(f"[BILLING] state save failed: {ex}")
 
+    def _capture_stake_balance(self) -> None:
+        """リアルタイム残高表示用: executor が Stake口座WS(availableBalances)から
+        捕捉した残高を読み、current_balance / daily_open(JST日初) を更新する。
+        WSが無音(捕捉0)なら何もしない。送信は _sync_billing_session_state。"""
+        try:
+            bal = None
+            cur = "USDT"
+            # 1) Pragmatic ゲームフレームの DOM から残高を読む(主経路・確実)。
+            #    口座WSは chrome_attach(OOPIF)で残高フレーム不達のため使えない。
+            try:
+                reader = getattr(self.bet_executor, "read_stake_balance", None)
+                if callable(reader):
+                    r = reader()
+                    if r is not None:
+                        bal = float(r)
+            except Exception:
+                bal = None
+            # 2) フォールバック: executor の WS 捕捉(通常 chrome_attach では無音)。
+            if bal is None:
+                bals = getattr(self.bet_executor, "_stake_balance_by_currency", {}) or {}
+                if bals:
+                    _c = ""
+                    for c in ("USDT", "USD", "USDC"):
+                        if c in bals:
+                            _c = c
+                            break
+                    if not _c:
+                        _c = max(bals, key=lambda k: float(bals.get(k) or 0.0))
+                    cur = _c
+                    bal = float(bals.get(_c) or 0.0)
+            if bal is None:
+                return
+            self._billing_currency = cur
+            self._billing_current_balance = bal
+            self._billing_last_balance_at = time.time()
+            today = self._billing_jst_date()
+            if self._billing_balance_open_date != today or self._billing_balance_open is None:
+                self._billing_balance_open_date = today
+                self._billing_balance_open = bal
+            if not self._billing_balance_seen:
+                self._billing_balance_seen = True
+                logger.info(f"[BILLING-BAL] first balance captured {cur}={bal:.4f}")
+        except Exception as ex:
+            logger.debug(f"[BILLING-BAL] capture failed: {ex}")
+
     def _poll_bet_history_billing(self) -> None:
         try:
+            self._capture_stake_balance()
             reader = getattr(self.bet_executor, "read_bet_history", None)
             if not callable(reader):
                 return
@@ -2892,6 +2951,22 @@ class DualLinePragmaticBot(cp.Collector):
                 "total_bets": int(self._billing_count),
                 "last_updated_at": _utc_now_iso(),
             }
+            # リアルタイム残高(/me/realtime 表示用)。Stake口座WSの捕捉値がある時のみ付与。
+            if self._billing_current_balance is not None and self._billing_last_balance_at:
+                try:
+                    _bal_iso = datetime.fromtimestamp(
+                        float(self._billing_last_balance_at), tz=timezone.utc
+                    ).isoformat()
+                except Exception:
+                    _bal_iso = _utc_now_iso()
+                state["current_balance"] = round(float(self._billing_current_balance), 4)
+                state["last_balance_at"] = _bal_iso
+                state["currency"] = self._billing_currency
+                if self._billing_balance_open is not None:
+                    state["daily_open"] = {
+                        "date": self._billing_balance_open_date,
+                        "balance": round(float(self._billing_balance_open), 4),
+                    }
             email = getattr(self, "_billing_email", "")
             key = getattr(self, "_billing_api_key", "")
             if not email or not key:
@@ -2907,10 +2982,12 @@ class DualLinePragmaticBot(cp.Collector):
             )
             with _ur.urlopen(req, timeout=10) as resp:
                 ok = (getattr(resp, "status", 200) == 200)
+            _bal_s = (f"{state.get('currency','')}{state['current_balance']:.4f}"
+                      if 'current_balance' in state else "NONE(ws-silent)")
             logger.info(
                 f"[BILLING-SYNC] posted daily_bet_pnl={state['daily_bet_pnl']:+.4f} "
                 f"date={state['daily_bet_pnl_date']} n={state['total_bets']} "
-                f"email={email[:6]}... ok={ok}"
+                f"current_balance={_bal_s} email={email[:6]}... ok={ok}"
             )
         except Exception as ex:
             logger.warning(f"[BILLING-SYNC] post failed: {ex}")

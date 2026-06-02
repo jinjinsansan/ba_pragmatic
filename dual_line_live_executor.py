@@ -6256,6 +6256,32 @@ class LiveBetExecutor:
             logger.debug(f"[BILLING] read_bet_history failed: {ex}")
             return []
 
+    def read_stake_balance(self):
+        """READ-ONLY: read the player's balance from the Pragmatic game frame DOM
+        (bottom: '残高$ 109.40' / 'Balance $109.40'). The Stake account WS does not
+        deliver balance frames in chrome_attach (OOPIF), and the stake.com header
+        shows dots, but the in-game balance IS plain DOM text. Returns float|None."""
+        try:
+            fr = self._find_pragmatic_frame()
+            if fr is None:
+                return None
+            js = r"""
+            () => {
+              try {
+                const txt = document.body ? document.body.innerText : '';
+                let m = txt.match(/残高[^0-9-]*([0-9,]+\.[0-9]+)/);
+                if (!m) m = txt.match(/Balance[^0-9-]*([0-9,]+\.[0-9]+)/i);
+                if (!m) return null;
+                return parseFloat(m[1].replace(/,/g, ''));
+              } catch (e) { return null; }
+            }
+            """
+            v = fr.evaluate(js)
+            return float(v) if v is not None else None
+        except Exception as ex:
+            logger.debug(f"[BILLING] read_stake_balance failed: {ex}")
+            return None
+
     def _bot_now_lock_active(self) -> dict[str, Any]:
         lock = self._bot_now_lock or {}
         if not lock:
