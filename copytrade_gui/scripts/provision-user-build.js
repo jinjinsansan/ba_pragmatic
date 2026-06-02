@@ -198,6 +198,19 @@ function main() {
     BACOPY_BAFATHER_EMAIL: bafatherEmail,
     BACOPY_EXECUTOR_ID: executorId,
     BACOPY_EXECUTOR_LABEL: executorId,
+    // ── dual-line manual-assist distribution config ──
+    // BACOPY_BROWSER=chrome_attach is REQUIRED so the GUI (a) launches the CDP
+    // Chrome on port 9222 at app-ready (ensureCdpChrome) and (b) attaches the
+    // engine to it. Manual-assist is forced (no auto-click) — this build is for
+    // human-eyes manual betting; the engine only sizes bets + tracks SEQ + bills.
+    BACOPY_BROWSER: 'chrome_attach',
+    BACOPY_CHROME_CDP_URL: 'http://127.0.0.1:9222',
+    BACOPY_LOBBY_URL: 'https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat',
+    BACOPY_MANUAL_NO_AUTOCLICK: '1',
+    BACOPY_ASSIST_FOCUS_HOLD_SEC: '80',
+    BACOPY_NOW_LOCK_MAX_SEC: '80',
+    BACOPY_ASSIST_NOW_TTL_MS: '85000',
+    BACOPY_DGA_LOCAL_SIGNAL: 'off',
   };
   let out = existing;
   for (const [k, v] of Object.entries(merge)) {
