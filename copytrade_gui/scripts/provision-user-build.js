@@ -163,6 +163,9 @@ function main() {
   } catch (_) {}
 
   const apiKey = process.env.BACOPY_API_KEY || localEnv.BACOPY_API_KEY || '';
+  // 配布ユーザーはローカル中継が無いのでリモートmaster直結。BACOPY_REMOTE_API_KEY
+  // (無ければ BACOPY_API_KEY) を remote 経路用にも書き出す。
+  const remoteApiKey = process.env.BACOPY_REMOTE_API_KEY || localEnv.BACOPY_REMOTE_API_KEY || apiKey || '';
   const supabaseUrl = localEnv.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
   const supabaseAnonKey = localEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
   const laplaceApiKey = process.env.LAPLACE_API_KEY || localEnv.LAPLACE_API_KEY || '';
@@ -192,6 +195,7 @@ function main() {
     BACOPY_SUPPORT_LOCAL_PORT: '22',
     BACOPY_API_URL: 'https://master.bafather.uk',
     ...(apiKey ? { BACOPY_API_KEY: apiKey } : {}),
+    ...(remoteApiKey ? { BACOPY_REMOTE_API_KEY: remoteApiKey } : {}),
     ...(supabaseUrl ? { NEXT_PUBLIC_SUPABASE_URL: supabaseUrl } : {}),
     ...(supabaseAnonKey ? { NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey } : {}),
     ...(laplaceApiKey ? { LAPLACE_API_KEY: laplaceApiKey } : {}),
