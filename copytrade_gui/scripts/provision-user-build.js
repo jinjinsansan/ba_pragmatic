@@ -215,6 +215,10 @@ function main() {
     BACOPY_NOW_LOCK_MAX_SEC: '80',
     BACOPY_ASSIST_NOW_TTL_MS: '85000',
     BACOPY_DGA_LOCAL_SIGNAL: 'off',
+    // VPS-driven NOW: GUIのNOWをVPS decision(=テレグラム配信と1対1)だけで駆動。
+    // ローカル独自signalは抑止。複数受け子のfan-out衝突を避けるため受け子からは
+    // decisionのack/result(status書換)を送らない(VPSがライフサイクル所有)。
+    BACOPY_VPS_DRIVEN_NOW: '1',
   };
   let out = existing;
   for (const [k, v] of Object.entries(merge)) {

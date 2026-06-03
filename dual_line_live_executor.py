@@ -1763,6 +1763,8 @@ class LiveBetExecutor:
         self._last_active_now_bet_center_at: float = 0.0
         self._assist_focus_hold: dict[str, Any] = {}
         self._last_assist_focus_center_at: float = 0.0
+        # 機能①(HOLD): この QPID を固定中は他卓へ focus を移さず中央保持を続ける。
+        self._pinned_qpid: str = ""
         # Bot-owned NOW lock mirror. Source of truth lives in dual_line_pragmatic_bot;
         # the executor only reads it to drop competing focus/auto-fire while a NOW
         # decision is locked to a single table.
@@ -6011,6 +6013,25 @@ class LiveBetExecutor:
         )
         self._center_multi_tile(tid, table_name, click=False, source="visible_bet_hold")
 
+    def set_pinned_table(self, qpid: str) -> None:
+        """機能①(HOLD): この卓を固定。固定中は他卓へfocusを移さず中央保持を続ける。"""
+        self._pinned_qpid = str(qpid or "").strip()
+        logger.info(f"[ASSIST-HOLD] PIN set qpid={self._pinned_qpid or '-'}")
+
+    def clear_pinned_table(self) -> None:
+        """機能①(HOLD): 固定を解除し通常のマルチ卓スキャンに戻す。
+        固定卓の中央保持(_assist_focus_hold)が居残らないよう明示クリアする。"""
+        qpid = self._pinned_qpid
+        if qpid:
+            logger.info(f"[ASSIST-HOLD] PIN cleared qpid={qpid}")
+        self._pinned_qpid = ""
+        self._assist_focus_hold = {}
+        try:
+            if qpid:
+                self.clear_manual_assist_overlay(qpid)
+        except Exception:
+            pass
+
     def _start_assist_focus_hold(self, table_id: str, table_name: str = "", *, intent: str = "") -> None:
         if not self._multi_lobby_mode:
             return
@@ -6018,6 +6039,9 @@ class LiveBetExecutor:
             return
         tid = str(table_id or "").strip()
         if not tid:
+            return
+        # 機能①(HOLD): 固定中は固定卓以外へ focus を移さない（スクロール抑止）。
+        if self._pinned_qpid and tid != self._pinned_qpid:
             return
         # preposition 先を別卓へ切り替える際、前卓の黄色 overlay を明示削除し、
         # 信号化しなかった卓に黄色枠が残留するのを防ぐ (2026-05-30)。
@@ -6294,6 +6318,19 @@ class LiveBetExecutor:
 
     def _maintain_assist_focus_hold(self, now: float | None = None) -> None:
         hold = self._assist_focus_hold or {}
+        # 機能①(HOLD): 固定中は固定卓を保持し続ける（期限切れで赤/青枠を消さない）。
+        if self._pinned_qpid:
+            nowt = time.time() if now is None else now
+            if str(hold.get("table_id") or "") != self._pinned_qpid:
+                hold = {
+                    "table_id": self._pinned_qpid,
+                    "table_name": str((hold or {}).get("table_name") or self._pinned_qpid),
+                    "intent": "pinned",
+                    "until": nowt + 3600.0,
+                }
+            else:
+                hold["until"] = nowt + 3600.0
+            self._assist_focus_hold = hold
         if not hold:
             return
         visible_hold = self._visible_bet_hold or {}

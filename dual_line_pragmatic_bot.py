@@ -476,6 +476,12 @@ class DualLinePragmaticBot(cp.Collector):
         self._manual_assist_items: dict[str, dict] = {}
         self._manual_command_reader_started = False
         self._now_lock: dict[str, object] = {}
+        # 機能①(HOLD): この卓を固定して他卓のシグナルでスクロールさせない。
+        self._pinned = False
+        self._pinned_lock: dict[str, object] = {}
+        # VPS-driven NOW: GUIのNOWを VPS decision(=テレグラム配信と同一) だけで駆動し、
+        # ローカル独自signalのNOWは抑止する（テレグラムと1対1・同速にする）。
+        self._vps_driven_now = os.getenv("BACOPY_VPS_DRIVEN_NOW", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
         # 累計統計
@@ -856,6 +862,12 @@ class DualLinePragmaticBot(cp.Collector):
         did = str(decision_id or "").strip()
         if not tid and not did:
             return
+        # 機能①(HOLD): 固定中は固定卓以外のNOWでフォーカスを奪わない（スクロール抑止）。
+        if self._pinned:
+            ptid = str((self._pinned_lock or {}).get("table_id") or "")
+            if ptid and tid and tid != ptid:
+                logger.info(f"[NOW-LOCK] suppressed (pinned to {ptid[:12]}) for table={tid[:12]}")
+                return
         # match_table_id = the COLLECTOR table_id that _on_new_hand fires with
         # (can differ from `tid`, which is the QPID used for executor overlay /
         # focus-hold keying in multi-area lobby). signal_game_id = the gameId of
@@ -974,12 +986,153 @@ class DualLinePragmaticBot(cp.Collector):
                 return
             if qpid and lk_tid and qpid != lk_tid:
                 return
+            # 機能①(HOLD): 固定中はハンド終了で解除せず、同卓に赤/青枠を再描画して保持。
+            if self._pinned and self._pinned_lock:
+                logger.info(
+                    f"[NOW-LOCK] hand-end: pinned -> keep box (re-arm) qpid={qpid or lk_tid}"
+                )
+                self._rearm_pinned_box()
+                return
             logger.info(
                 f"[NOW-LOCK] hand-end clear (betsopen) qpid={qpid or lk_tid} gid={gid or '-'}"
             )
             self._release_now_lock(decision_id=lk_did, reason="hand_ended")
         except Exception as ex:
             logger.debug(f"[NOW-LOCK] executor hand-end clear failed: {ex}")
+
+    def _is_pinned_item(self, item: dict | None) -> bool:
+        """この item が現在HOLD固定中の卓のものかを判定。"""
+        if not self._pinned or not item:
+            return False
+        pl = self._pinned_lock or {}
+        ptbl = str(pl.get("table_id") or pl.get("qpid") or "")
+        if not ptbl:
+            return True
+        itbl = str(item.get("qpid") or item.get("table_id") or "")
+        return bool(itbl) and itbl == ptbl
+
+    def _rearm_manual_now(self, key: str, item: dict, *, reason: str = "") -> None:
+        """同じ卓・同方向で赤/青枠(NOW)を再表示し、再BET可能な状態に戻す。
+        機能②(TIEプッシュ) と 機能①(HOLD固定中の継続BET) で共用。"""
+        if not item:
+            return
+        side = str(item.get("side") or "P").upper()
+        tid = str(item.get("table_id") or "")
+        qpid = str(item.get("qpid") or item.get("table_id") or "")
+        tname = str(item.get("table_name") or tid)
+        try:
+            amount = float(self.money.next_bet() or 0.0)
+        except Exception:
+            amount = float(item.get("amount") or 0.0)
+        did = str(item.get("decision_id") or item.get("id") or key or "")
+        item["status"] = "NOW"
+        item["amount"] = amount
+        item.pop("manual_result", None)
+        item.pop("settled_at", None)
+        self._send_manual_assist_item(
+            status="NOW",
+            table_id=tid,
+            table_name=tname,
+            qpid=qpid,
+            side=side,
+            amount=amount,
+            pattern_key=str(item.get("pattern_key") or ""),
+            decision_id=str(item.get("decision_id") or ""),
+            item_id=str(key or item.get("id") or ""),
+            signal_game_id=str(item.get("signal_game_id") or ""),
+            source=str(item.get("source") or "rearm"),
+            expires_sec=30.0,
+        )
+        self._start_now_lock(
+            decision_id=did,
+            table_id=qpid or tid,
+            table_name=tname,
+            side=side,
+            match_table_id=tid,
+            signal_game_id=str(item.get("signal_game_id") or ""),
+        )
+        logger.info(
+            f"[MANUAL-ASSIST] re-arm NOW ({reason}) table={tname} side={side} amount=${amount:.2f}"
+        )
+
+    def _rearm_pinned_box(self) -> None:
+        """HOLD固定中、ハンド終了後も同卓に赤/青枠を再描画して保持する。"""
+        pl = self._pinned_lock or {}
+        tid = str(pl.get("table_id") or "")
+        if not tid:
+            return
+        self._start_now_lock(
+            decision_id=str(pl.get("decision_id") or ""),
+            table_id=tid,
+            table_name=str(pl.get("table_name") or tid),
+            side=str(pl.get("side") or ""),
+            match_table_id=tid,
+        )
+
+    def _handle_hold_command(self, want: bool, *, item: dict | None = None, key: str = "") -> None:
+        """機能①: GUIのHOLDボタン。固定中はその卓に留まり他卓のシグナルでスクロールしない。
+        解除はボタン再押下のみ（自動解除なし）。"""
+        lock = self._now_lock if isinstance(self._now_lock, dict) else {}
+        if want:
+            ptid = str(
+                (lock.get("table_id") if lock else "")
+                or (item or {}).get("qpid")
+                or (item or {}).get("table_id")
+                or ""
+            )
+            self._pinned = True
+            self._pinned_lock = {
+                "table_id": ptid,
+                "qpid": ptid,
+                "table_name": str(
+                    (item or {}).get("table_name")
+                    or (lock.get("table_name") if lock else "")
+                    or ptid
+                ),
+                "side": str((item or {}).get("side") or (lock.get("side") if lock else "") or ""),
+                "decision_id": str(
+                    (lock.get("decision_id") if lock else "") or (item or {}).get("decision_id") or ""
+                ),
+                "item_key": str(key or (item or {}).get("id") or ""),
+            }
+            if lock:
+                self._now_lock["pinned"] = True
+                self._now_lock["until"] = time.time() + 36000.0
+            try:
+                pin_fn = getattr(self.bet_executor, "set_pinned_table", None)
+                if callable(pin_fn) and ptid:
+                    pin_fn(ptid)
+            except Exception as ex:
+                logger.debug(f"[HOLD] executor set_pinned_table failed: {ex}")
+            if item:
+                self._rearm_manual_now(key, item, reason="pin_on")
+            logger.info(f"[MANUAL-ASSIST] HOLD pin ON table={ptid or '-'}")
+        else:
+            ptid = str((self._pinned_lock or {}).get("table_id") or "")
+            pdid = str(
+                (self._pinned_lock or {}).get("decision_id")
+                or (lock.get("decision_id") if lock else "")
+                or ""
+            )
+            self._pinned = False
+            self._pinned_lock = {}
+            try:
+                pin_fn = getattr(self.bet_executor, "clear_pinned_table", None)
+                if callable(pin_fn):
+                    pin_fn()
+            except Exception as ex:
+                logger.debug(f"[HOLD] executor clear_pinned_table failed: {ex}")
+            self._release_now_lock(decision_id=pdid, reason="unpin")
+            logger.info(f"[MANUAL-ASSIST] HOLD pin OFF table={ptid or '-'}")
+        try:
+            send_msg({
+                "type": "manual_assist_pin",
+                "pinned": bool(self._pinned),
+                "table_id": str((self._pinned_lock or {}).get("table_id") or ""),
+                "ts": time.time(),
+            })
+        except Exception:
+            pass
 
     def _expire_manual_assist_ready(
         self,
@@ -1102,6 +1255,9 @@ class DualLinePragmaticBot(cp.Collector):
         item_id = str(msg.get("id") or "").strip()
         decision_id = str(msg.get("decision_id") or "").strip()
         key, item = self._find_manual_assist_item(item_id=item_id, decision_id=decision_id)
+        if action == "hold":
+            self._handle_hold_command(bool(msg.get("hold")), item=item, key=key)
+            return
         if not item and action == "result":
             key = f"manual-result-{int(time.time() * 1000)}"
             try:
@@ -1159,7 +1315,7 @@ class DualLinePragmaticBot(cp.Collector):
             return
 
         result = str(msg.get("result") or "").strip().upper()
-        if result not in ("WIN", "LOSE"):
+        if result not in ("WIN", "LOSE", "TIE"):
             logger.warning(f"[MANUAL-ASSIST] invalid result={result!r} id={key}")
             return
 
@@ -1192,32 +1348,6 @@ class DualLinePragmaticBot(cp.Collector):
         else:
             self.ties += 1
         self.total_resolved += 1
-        item["status"] = "SETTLED"
-        item["manual_result"] = result
-        item["settled_at"] = _utc_now_iso()
-
-        # Release the NOW lock held for this manual NOW so preposition/scroll
-        # resumes and the next NOW can take the screen. Match by the item's
-        # decision_id/id, or its table, against the active lock.
-        try:
-            lock = self._now_lock if isinstance(self._now_lock, dict) else {}
-            iid = str(item.get("decision_id") or item.get("id") or "")
-            itbl = str(item.get("qpid") or item.get("table_id") or "")
-            if lock and (
-                (iid and str(lock.get("decision_id") or "") == iid)
-                or (itbl and str(lock.get("table_id") or "") == itbl)
-            ):
-                # Release by the lock's own decision_id (guaranteed match) so the
-                # red/blue overlay + focus-hold are also cleared (via executor
-                # release_assist_now in _release_now_lock), not just the bot lock.
-                self._release_now_lock(
-                    decision_id=str(lock.get("decision_id") or ""),
-                    reason="manual_result",
-                )
-                logger.info("[MANUAL-ASSIST] NOW-lock released on result")
-        except Exception:
-            pass
-
         prediction = "BANKER" if side.startswith("B") else "PLAYER"
         if result == "TIE":
             outcome = "TIE"
@@ -1247,6 +1377,41 @@ class DualLinePragmaticBot(cp.Collector):
                 "money_status": ms,
             }
         )
+
+        # 機能②: TIE は常にプッシュ → 枠を維持して同方向で再BET（SETTLEDにしない）。
+        # 機能①: HOLD固定中は WIN/LOSE でも同卓に留まり再BET（解除はボタンのみ）。
+        keep_betting = (result == "TIE") or self._is_pinned_item(item)
+        if keep_betting:
+            self._send_gui_money_status()
+            self._rearm_manual_now(
+                key, item, reason=("tie_push" if result == "TIE" else "pinned")
+            )
+            self._save_state()
+            logger.info(
+                f"[MANUAL-ASSIST] {'TIE push' if result == 'TIE' else 'pinned'} re-bet "
+                f"id={key} side={side} next=${float(ms.get('next_bet') or 0.0):.2f}"
+            )
+            return
+
+        # WIN/LOSE（固定なし）: 通常通り確定 → NOW-lock解除 → SETTLED。
+        item["status"] = "SETTLED"
+        item["manual_result"] = result
+        item["settled_at"] = _utc_now_iso()
+        try:
+            lock = self._now_lock if isinstance(self._now_lock, dict) else {}
+            iid = str(item.get("decision_id") or item.get("id") or "")
+            itbl = str(item.get("qpid") or item.get("table_id") or "")
+            if lock and (
+                (iid and str(lock.get("decision_id") or "") == iid)
+                or (itbl and str(lock.get("table_id") or "") == itbl)
+            ):
+                self._release_now_lock(
+                    decision_id=str(lock.get("decision_id") or ""),
+                    reason="manual_result",
+                )
+                logger.info("[MANUAL-ASSIST] NOW-lock released on result")
+        except Exception:
+            pass
         self._send_manual_assist_item(
             status="SETTLED",
             table_id=str(item.get("table_id") or ""),
@@ -1878,6 +2043,12 @@ class DualLinePragmaticBot(cp.Collector):
             "signal_hand_count": len(history_hands if history_hands is not None else (buf.hands or [])),
         }
         if self.manual_assist:
+            if self._vps_driven_now:
+                logger.info(
+                    f"[LOCAL-SIGNAL] suppressed local NOW (VPS-driven mode): "
+                    f"table={buf.table_name or table_id} side={bet_side} pattern={pattern_key}"
+                )
+                return
             qpid = str(getattr(buf, "qpid_table_id", "") or "").strip()
             target_id = qpid or table_id
             local_id = f"local-{uuid.uuid4().hex[:12]}"
@@ -3159,6 +3330,16 @@ class DualLinePragmaticBot(cp.Collector):
 
     def _api_post(self, path: str, data: dict, base_url: str = "", api_key: str = "") -> dict:
         """POST https://master.bafather.uk/api/<path>"""
+        # VPS-driven NOW(複数受け子 fan-out): 受け子が decision の status を書き換える
+        # (/ack や /result) と、その decision が共有 pending から外れ、他の受け子が
+        # 取れなくなる(master は単一executor前提)。VPS駆動時は decision のライフサイクル
+        # (受付→解決) を配信元 VPS に一任し、受け子側からは一切書き込まない。これにより
+        # 全受け子が同じ pending(=テレグラム配信)を取得できる。
+        if self._vps_driven_now and "/api/decisions/" in path and (
+            path.endswith("/ack") or path.endswith("/result")
+        ):
+            logger.debug(f"[VPS-DRIVEN] skip decision write {path} (VPS owns lifecycle)")
+            return {"ok": True, "skipped_vps_driven": True}
         import urllib.request as _ur
         url_base = (base_url or os.getenv("BACOPY_API_URL", "").rstrip("/") or "https://master.bafather.uk")
         url = url_base + path

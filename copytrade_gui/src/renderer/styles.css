@@ -339,7 +339,26 @@ html[data-variant="user"] .os-tag   { display: none !important; }
 
 /* ---- WIN / LOSE / TIE — big, thumb-friendly, always live ---- */
 .manual-result-row {
-  display: grid; grid-template-columns: 1fr 1fr 0.7fr; gap: 10px; margin-top: 13px;
+  display: grid; grid-template-columns: 1fr 1fr 0.7fr 0.7fr; gap: 10px; margin-top: 13px;
+}
+.manual-result-btn.hold {
+  background: linear-gradient(135deg, rgba(0,229,255,0.06), rgba(0,229,255,0.02));
+  color: var(--accent); border-color: rgba(0,229,255,0.40);
+  text-shadow: 0 0 8px rgba(0,229,255,0.35); letter-spacing: 0.16em;
+}
+.manual-result-btn.hold:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(0,229,255,0.14), rgba(0,229,255,0.05));
+  border-color: var(--border-h);
+}
+.manual-result-btn.hold.active {
+  background: linear-gradient(135deg, #006d80, #00e5ff); color: #02181d;
+  border-color: var(--accent); text-shadow: none;
+  box-shadow: 0 0 26px rgba(0,229,255,0.50), inset 0 0 0 1px rgba(255,255,255,0.18);
+  animation: hold-pulse 1.6s ease-in-out infinite;
+}
+@keyframes hold-pulse {
+  0%,100% { box-shadow: 0 0 16px rgba(0,229,255,0.38), inset 0 0 0 1px rgba(255,255,255,0.14); }
+  50%     { box-shadow: 0 0 34px rgba(0,229,255,0.75), inset 0 0 0 1px rgba(255,255,255,0.22); }
 }
 .manual-result-btn {
   border: 1px solid var(--border); background: var(--surface-hi); color: var(--text);

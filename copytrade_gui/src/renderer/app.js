@@ -352,6 +352,9 @@ const manualAssistItems = [];
 let manualAssistEnabled = false;
 let manualAssistEnabledAt = 0;
 let activeManualItemId = '';
+// 機能①(HOLD): この卓を固定中か。固定中は他卓のシグナルでスクロール/枠移動しない。
+let manualHoldOn = false;
+let manualHoldTableId = '';
 
 function _jstDateStrNow() {
   const now = new Date();
@@ -1603,7 +1606,12 @@ function upsertManualAssistItem(msg) {
   const active = manualAssistItems.find((it) => it.id === activeManualItemId);
   const activeStatus = active ? _manualNormalizeStatus(active.status) : '';
   if (status === 'NOW' || !active || activeStatus === 'SETTLED') {
-    activeManualItemId = id;
+    // 機能①(HOLD): 固定中は固定卓以外のNOWでアクティブ(結果ボタン対象)を奪わせない。
+    const itemTbl = String(next.qpid || next.table_id || '');
+    const stealBlocked = manualHoldOn && manualHoldTableId && itemTbl !== manualHoldTableId;
+    if (!stealBlocked) {
+      activeManualItemId = id;
+    }
   }
   while (manualAssistItems.length > 20) manualAssistItems.pop();
   renderManualAssistPanel();
@@ -1742,6 +1750,11 @@ function renderManualAssistPanel() {
   $('#manualResultWin')?.toggleAttribute('disabled', !resultEnabled);
   $('#manualResultLose')?.toggleAttribute('disabled', !resultEnabled);
   $('#manualResultTie')?.toggleAttribute('disabled', !resultEnabled);
+  const holdBtn = $('#manualHoldToggle');
+  if (holdBtn) {
+    holdBtn.classList.toggle('active', manualHoldOn);
+    holdBtn.textContent = manualHoldOn ? '● HOLD' : 'HOLD';
+  }
 
   // DOM visibility proof: tag the panel with last-update timestamp + record
   // its bounding rect so we can prove from DevTools whether the panel is in
@@ -1805,9 +1818,33 @@ for (const [id, result] of [
     });
     // Optimistically settle locally so a second tap does not re-resolve the same
     // NOW; the engine's resolution message confirms and updates W/L/T + next bet.
-    if (item) { item.status = 'SETTLED'; renderManualAssistPanel(); }
+    // TIE(常にプッシュ=再BET) と HOLD固定中(継続BET) は枠を維持するため確定しない。
+    if (item && result !== 'TIE' && !manualHoldOn) { item.status = 'SETTLED'; renderManualAssistPanel(); }
   });
 }
+
+// 機能①(HOLD): この卓を固定/解除するトグル。固定中はその卓に留まり、
+// 他卓の新シグナル(予告)が来てもスクロール・枠移動しない。解除はもう一度押す。
+document.addEventListener('click', (ev) => {
+  const target = ev.target;
+  if (!target || target.id !== 'manualHoldToggle') return;
+  manualHoldOn = !manualHoldOn;
+  const item = getManualResultTarget();
+  if (manualHoldOn) {
+    manualHoldTableId = item ? String(item.qpid || item.table_id || '') : '';
+  } else {
+    manualHoldTableId = '';
+  }
+  addLog(`[DL Assist] HOLD ${manualHoldOn ? 'ON' : 'OFF'}${item ? ` (${item.table_name || item.table_id || ''})` : ''}`, 'info');
+  sendManualAssistCommand({
+    action: 'hold',
+    hold: manualHoldOn,
+    id: item ? item.id : '',
+    side: item ? (item.side || '') : '',
+    decision_id: item ? (item.decision_id || '') : '',
+  });
+  renderManualAssistPanel();
+});
 
 $('#logToggle').addEventListener('click', () => {
   logVisible = !logVisible;
@@ -2219,6 +2256,15 @@ window.valhalla.onAgentMessage((msg) => {
     case 'money_status': {
       logSeqProbe('money_status', msg.money_status || msg);
       applyMoneyStatusToSignalPanel(msg.money_status || msg);
+      break;
+    }
+
+    case 'manual_assist_pin': {
+      // 機能①(HOLD): エンジンからのpin状態ack。ボタン表示を同期。
+      manualHoldOn = !!msg.pinned;
+      manualHoldTableId = manualHoldOn ? String(msg.table_id || '') : '';
+      renderManualAssistPanel();
+      addLog(`[DL Assist] HOLD ${manualHoldOn ? 'ON' : 'OFF'} (engine)`, 'info');
       break;
     }
 
