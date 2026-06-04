@@ -824,6 +824,12 @@ function buildSpawnSpec(config) {
           childEnv.BACOPY_DGA_REGULAR_ONLY = '1';
         }
       }
+      // 機能②: 手動アシスト(自動クリック/自動BETでない)はチップ事前選択を$1基準に固定。
+      // SEQ進行で次BETが$5等でも、アクティブチップを$1にして人間が手動で回数を決める。
+      // (慌てて$5チップを連打する過大BET事故の防止。表示NEXT BET額は SEQ のまま。)
+      if (!(config && (config.manual_assist_auto_click || config.dga_auto_bet))) {
+        childEnv.BACOPY_MANUAL_CHIP_BASE = String((config && config.manual_chip_base) || '1');
+      }
     }
     // パターンモード v3(6) / v4(10)。エンジンは BACOPY_DUAL_MODE を読む(既定v3)。
     const dualMode = String((config && config.dual_mode) || 'v3').toLowerCase();

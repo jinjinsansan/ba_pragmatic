@@ -1765,6 +1765,8 @@ class LiveBetExecutor:
         self._last_assist_focus_center_at: float = 0.0
         # 機能①(HOLD): この QPID を固定中は他卓へ focus を移さず中央保持を続ける。
         self._pinned_qpid: str = ""
+        # 機能①拡張(HOLD): 枠が無くてもスクロール凍結(卓切替/再センタリングを全停止)。
+        self._scroll_frozen: bool = False
         # Bot-owned NOW lock mirror. Source of truth lives in dual_line_pragmatic_bot;
         # the executor only reads it to drop competing focus/auto-fire while a NOW
         # decision is locked to a single table.
@@ -6013,6 +6015,12 @@ class LiveBetExecutor:
         )
         self._center_multi_tile(tid, table_name, click=False, source="visible_bet_hold")
 
+    def freeze_scroll(self, on: bool) -> None:
+        """機能①拡張(HOLD): 枠が無くてもスクロール凍結。ON中は卓切替/再センタリングを
+        全停止し、現在の表示位置で固定する(特定卓のpinとは独立)。"""
+        self._scroll_frozen = bool(on)
+        logger.info(f"[ASSIST-HOLD] scroll-freeze {'ON' if on else 'OFF'}")
+
     def set_pinned_table(self, qpid: str) -> None:
         """機能①(HOLD): この卓を固定。固定中は他卓へfocusを移さず中央保持を続ける。"""
         self._pinned_qpid = str(qpid or "").strip()
@@ -6034,6 +6042,9 @@ class LiveBetExecutor:
 
     def _start_assist_focus_hold(self, table_id: str, table_name: str = "", *, intent: str = "") -> None:
         if not self._multi_lobby_mode:
+            return
+        # 機能①拡張(HOLD): スクロール凍結中は新規センタリングしない(画面を動かさない)。
+        if getattr(self, "_scroll_frozen", False):
             return
         if os.getenv("BACOPY_ASSIST_FOCUS_HOLD", "1").strip() == "0":
             return
@@ -6317,6 +6328,9 @@ class LiveBetExecutor:
         return lock
 
     def _maintain_assist_focus_hold(self, now: float | None = None) -> None:
+        # 機能①拡張(HOLD): スクロール凍結中(卓pin無し)は再センタリングせず現状維持。
+        if getattr(self, "_scroll_frozen", False) and not self._pinned_qpid:
+            return
         hold = self._assist_focus_hold or {}
         # 機能①(HOLD): 固定中は固定卓を保持し続ける（期限切れで赤/青枠を消さない）。
         if self._pinned_qpid:
@@ -6947,6 +6961,37 @@ class LiveBetExecutor:
             return False
         rendered_denoms = self._available_chip_denoms(frame)
         self._prewarm_small_seq_chip_plans(rendered_denoms)
+        # 機能②: 手動アシストではチップ事前選択を固定基準額($1既定)にする。
+        # SEQ進行で次BETが$5等になると chip_plan の先頭=大チップが選ばれ、慌てて連打
+        # すると過大BET事故になるため。人間が手動でチップ選択+回数を決める運用に合わせ、
+        # アクティブチップを基準額に固定する(表示NEXT BET額は SEQ のまま=変更しない)。
+        manual_base = os.getenv("BACOPY_MANUAL_CHIP_BASE", "").strip()
+        if manual_base:
+            try:
+                want = float(manual_base)
+            except Exception:
+                want = 1.0
+            if want > 0:
+                pick = want if want in rendered_denoms else (
+                    min(rendered_denoms) if rendered_denoms else want
+                )
+                if self._select_chip_in_frame(frame, pick, "CHIP-PRESELECT"):
+                    self._preselected_chip = {
+                        "target": str(target_qpid or ""),
+                        "amount_key": self._amount_key(amount),
+                        "chip": pick,
+                        "at": time.time(),
+                    }
+                    logger.info(
+                        f"[CHIP-PRESELECT] manual base chip=${pick:.2f} "
+                        f"(BACOPY_MANUAL_CHIP_BASE={manual_base}) target={target_qpid!r} "
+                        f"display_amount=${amount:.2f}"
+                    )
+                    return True
+                logger.info(
+                    f"[CHIP-PRESELECT] manual base chip=${pick:.2f} select failed; "
+                    f"falling back to plan target={target_qpid!r}"
+                )
         chip_plan = self._chip_plan(amount, rendered_denoms)
         if not chip_plan:
             logger.info(f"[CHIP-PRESELECT] skip: empty chip plan amount=${amount:.2f} target={target_qpid!r}")
@@ -7741,6 +7786,15 @@ class LiveBetExecutor:
         """対象卓への switch 要求をキューに積む。"""
         tid = str(table_id or "").strip()
         if not tid and not qpid:
+            return
+        # 機能①拡張(HOLD): スクロール凍結中はスキャン系の卓切替を捨てる(画面を動かさない)。
+        # 実BET(decision/bet)系は止めない。
+        if getattr(self, "_scroll_frozen", False) and str(intent or "").strip().lower() in (
+            "preposition", "prepare", "manual_assist"
+        ):
+            logger.info(
+                f"[ASSIST-HOLD] scroll-frozen: drop switch intent={intent} target={tid or qpid}"
+            )
             return
         new_req = {
             "table_id": tid or str(qpid or "").strip(),

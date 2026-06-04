@@ -479,6 +479,8 @@ class DualLinePragmaticBot(cp.Collector):
         # 機能①(HOLD): この卓を固定して他卓のシグナルでスクロールさせない。
         self._pinned = False
         self._pinned_lock: dict[str, object] = {}
+        # 機能①拡張(HOLD): 赤/青/黄いずれの枠も無い時でもHOLDで画面スクロールを凍結する。
+        self._scroll_frozen = False
         # VPS-driven NOW: GUIのNOWを VPS decision(=テレグラム配信と同一) だけで駆動し、
         # ローカル独自signalのNOWは抑止する（テレグラムと1対1・同速にする）。
         self._vps_driven_now = os.getenv("BACOPY_VPS_DRIVEN_NOW", "0").strip().lower() in ("1", "true", "yes", "on")
@@ -1091,11 +1093,23 @@ class DualLinePragmaticBot(cp.Collector):
                 except Exception:
                     pass
             if not ptid:
-                logger.info("[MANUAL-ASSIST] HOLD ignored: no active/centered table to pin")
+                # 機能①拡張: 枠が無くてもHOLDでスクロール凍結。現在の表示位置で停止し、
+                # 他卓の予告が来ても画面を動かさない(卓固定ではなく純粋なスクロール停止)。
+                self._scroll_frozen = True
                 self._pinned = False
                 self._pinned_lock = {}
                 try:
-                    send_msg({"type": "manual_assist_pin", "pinned": False, "table_id": "", "ts": time.time()})
+                    fz = getattr(self.bet_executor, "freeze_scroll", None)
+                    if callable(fz):
+                        fz(True)
+                except Exception as ex:
+                    logger.debug(f"[HOLD] freeze_scroll(True) failed: {ex}")
+                logger.info("[MANUAL-ASSIST] HOLD scroll-freeze ON (no active/centered table)")
+                try:
+                    send_msg({
+                        "type": "manual_assist_pin", "pinned": True, "table_id": "",
+                        "scroll_frozen": True, "ts": time.time(),
+                    })
                 except Exception:
                     pass
                 return
@@ -1136,6 +1150,15 @@ class DualLinePragmaticBot(cp.Collector):
             )
             self._pinned = False
             self._pinned_lock = {}
+            # 機能①拡張: スクロール凍結も解除して通常スキャンへ復帰。
+            was_frozen = self._scroll_frozen
+            self._scroll_frozen = False
+            try:
+                fz = getattr(self.bet_executor, "freeze_scroll", None)
+                if callable(fz):
+                    fz(False)
+            except Exception:
+                pass
             try:
                 pin_fn = getattr(self.bet_executor, "clear_pinned_table", None)
                 if callable(pin_fn):
@@ -1143,7 +1166,9 @@ class DualLinePragmaticBot(cp.Collector):
             except Exception as ex:
                 logger.debug(f"[HOLD] executor clear_pinned_table failed: {ex}")
             self._release_now_lock(decision_id=pdid, reason="unpin")
-            logger.info(f"[MANUAL-ASSIST] HOLD pin OFF table={ptid or '-'}")
+            logger.info(
+                f"[MANUAL-ASSIST] HOLD {'scroll-freeze OFF' if was_frozen else 'pin OFF'} table={ptid or '-'}"
+            )
         try:
             send_msg({
                 "type": "manual_assist_pin",
