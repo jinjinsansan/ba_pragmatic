@@ -1080,6 +1080,25 @@ class DualLinePragmaticBot(cp.Collector):
                 or (item or {}).get("table_id")
                 or ""
             )
+            # NOW(赤/青枠)が無い時は、エンジンが今センタリングしている黄色枠(予告)の
+            # 卓を固定対象にする。これで予告段階の卓も任意でHOLDできる。
+            fh_name = ""
+            if not ptid:
+                try:
+                    fh = getattr(self.bet_executor, "_assist_focus_hold", {}) or {}
+                    ptid = str(fh.get("table_id") or "")
+                    fh_name = str(fh.get("table_name") or "")
+                except Exception:
+                    pass
+            if not ptid:
+                logger.info("[MANUAL-ASSIST] HOLD ignored: no active/centered table to pin")
+                self._pinned = False
+                self._pinned_lock = {}
+                try:
+                    send_msg({"type": "manual_assist_pin", "pinned": False, "table_id": "", "ts": time.time()})
+                except Exception:
+                    pass
+                return
             self._pinned = True
             self._pinned_lock = {
                 "table_id": ptid,
@@ -1087,6 +1106,7 @@ class DualLinePragmaticBot(cp.Collector):
                 "table_name": str(
                     (item or {}).get("table_name")
                     or (lock.get("table_name") if lock else "")
+                    or fh_name
                     or ptid
                 ),
                 "side": str((item or {}).get("side") or (lock.get("side") if lock else "") or ""),

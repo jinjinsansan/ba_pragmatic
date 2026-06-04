@@ -360,6 +360,21 @@ html[data-variant="user"] .os-tag   { display: none !important; }
   0%,100% { box-shadow: 0 0 16px rgba(0,229,255,0.38), inset 0 0 0 1px rgba(255,255,255,0.14); }
   50%     { box-shadow: 0 0 34px rgba(0,229,255,0.75), inset 0 0 0 1px rgba(255,255,255,0.22); }
 }
+
+/* NEXT BET — MANUAL ASSISTヘッダー内。普段は水色、NOWの色(赤=Banker/青=Player)に追従、ゆっくり点滅。 */
+.manual-next-bet {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 3px 16px; border-radius: var(--radius-sm); min-width: 118px;
+  border: 1px solid rgba(0,229,255,0.30); background: rgba(0,229,255,0.04);
+  animation: mnb-blink 2.6s ease-in-out infinite;
+}
+.manual-next-bet .mnb-label { font-family: var(--font-hud); font-size: 10px; letter-spacing: 0.22em; color: var(--text-muted); }
+.manual-next-bet .mnb-amt { font-family: var(--font-hud); font-weight: 900; font-size: 26px; line-height: 1.1; color: var(--accent); text-shadow: 0 0 14px rgba(0,229,255,0.55); }
+.manual-next-bet.now-b { border-color: rgba(255,45,85,0.55); background: rgba(255,45,85,0.06); }
+.manual-next-bet.now-b .mnb-amt { color: var(--lose); text-shadow: 0 0 16px rgba(255,45,85,0.70); }
+.manual-next-bet.now-p { border-color: rgba(45,123,255,0.55); background: rgba(45,123,255,0.06); }
+.manual-next-bet.now-p .mnb-amt { color: #3d8bff; text-shadow: 0 0 16px rgba(45,123,255,0.70); }
+@keyframes mnb-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 .manual-result-btn {
   border: 1px solid var(--border); background: var(--surface-hi); color: var(--text);
   border-radius: var(--radius-sm); cursor: pointer;

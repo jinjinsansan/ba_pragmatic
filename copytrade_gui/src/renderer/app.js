@@ -1554,8 +1554,17 @@ function renderProgressionPanel(ms, mode) {
   }
 }
 
+function updateNextBetCard(ms) {
+  if (!ms || typeof ms !== 'object') return;
+  const amtEl = $('#manualNextBetAmt');
+  if (!amtEl) return;
+  const n = Number(ms.next_bet ?? ms.gui_next_bet ?? 0) || 0;
+  amtEl.textContent = '$ ' + n.toFixed(2);
+}
+
 function applyMoneyStatusToSignalPanel(ms) {
   if (!ms || typeof ms !== 'object') return;
+  updateNextBetCard(ms);
   const mode = String(ms.mode || '').toLowerCase();
   if (mode === 'martingale' || mode === 'dalembert') {
     renderProgressionPanel(ms, mode);
@@ -1754,6 +1763,14 @@ function renderManualAssistPanel() {
   if (holdBtn) {
     holdBtn.classList.toggle('active', manualHoldOn);
     holdBtn.textContent = manualHoldOn ? '● HOLD' : 'HOLD';
+  }
+  // NEXT BETの色を現在のNOW(赤=Banker/青=Player)に追従。NOW無し=水色(default)。
+  const mnb = $('#manualNextBet');
+  if (mnb) {
+    const act = getManualResultTarget();
+    const aside = act ? String(act.side || '').toUpperCase() : '';
+    mnb.classList.toggle('now-b', aside === 'B');
+    mnb.classList.toggle('now-p', aside === 'P');
   }
 
   // DOM visibility proof: tag the panel with last-update timestamp + record
