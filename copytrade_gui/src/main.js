@@ -814,6 +814,16 @@ function buildSpawnSpec(config) {
       if (config && config.manual_assist_auto_click) {
         childEnv.BACOPY_MANUAL_ASSIST_AUTO_CLICK = '1';
       }
+      // 自動フラットBET (両側): 実績ある dga local-signal(multi-chip)経路で全自動着弾。
+      // .env の BACOPY_DGA_LOCAL_SIGNAL=off を上書きして live にする。money mode は
+      // renderer 側で flat に強制済み(自動×SEQ=破産のため)。bafather 管理者専用。
+      if (config && config.dga_auto_bet) {
+        childEnv.BACOPY_DGA_LOCAL_SIGNAL = 'live';
+        childEnv.BACOPY_MANUAL_NO_AUTOCLICK = '0';
+        if (config.dga_regular_only) {
+          childEnv.BACOPY_DGA_REGULAR_ONLY = '1';
+        }
+      }
     }
     // パターンモード v3(6) / v4(10)。エンジンは BACOPY_DUAL_MODE を読む(既定v3)。
     const dualMode = String((config && config.dual_mode) || 'v3').toLowerCase();

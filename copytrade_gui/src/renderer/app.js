@@ -462,11 +462,14 @@ async function startBotFlow({ auto = false } = {}) {
     mode: isDL ? (isDLAssist ? 'dual_line_assist' : 'dual_line_auto') : 'executor',
     headless: isDL ? false : !!settings.headless,
     live: isDLAssist ? true : (settings.dual_live || false),
-    money_mode: settings.dual_money_mode || 'flat',
+    // 自動フラットBET ON時は money mode を flat に強制(自動×SEQ=破産)。
+    money_mode: settings.dga_auto_bet ? 'flat' : (settings.dual_money_mode || 'flat'),
     money_unit: settings.dual_unit || 100,
     dual_mode: settings.dual_mode || 'v3',
     on_limit: settings.dual_on_limit || 'stop',
     manual_assist_auto_click: !!settings.manual_assist_auto_click,
+    dga_auto_bet: !!settings.dga_auto_bet,
+    dga_regular_only: settings.dga_regular_only !== false,
   };
   const hasPrev = localStorage.getItem('valhalla_session_state');
   if (hasPrev && !auto) {
@@ -706,6 +709,10 @@ const DEFAULT_SETTINGS = {
   dual_live: false,
   dual_on_limit: 'stop',
   manual_assist_auto_click: false,
+  // 自動フラットBET (両側・dga local-signal)。ON時は engine を dga-live 経路で
+  // 全自動着弾させ、money mode を flat に強制する(自動×SEQ は破産するため)。
+  dga_auto_bet: false,
+  dga_regular_only: true,
 };
 const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small1', 'small6', 'dual_line', 'dual_line_assist', 'dual_line_auto']);
 
@@ -1075,6 +1082,14 @@ $('#btnSettings')?.addEventListener('click', async () => {
   if ($('#inputDualUnit')) $('#inputDualUnit').value = s.dual_unit || 100;
   if ($('#inputDualLive')) $('#inputDualLive').checked = !!s.dual_live;
   if ($('#inputManualAssistAutoClick')) $('#inputManualAssistAutoClick').checked = !!s.manual_assist_auto_click;
+  if ($('#inputDgaAutoBet')) $('#inputDgaAutoBet').checked = !!s.dga_auto_bet;
+  if ($('#inputDgaRegularOnly')) $('#inputDgaRegularOnly').checked = s.dga_regular_only !== false;
+  if ($('#dgaRegularOnlyGroup')) $('#dgaRegularOnlyGroup').style.display = s.dga_auto_bet ? '' : 'none';
+  if ($('#inputDgaAutoBet')) $('#inputDgaAutoBet').onchange = (e) => {
+    if ($('#dgaRegularOnlyGroup')) $('#dgaRegularOnlyGroup').style.display = e.target.checked ? '' : 'none';
+    // 自動BET ON 時は SEQ を選べないよう money type を flat に寄せる(視覚的な安全策)。
+    if (e.target.checked && $('#inputMoneyType')) { $('#inputMoneyType').value = 'other'; if ($('#inputFlatVariant')) $('#inputFlatVariant').value = 'flat'; if (typeof _applyMoneyTypeVisibility === 'function') _applyMoneyTypeVisibility(); if (typeof _commitMoneyMode === 'function') _commitMoneyMode(); }
+  };
   if ($('#inputOnLimitRestart')) $('#inputOnLimitRestart').checked = s.dual_on_limit === 'restart';
   // dual-line 時 chip_base グループを非表示
   if ($('#chipBaseGroup')) $('#chipBaseGroup').style.display = isDL ? 'none' : '';
@@ -1219,6 +1234,8 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     dual_live: $('#inputDualLive')?.checked || false,
     dual_on_limit: $('#inputOnLimitRestart')?.checked ? 'restart' : 'stop',
     manual_assist_auto_click: $('#inputManualAssistAutoClick')?.checked || false,
+    dga_auto_bet: $('#inputDgaAutoBet')?.checked || false,
+    dga_regular_only: $('#inputDgaRegularOnly')?.checked !== false,
   };
 
   localStorage.setItem('bacopy_settings', JSON.stringify(settings));
