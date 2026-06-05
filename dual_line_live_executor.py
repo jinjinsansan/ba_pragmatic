@@ -1671,6 +1671,11 @@ class LiveBetExecutor:
         self._bets_open_game_id: str = ""
         self._bets_closed_game_id: str = ""
         self._last_bets_open_at: float = 0.0
+        # セッション自動復旧: contact-support/長時間セッションモーダルを閉じた後、または
+        # betsopen フィードが長時間途絶した時に、ロビーへ自動再入場してセッションを復旧する
+        # (手動でロビーに行く手間を無くす)。tick の安全な文脈で実行。
+        self._session_recover_pending: bool = False
+        self._last_lobby_recover_at: float = 0.0
 
         # BET 予約
         self._pending_bet: dict | None = None
@@ -4342,6 +4347,21 @@ class LiveBetExecutor:
         if self._multi_lobby_mode and now - self._last_idle_recover_check_at >= max(0.2, idle_recover_interval):
             self._last_idle_recover_check_at = now
             self._auto_recover_idle_dialogs("tick")
+            # betsopen フィードが長時間途絶 = セッション/WS 死亡の可能性 → 復旧を予約。
+            # 通常はチャンネルホストが連続 betsopen するので、薄いシグナル中も発火しない。
+            try:
+                feed_dead = float(os.getenv("BACOPY_FEED_DEAD_SEC", "180") or 180)
+                if (feed_dead > 0 and self._last_bets_open_at > 0
+                        and (now - self._last_bets_open_at) > feed_dead
+                        and not self._bot_now_lock_active()):
+                    self._session_recover_pending = True
+            except Exception:
+                pass
+            # セッション復旧(モーダル閉鎖後 / フィード途絶) → ロビーへ自動再入場。
+            try:
+                self._maybe_recover_session_lobby(now)
+            except Exception as ex:
+                logger.debug(f"[SESSION-RECOVER] maybe failed: {ex}")
 
         if (
             self._multi_lobby_mode
@@ -4615,7 +4635,45 @@ class LiveBetExecutor:
                             continue
                 except Exception as e:
                     logger.debug(f"[LIVE] idle recover frame list error ({reason}): {e}")
+        if total > 0:
+            # 「長時間セッション/カスタマーサポート」モーダルを閉じた = セッションが死んでいる。
+            # 閉じただけでは "長時間セッションがなかった" 状態が残るので、tick の安全な文脈で
+            # ロビーへ自動再入場して復旧する(_maybe_recover_session_lobby)。
+            self._session_recover_pending = True
         return total
+
+    def _maybe_recover_session_lobby(self, now: float) -> None:
+        """セッション復旧: モーダル閉鎖後 or フィード途絶で予約されたら、安全な時にロビーへ
+        自動再入場(page.goto)してセッションを復旧する。手動でロビーに行く手間を無くす。"""
+        if not getattr(self, "_session_recover_pending", False):
+            return
+        # 切替/BET中は触らない(その流れが終わってから)。
+        if getattr(self, "_switch_in_progress", False) or getattr(self, "_switch_request", None):
+            return
+        try:
+            bif = getattr(self, "is_bet_in_flight", None)
+            if callable(bif) and bif():
+                return
+        except Exception:
+            pass
+        cooldown = float(os.getenv("BACOPY_LOBBY_RECOVER_COOLDOWN_SEC", "45") or 45)
+        if now - float(getattr(self, "_last_lobby_recover_at", 0.0) or 0.0) < cooldown:
+            return
+        page = self._bet_page or self._lobby_page
+        if page is None:
+            return
+        self._last_lobby_recover_at = now
+        self._session_recover_pending = False
+        try:
+            logger.info("[SESSION-RECOVER] re-entering lobby to restore session")
+            page.goto(PRAGMATIC_BACCARAT_LOBBY_URL, wait_until="domcontentloaded", timeout=45000)
+            # リロード後できるだけ早くタイルを中央へ戻す。
+            self._last_active_now_bet_center_at = 0.0
+            self._last_assist_focus_center_at = 0.0
+            self._last_bets_open_at = time.time()  # 直後の feed-dead 再トリガー防止
+            logger.info("[SESSION-RECOVER] lobby re-entered (session restored)")
+        except Exception as e:
+            logger.warning(f"[SESSION-RECOVER] lobby re-enter failed: {e}")
 
     def send_bet(
         self,
