@@ -1138,9 +1138,18 @@ class DualLinePragmaticBot(cp.Collector):
                     pin_fn(ptid)
             except Exception as ex:
                 logger.debug(f"[HOLD] executor set_pinned_table failed: {ex}")
+            # 機能①拡張: HOLDは枠の有無に関わらず常に画面を停止する。卓固定(PIN)中も
+            # スクロール凍結をONにして、固定卓の再センタリング(=スクロールに見える)も止める。
+            self._scroll_frozen = True
+            try:
+                fz = getattr(self.bet_executor, "freeze_scroll", None)
+                if callable(fz):
+                    fz(True)
+            except Exception as ex:
+                logger.debug(f"[HOLD] freeze_scroll(True) failed: {ex}")
             if item:
                 self._rearm_manual_now(key, item, reason="pin_on")
-            logger.info(f"[MANUAL-ASSIST] HOLD pin ON table={ptid or '-'}")
+            logger.info(f"[MANUAL-ASSIST] HOLD pin+freeze ON table={ptid or '-'}")
         else:
             ptid = str((self._pinned_lock or {}).get("table_id") or "")
             pdid = str(

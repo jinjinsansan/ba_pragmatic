@@ -6328,8 +6328,9 @@ class LiveBetExecutor:
         return lock
 
     def _maintain_assist_focus_hold(self, now: float | None = None) -> None:
-        # 機能①拡張(HOLD): スクロール凍結中(卓pin無し)は再センタリングせず現状維持。
-        if getattr(self, "_scroll_frozen", False) and not self._pinned_qpid:
+        # 機能①拡張(HOLD): スクロール凍結中は卓pinの有無に関わらず再センタリングを止め、
+        # 現在の表示位置で完全停止する(固定卓の再センタリング=スクロールに見えるのを防ぐ)。
+        if getattr(self, "_scroll_frozen", False):
             return
         hold = self._assist_focus_hold or {}
         # 機能①(HOLD): 固定中は固定卓を保持し続ける（期限切れで赤/青枠を消さない）。
