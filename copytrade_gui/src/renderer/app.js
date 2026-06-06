@@ -475,6 +475,8 @@ async function startBotFlow({ auto = false } = {}) {
     dual_mode: settings.dual_mode || 'v3',
     on_limit: settings.dual_on_limit || 'stop',
     manual_assist_auto_click: !!settings.manual_assist_auto_click,
+    // オート追従: 勝った時だけ同卓追従(大路 telecho=逆張り / dragon=順張り)。
+    dual_follow: isDualLineFollowBetMode(selectedBetMode),
     dga_auto_bet: !!settings.dga_auto_bet,
     dga_regular_only: settings.dga_regular_only !== false,
   };
@@ -727,14 +729,18 @@ const DEFAULT_SETTINGS = {
   dga_auto_bet: false,
   dga_regular_only: true,
 };
-const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small1', 'small6', 'dual_line', 'dual_line_assist', 'dual_line_auto']);
+const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small1', 'small6', 'dual_line', 'dual_line_assist', 'dual_line_auto', 'dual_line_auto_follow']);
 
 function normalizeBetMode(mode) {
   return ALLOWED_BET_MODES.has(mode) ? mode : 'flat_1usd';
 }
 
 function isDualLineBetMode(mode) {
-  return mode === 'dual_line' || mode === 'dual_line_assist' || mode === 'dual_line_auto';
+  return mode === 'dual_line' || mode === 'dual_line_assist' || mode === 'dual_line_auto' || mode === 'dual_line_auto_follow';
+}
+// 追従(オート追従)モードか。auto の一種(WS自動BET)＋勝った時だけ同卓追従。
+function isDualLineFollowBetMode(mode) {
+  return mode === 'dual_line_auto_follow';
 }
 
 function isDualLineAssistBetMode(mode) {
@@ -771,6 +777,13 @@ setTimeout(() => {
       // dual-line では dry_run → dual_live の逆
       $('#inputDryRun').checked = !isDL || !($('#inputDualLive')?.checked);
     }
+    // BET MODE 選択を即 localStorage に保存(保存ボタン押し忘れでも Start に反映される)。
+    // Start は loadSettings() の bet_mode を読むため、ここで永続化しないと選択が無視される。
+    try {
+      const s = loadSettings();
+      s.bet_mode = normalizeBetMode(this.value);
+      localStorage.setItem('bacopy_settings', JSON.stringify(s));
+    } catch (e) {}
   });
   $('#inputDualLive')?.addEventListener('change', function() {
     if ($('#inputDryRun')) $('#inputDryRun').checked = !this.checked;

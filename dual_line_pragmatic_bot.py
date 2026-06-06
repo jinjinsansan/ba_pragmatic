@@ -465,6 +465,20 @@ class DualLinePragmaticBot(cp.Collector):
         # unreliable geometry clicker AND breaking the manual overlay/WIN flow.)
         if _env_bool("BACOPY_MANUAL_NO_AUTOCLICK", False):
             self.manual_assist_auto_click = False
+        # ── デュアルラインオート追従 (BACOPY_DUAL_FOLLOW=1) ──────────────
+        # 勝った時だけ「追従」: 大路(pattern_keyの真ん中)が telecho/dragon の signal で
+        # 勝つと、同じ卓で負けるまで連続自動BETする。telecho=逆張り(毎手反対側)、
+        # dragon=順張り(同じ側)。それ以外の大路は追従しない。額は SEQ 継続(money model)。
+        # TIE はプッシュ(同じ側で再BET・反転しない)。追従中は他卓のNOWを無視。
+        self._follow_enabled = _env_bool("BACOPY_DUAL_FOLLOW", False)
+        self._follow_active = False
+        self._follow_table_id = ""        # 追従中の卓 qpid
+        self._follow_table_name = ""
+        self._follow_kind = ""            # "telecho"(逆張り) | "dragon"(順張り)
+        self._follow_next_side = ""       # 次の追従BETの側 "B"/"P"
+        self._follow_pattern_key = ""
+        self._follow_chain = 0            # この追従での連勝数
+        self._follow_last_bet_at = 0.0    # 追従BET最終時刻(タイムアウト監視用)
         self.notify_signal = notify_signal
         self.notify_resolution = notify_resolution
         self.notify_tie = notify_tie
@@ -2733,6 +2747,8 @@ class DualLinePragmaticBot(cp.Collector):
         if not did:
             return
         src = self._pending_decisions.get(did) or {}
+        if src.get("is_follow"):
+            return  # 追従BETは合成decision。マスターのdecision行は無いので投げない。
         base_url = str(src.get("source_base_url") or "").strip()
         api_key = str(src.get("source_api_key") or "").strip()
         won = result == "WIN"
@@ -2839,6 +2855,129 @@ class DualLinePragmaticBot(cp.Collector):
             )
             return True
         return False
+
+    # ── デュアルラインオート追従 ────────────────────────────────────────
+    def _follow_big_kind(self, pattern_key: str) -> str:
+        """大路(pattern_key の真ん中 china|BIG|side)が telecho/dragon なら追従種別を返す。
+        それ以外(niconico/nikoichi/sansan...)は '' = 追従しない。"""
+        try:
+            big = str(pattern_key or "").split("|")[1].strip().lower()
+        except Exception:
+            return ""
+        if big == "telecho":
+            return "telecho"   # 逆張り(毎手反対側)
+        if big == "dragon":
+            return "dragon"    # 順張り(同じ側)
+        return ""
+
+    def _follow_compute_next(self, kind: str, last_side: str) -> str:
+        last = "B" if str(last_side or "").upper().startswith("B") else "P"
+        if kind == "telecho":
+            return "P" if last == "B" else "B"   # 逆張り
+        return last                              # dragon = 順張り(同じ側)
+
+    def _follow_reset(self, reason: str = "") -> None:
+        if self._follow_active:
+            logger.info(f"[FOLLOW] END reason={reason or '-'} chain={self._follow_chain} table={self._follow_table_name or self._follow_table_id}")
+        self._follow_active = False
+        self._follow_table_id = ""
+        self._follow_table_name = ""
+        self._follow_kind = ""
+        self._follow_next_side = ""
+        self._follow_pattern_key = ""
+        self._follow_chain = 0
+
+    def _follow_on_settled(self, *, side: str, result: str, pattern_key: str,
+                           qpid: str, table_name: str) -> None:
+        """BET決済(_settle_confirmed_decision_from_hand / _resolve_prediction)後に呼ぶ。
+        勝てば追従継続、負ければ終了、TIEはプッシュ(同側再BET)。"""
+        if not self._follow_enabled:
+            return
+        side = "B" if str(side or "").upper().startswith("B") else "P"
+        result = str(result or "").upper()
+        if not self._follow_active:
+            # 初回(VPS NOW)BETの結果で追従開始を判定
+            if result == "WIN":
+                kind = self._follow_big_kind(pattern_key)
+                if kind and qpid:
+                    self._follow_active = True
+                    self._follow_table_id = qpid
+                    self._follow_table_name = table_name or qpid
+                    self._follow_kind = kind
+                    self._follow_pattern_key = pattern_key
+                    self._follow_chain = 1
+                    self._follow_next_side = self._follow_compute_next(kind, side)
+                    logger.info(
+                        f"[FOLLOW] START kind={kind} table={self._follow_table_name} "
+                        f"won_side={side} next={self._follow_next_side}"
+                    )
+                    self._follow_place_next()
+            return
+        # 追従中: この決済は追従BET(同卓)の結果のはず
+        if qpid and self._follow_table_id and qpid != self._follow_table_id:
+            return  # 別卓の決済は無視
+        if result == "WIN":
+            self._follow_chain += 1
+            self._follow_next_side = self._follow_compute_next(self._follow_kind, side)
+            logger.info(f"[FOLLOW] WIN chain={self._follow_chain} next={self._follow_next_side} table={self._follow_table_name}")
+            self._follow_place_next()
+        elif result == "TIE":
+            self._follow_next_side = side  # プッシュ: 反転しない・同側再BET
+            logger.info(f"[FOLLOW] TIE push chain={self._follow_chain} reBET={self._follow_next_side}")
+            self._follow_place_next()
+        else:  # LOSE
+            self._follow_reset(reason="lose")
+
+    def _follow_place_next(self) -> None:
+        """追従の次手を同じ卓へ自動BET(合成decisionとして既存の決済経路に乗せる)。"""
+        if not self._follow_active or not self._follow_table_id:
+            return
+        side = self._follow_next_side
+        if side not in ("B", "P"):
+            self._follow_reset(reason="bad_side"); return
+        try:
+            amount = float(self.money.next_bet(side=side))
+        except Exception:
+            amount = 0.0
+        if amount <= 0:
+            self._follow_reset(reason="amount<=0"); return
+        qpid = self._follow_table_id
+        name = self._follow_table_name
+        did = f"follow_{qpid}_{int(time.time() * 1000)}"
+        md = {
+            "table_name": name, "qpid_table_id": qpid,
+            "pattern_key": self._follow_pattern_key, "decision_id": did, "source": "follow",
+        }
+        self._start_now_lock(decision_id=did, table_id=qpid, table_name=name, side=side)
+        try:
+            bet_id = self.bet_executor.place_bet(qpid, side, amount, md)
+        except Exception as ex:
+            logger.warning(f"[FOLLOW] place_bet failed: {ex}")
+            self._follow_reset(reason="place_error"); return
+        self._start_now_lock(decision_id=did, table_id=qpid, table_name=name, side=side, bet_id=str(bet_id or ""))
+        self._pending_decisions[did] = {
+            "side": side, "amount": amount, "table_id": qpid, "table_name": name,
+            "pattern_key": self._follow_pattern_key, "bet_id": str(bet_id or ""),
+            "placed_at": time.time(), "result_posted": False, "settlement_posted": False,
+            "bet_sent_posted": False, "local_bet_sent": False, "local_bet_failed": False,
+            "bet_sent_notified": False, "source_base_url": "", "source_api_key": "",
+            "is_follow": True,
+        }
+        self._follow_last_bet_at = time.time()
+        self.total_signals += 1
+        try:
+            self._send_manual_assist_item(
+                status="NOW", table_id=qpid, table_name=name, qpid=qpid, side=side,
+                amount=amount, pattern_key=self._follow_pattern_key,
+                decision_id=did, source="follow", expires_sec=30.0,
+            )
+            self._send_gui_money_status()
+        except Exception:
+            pass
+        logger.info(
+            f"[FOLLOW] place next side={side} amount=${amount:.2f} table={name} "
+            f"chain={self._follow_chain} did={did} bet_id={bet_id or '-'}"
+        )
 
     def _settle_confirmed_decision_from_hand(self, table_id: str, buf, new_hand: dict, outcome: str) -> bool:
         """Settle a locally confirmed VPS decision using the exact observed hand."""
@@ -2993,6 +3132,16 @@ class DualLinePragmaticBot(cp.Collector):
             f"{icon} {result} {table_name}: {side}→{outcome} "
             f"pnl=${pnl_delta:+.2f} cum=${self.virtual_pnl:+.2f}"
         )
+        # 追従(BACOPY_DUAL_FOLLOW): 勝てば同卓で次手、TIEはプッシュ、負ければ終了。
+        try:
+            self._follow_on_settled(
+                side=side, result=result,
+                pattern_key=str(pending.get("pattern_key") or ""),
+                qpid=str(pending.get("table_id") or table_id or ""),
+                table_name=table_name,
+            )
+        except Exception as ex:
+            logger.debug(f"[FOLLOW] on_settled error: {ex}")
         return True
 
     def _settle_confirmed_decisions_from_buffers(self) -> None:
@@ -4032,6 +4181,10 @@ class DualLinePragmaticBot(cp.Collector):
         if getattr(self, "_dga_mode", "") == "live" or \
                 os.getenv("BACOPY_DGA_LOCAL_SIGNAL", "").strip().lower() == "live":
             return
+        # 追従中(オート追従)は他卓の新規NOWを無視し、追従卓に専念する。
+        if getattr(self, "_follow_active", False):
+            logger.info(f"[FOLLOW] skip VPS decision while following table={self._follow_table_name or self._follow_table_id}")
+            return
         did = str(decision.get("decision_id") or "")
         fa = decision.get("friend_action") or {}
         if not isinstance(fa, dict):
@@ -4959,6 +5112,8 @@ class DualLinePragmaticBot(cp.Collector):
         for did, p in list(self._pending_decisions.items()):
             if not isinstance(p, dict) or p.get("settlement_posted"):
                 continue
+            if p.get("is_follow"):
+                continue  # 追従BETは合成decision。マスターへ結果POSTしない(404防止)。
             bet_id = str(p.get("bet_id") or "")
             placed_at = float(p.get("placed_at") or now)
             age = max(0.0, now - placed_at)
@@ -6086,6 +6241,20 @@ class DualLinePragmaticBot(cp.Collector):
                     self._dga_vps_settle_pump()
                 except Exception as e:
                     logger.debug(f"[BOT] dga vps settle pump error: {e}")
+                # 追従ウォッチドッグ: 追従BETが決済不発(窓取りこぼし/未確定)で
+                # スタックしたら一定時間でリセット(VPS NOWの無視ガードを解除)＋
+                # 取りこぼした追従pendingを掃除(残留防止)。
+                _ft = float(os.getenv("BACOPY_FOLLOW_TIMEOUT_SEC", "180") or 180)
+                if getattr(self, "_follow_active", False) and self._follow_last_bet_at \
+                        and (now - self._follow_last_bet_at) > _ft:
+                    logger.warning(f"[FOLLOW] timeout {now - self._follow_last_bet_at:.0f}s no settle -> reset")
+                    self._follow_reset(reason="timeout")
+                if self._pending_decisions:
+                    for _fdid, _fv in list(self._pending_decisions.items()):
+                        if isinstance(_fv, dict) and _fv.get("is_follow") \
+                                and not _fv.get("settlement_posted") \
+                                and (now - float(_fv.get("placed_at") or now)) > _ft:
+                            self._pending_decisions.pop(_fdid, None)
 
                 # ── collector 停滞時の remote snapshot 補助シグナル (2秒ごと) ──
                 if now - last_remote_signal_poll >= 2.0:

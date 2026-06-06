@@ -191,6 +191,24 @@ VPS master (master.bafather.uk) ── NOW decision ──┐
 
 ---
 
+## 9. デュアルラインオート追従 (BACOPY_DUAL_FOLLOW)
+BET MODE 3つ目「デュアルラインオート追従」。オート(WS自動BET)＋**勝った時だけ追従**。
+- **追従起点**: signal の大路(`pattern_key` china|**BIG**|side の真ん中)が **telecho か dragon** で**勝った**時のみ。それ以外(niconico/nikoichi/sansan)は追従せず通常1回BET。初回が負け→追従せず待機。
+- **方向**: telecho=**逆張り**(毎手反対側 P→B→P...) / dragon=**順張り**(同じ側)。開始時の大路で固定(途中再判定なし)。
+- **継続/終了**: 勝てば同卓で次手を自動WS BET、**負ければ終了→待機**。**TIEはプッシュ**(同側で再BET・反転しない)。追従中は他卓のNOWを無視。
+- **額**: SEQ継続(money model の next_bet)。
+- 実装(`dual_line_pragmatic_bot.py`): `_follow_*` state(`BACOPY_DUAL_FOLLOW`で有効), `_follow_big_kind`/`_follow_compute_next`/`_follow_on_settled`(決済後フック・`_settle_confirmed_decision_from_hand`末尾から呼ぶ)/`_follow_place_next`(合成decision `follow_<qpid>_<ms>` で place_bet→既存のdga決済経路に乗る)。`_handle_decision`先頭で追従中はVPS NOWスキップ。メインループに追従タイムアウト監視(`BACOPY_FOLLOW_TIMEOUT_SEC`=180、決済不発で自動reset＋pending掃除)。追従BETはマスターへ投げない(`_post_decision_settlement`/`_flush_pending_decision_results`で`is_follow`スキップ=404防止)。
+- GUI: `index.html` option `dual_line_auto_follow`、`app.js` `isDualLineFollowBetMode`＋`dual_follow`config＋**BET MODE変更で即localStorage保存**(保存ボタン押し忘れ防止)、`main.js` auto時 `config.dual_follow`→`BACOPY_DUAL_FOLLOW=1`＋起動ログに `follow=true BACOPY_DUAL_FOLLOW=1`(検証用)。
+- **実機検証(2026-06-06)**: `telecho|telecho|B`勝ち→`[FOLLOW] START kind=telecho won_side=B next=P`→`place next side=P`(逆張り)→P負け→`[FOLLOW] END reason=lose`→待機。仕様通り。
+- トラブルシュート: 追従しない時は①起動ログ `follow=true BACOPY_DUAL_FOLLOW=1` を確認(=未設定ならGUIで選び直し→即保存される)②勝った手の大路が telecho/dragon か(niconico等は追従しないのが正)③`[FOLLOW]`ログ(START/WIN chain=N/END)を追う。
+
+## 10. Stake「ゲームがありません / failed to start third party session」復旧
+症状: 9222専用Chromeで「failed to start third party session」、どの卓も「ゲームがありません」。
+- 原因: Stakeの**重複Pragmaticセッション**アンチアビューズ・ブロック。GUI短時間多数回再起動で専用Chromeにセッション/タブ復元状態が重なって残るのが主因(追従/オート等のコードとは無関係)。
+- 復旧(`_recover_cdp_session.ps1` を bafather に常備): ①GUI(BACOPYRECEIVER)+engine停止 ②`cdp_chrome_profile`/`9222`のchrome.exe全kill ③`cdp_chrome_profile\Default` の `Sessions\*`・`Session Storage\*`・`Last/Current Session/Tabs` 削除(**ログインcookieは残す**) ④GUI再起動=単一クリーンセッション。
+- それでも続く時はStakeサーバ側ブロックが数分残るだけ→3〜5分待って再起動。判定: engineログで `[BETSOPEN]` が現在時刻で流れていれば復旧(ホストWS接続)。
+- 予防: 短時間の連続GUI再起動を避ける。
+
 ## 8. 関連ファイル(本変更の本体)
 - `dual_line_live_executor.py`: `_build_lpbet_xml`(gm/bc/byte), `_ws_send`, `send_bet`(WS分岐), `_maybe_fire_ws_test_bet`, `_dga_direct_loop`/`set_dga_result_callback`(勝者feed)。
 - `dual_line_pragmatic_bot.py`: `_maybe_register_dga_callback`(settle feed), `_on_dga_frame`(勝者enqueue), `_dga_vps_settle_pump`/`_settle_vps_from_dga`(決済drain), `_DgaHandBuf`, `_handle_manual_assist_command`(オート時result拒否), `_poll_bet_history_billing`(daily_total送信)。

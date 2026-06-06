@@ -823,6 +823,8 @@ function buildSpawnSpec(config) {
         childEnv.BACOPY_MULTI_BET_TRANSPORT = 'ws';
         childEnv.BACOPY_ALLOW_WS_BET_TRANSPORT = '1';
         childEnv.BACOPY_ENABLE_WS_REAL_BET = '1';
+        // オート追従: 勝った時だけ同卓追従(大路 telecho=逆張り / dragon=順張り)。
+        if (config && config.dual_follow) childEnv.BACOPY_DUAL_FOLLOW = '1';
       } else {
         // デュアルラインアシスト: 人間が手動クリック + WIN/LOSE で進行。自動クリック
         // はしない(NO_AUTOCLICK=1)。チップ事前選択は$1基準固定(過大BET事故防止)。
@@ -894,6 +896,7 @@ function buildSpawnSpec(config) {
     console.log(
       '[AUTO-PROBE] spawn dual-line ' +
       `mode=${modeName || '-'} assist=${isDualLineAssist} auto=${isDualLineAuto} ` +
+      `follow=${!!(config && config.dual_follow)} BACOPY_DUAL_FOLLOW=${childEnv.BACOPY_DUAL_FOLLOW || '-'} ` +
       `live=${!!(config && config.live)} browser=${childEnv.BACOPY_BROWSER || childEnv.BACOPY_DUAL_LINE_BROWSER || 'camoufox'} ` +
       `cdp=${childEnv.BACOPY_CHROME_CDP_URL || childEnv.BACOPY_CHROME_DEBUG_URL || '-'} ` +
       `engine=${engine.mode} exe=${engine.exe} args=${JSON.stringify(args)}`
