@@ -479,6 +479,8 @@ class DualLinePragmaticBot(cp.Collector):
         self._follow_pattern_key = ""
         self._follow_chain = 0            # この追従での連勝数
         self._follow_last_bet_at = 0.0    # 追従BET最終時刻(タイムアウト監視用)
+        # 利確(profit_stop)到達でGUIへ1回だけ停止通知を出す用。
+        self._profit_stop_sent = False
         self.notify_signal = notify_signal
         self.notify_resolution = notify_resolution
         self.notify_tie = notify_tie
@@ -489,6 +491,18 @@ class DualLinePragmaticBot(cp.Collector):
             on_limit=on_limit,
             state_path=MONEY_STATE_PATH,
         )
+        # 利確で停止→再起動(再開)時: 新セッションとして session_pnl=0 + limit解除で
+        # 再アーム(利確額は据置)。SEQ進行(seq7/seq_level)はそのまま継続(=リセットしない)。
+        # 利確分は既にStake残高/デイリーに計上済みなので session_pnl は0スタートでよい。
+        if self.money.limit_reached and self.money.limit_reason == "profit":
+            self.money.session_pnl = 0.0
+            self.money.limit_reached = False
+            self.money.limit_reason = ""
+            try:
+                self.money._save_state()
+            except Exception:
+                pass
+            logger.info("[PROFIT] resume after profit-stop: session_pnl reset to 0, profit target re-armed, SEQ kept")
 
         # per-table 状態
         self.last_hand_count: dict[str, int] = defaultdict(int)
@@ -2889,44 +2903,56 @@ class DualLinePragmaticBot(cp.Collector):
 
     def _follow_on_settled(self, *, side: str, result: str, pattern_key: str,
                            qpid: str, table_name: str) -> None:
-        """BET決済(_settle_confirmed_decision_from_hand / _resolve_prediction)後に呼ぶ。
-        勝てば追従継続、負ければ終了、TIEはプッシュ(同側再BET)。"""
-        if not self._follow_enabled:
-            return
+        """BET決済後フック。
+        ・TIE=プッシュ: 全モード共通(オート/オート追従どちらでも・どのパターンでも)。
+          同じ側でW/Lが出るまで何度でも再BET。
+        ・WIN=追従chase: オート追従 かつ 大路 telecho(逆張り)/dragon(順張り) の時のみ。
+          それ以外(平常オート/非対象パターン)はチェーン終了。
+        ・LOSE=終了(待機)。"""
         side = "B" if str(side or "").upper().startswith("B") else "P"
         result = str(result or "").upper()
-        if not self._follow_active:
-            # 初回(VPS NOW)BETの結果で追従開始を判定
-            if result == "WIN":
-                kind = self._follow_big_kind(pattern_key)
-                if kind and qpid:
-                    self._follow_active = True
-                    self._follow_table_id = qpid
-                    self._follow_table_name = table_name or qpid
-                    self._follow_kind = kind
-                    self._follow_pattern_key = pattern_key
-                    self._follow_chain = 1
-                    self._follow_next_side = self._follow_compute_next(kind, side)
-                    logger.info(
-                        f"[FOLLOW] START kind={kind} table={self._follow_table_name} "
-                        f"won_side={side} next={self._follow_next_side}"
-                    )
-                    self._follow_place_next()
+        if not qpid:
             return
-        # 追従中: この決済は追従BET(同卓)の結果のはず
-        if qpid and self._follow_table_id and qpid != self._follow_table_id:
-            return  # 別卓の決済は無視
+        # チェーン中(追従/プッシュ)なら、その卓の決済のみ扱う(別卓は無視)
+        if self._follow_active and self._follow_table_id and qpid != self._follow_table_id:
+            return
+
+        # ── TIE = プッシュ(全モード共通・同じ側で再BET) ──
+        if result == "TIE":
+            self._follow_active = True
+            self._follow_table_id = qpid
+            self._follow_table_name = table_name or qpid
+            self._follow_pattern_key = pattern_key
+            if not self._follow_kind:
+                self._follow_kind = self._follow_big_kind(pattern_key)
+            self._follow_next_side = side  # 反転しない・同じ側
+            logger.info(f"[CHAIN] TIE push table={self._follow_table_name} reBET={side}")
+            self._follow_place_next()
+            return
+
+        # ── WIN ──
         if result == "WIN":
-            self._follow_chain += 1
-            self._follow_next_side = self._follow_compute_next(self._follow_kind, side)
-            logger.info(f"[FOLLOW] WIN chain={self._follow_chain} next={self._follow_next_side} table={self._follow_table_name}")
-            self._follow_place_next()
-        elif result == "TIE":
-            self._follow_next_side = side  # プッシュ: 反転しない・同側再BET
-            logger.info(f"[FOLLOW] TIE push chain={self._follow_chain} reBET={self._follow_next_side}")
-            self._follow_place_next()
-        else:  # LOSE
-            self._follow_reset(reason="lose")
+            kind = self._follow_kind or self._follow_big_kind(pattern_key)
+            if self._follow_enabled and kind in ("telecho", "dragon"):
+                self._follow_active = True
+                self._follow_table_id = qpid
+                self._follow_table_name = table_name or qpid
+                self._follow_kind = kind
+                self._follow_pattern_key = pattern_key
+                self._follow_chain += 1
+                self._follow_next_side = self._follow_compute_next(kind, side)
+                logger.info(
+                    f"[FOLLOW] WIN chase kind={kind} table={self._follow_table_name} "
+                    f"won={side} next={self._follow_next_side} chain={self._follow_chain}"
+                )
+                self._follow_place_next()
+            else:
+                # 平常オート or 非対象パターンの勝ち → チェーン終了(次のNOW待ち)
+                self._follow_reset(reason="win_no_follow")
+            return
+
+        # ── LOSE ──
+        self._follow_reset(reason="lose")
 
     def _follow_place_next(self) -> None:
         """追従の次手を同じ卓へ自動BET(合成decisionとして既存の決済経路に乗せる)。"""
@@ -6255,6 +6281,36 @@ class DualLinePragmaticBot(cp.Collector):
                                 and not _fv.get("settlement_posted") \
                                 and (now - float(_fv.get("placed_at") or now)) > _ft:
                             self._pending_decisions.pop(_fdid, None)
+
+                # 利確(profit_stop)到達: GUIへ1回だけ停止通知。SEQはリセットせず保持し、
+                # GUIが利確表示を出してbotを停止する(app.js側でstopBot)。次回起動時に
+                # 上の resume クリアで新セッション再開できる。追従中なら止める。
+                if (self.money.limit_reached and self.money.limit_reason == "profit"
+                        and not self._profit_stop_sent):
+                    self._profit_stop_sent = True
+                    if getattr(self, "_follow_active", False):
+                        self._follow_reset(reason="profit_stop")
+                    ms = self.money.status_dict()
+                    try:
+                        send_msg({
+                            "type": "profit_target_reached",
+                            "session_pnl": round(float(self.money.session_pnl), 2),
+                            "profit_stop": float(self.money.profit_stop),
+                            "money_status": ms,
+                        })
+                    except Exception:
+                        pass
+                    logger.info(
+                        f"[PROFIT] target reached session_pnl=${self.money.session_pnl:+.2f} "
+                        f"stop=${self.money.profit_stop} -> notify GUI to stop (SEQ kept)"
+                    )
+                    try:
+                        _send_telegram(
+                            f"🎯 利確達成 ${self.money.session_pnl:+.2f}\n"
+                            f"目標 ${self.money.profit_stop} 到達 — 停止(SEQ保持)"
+                        )
+                    except Exception:
+                        pass
 
                 # ── collector 停滞時の remote snapshot 補助シグナル (2秒ごと) ──
                 if now - last_remote_signal_poll >= 2.0:

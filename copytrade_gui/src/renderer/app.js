@@ -1122,6 +1122,7 @@ $('#btnSettings')?.addEventListener('click', async () => {
   // dual-line 時 BET MODE に dual_line を追加
   _ensureDualLineOption();
   $('#inputProfitTarget').value = s.profit_target;
+  if ($('#inputDualProfitTarget')) $('#inputDualProfitTarget').value = Number(s.profit_target) || 0;
   if ($('#inputProfitSessionLimit')) $('#inputProfitSessionLimit').value = s.profit_session_limit ?? 0;
   $('#inputLossCut').value = s.loss_cut;
   $('#inputDryRun').checked = !!s.dry_run;
@@ -1236,8 +1237,9 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
   const settings = {
     // bet_mode が金額を決めるため chip_base は固定 (UIも非表示)
     chip_base: isDualLine ? parseFloat($('#inputDualUnit')?.value || 100) : 1,
-    // 損切り/利確はUIから削除 = 無効(0)。リスク管理は手動(WIN/LOSE/STOP)。
-    profit_target: 0,
+    // 利確(セッションPnL目標): dual-line は専用入力 #inputDualProfitTarget を使う。
+    // 到達で自動停止(SEQ保持・表示維持)。0=無効。損切りは未使用(0)。
+    profit_target: isDualLine ? (parseFloat($('#inputDualProfitTarget')?.value) || 0) : 0,
     profit_session_limit: 0,
     loss_cut: 0,
     dry_run: $('#inputDryRun').checked,
@@ -1258,7 +1260,7 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     dual_unit: parseFloat($('#inputDualUnit')?.value || 100),
     dual_mode: $('#inputDualMode')?.value || 'v3',
     dual_live: $('#inputDualLive')?.checked || false,
-    dual_on_limit: $('#inputOnLimitRestart')?.checked ? 'restart' : 'stop',
+    dual_on_limit: 'stop',  // 利確はSEQ保持で停止(restart=リセットは使わない)
     manual_assist_auto_click: $('#inputManualAssistAutoClick')?.checked || false,
     dga_auto_bet: $('#inputDgaAutoBet')?.checked || false,
     dga_regular_only: $('#inputDgaRegularOnly')?.checked !== false,
@@ -2340,6 +2342,28 @@ window.valhalla.onAgentMessage((msg) => {
       break;
     }
 
+    case 'profit_target_reached': {
+      // 利確達成: 緑バナーを出したまま bot を停止(SEQはエンジン側で保持)。
+      const pnl = Number(msg.session_pnl) || 0;
+      const tgt = Number(msg.profit_stop) || 0;
+      const txt = `🎯 利確達成  +$${pnl.toFixed(2)}  (目標 $${tgt.toFixed(0)}) — 停止`;
+      addLog(txt + ' / SEQ保持・再開で続行', 'info');
+      try {
+        let b = document.getElementById('profitBanner');
+        if (!b) {
+          b = document.createElement('div');
+          b.id = 'profitBanner';
+          b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;padding:14px 16px;text-align:center;font-weight:900;font-size:17px;color:#022;background:linear-gradient(90deg,rgba(0,229,160,0.96),rgba(0,200,120,0.96));box-shadow:0 6px 22px rgba(0,0,0,0.55);cursor:pointer;';
+          b.title = 'クリックで閉じる';
+          b.addEventListener('click', () => b.remove());
+          document.body.appendChild(b);
+        }
+        b.textContent = txt + '  （クリックで閉じる）';
+      } catch (e) {}
+      try { stopBotFlow({ forced: true, reason: '利確達成 +$' + pnl.toFixed(2) }); } catch (e) {}
+      break;
+    }
+
     case 'daily_total': {
       // エンジン(課金)が計算した正確な日次PnL。DAILY TOTAL に表示(/me/realtime と同値)。
       const d = Number(msg.daily_pnl);
@@ -2485,8 +2509,18 @@ window.valhalla.onAgentMessage((msg) => {
 
     case 'resolution': {
       const r = msg;
-      if (r.decision_id) {
-        const item = manualAssistItems.find((it) => String(it.decision_id || it.id || '') === String(r.decision_id));
+      {
+        let item = r.decision_id
+          ? manualAssistItems.find((it) => String(it.decision_id || it.id || '') === String(r.decision_id))
+          : null;
+        // フォールバック: decision_id 未一致(遅延結果は予告/NOWと別ID・黄色枠が先に消えた等)
+        // の時は、同卓(table_id/qpid)の未確定の最新項目に結果を乗せる(取りこぼし防止)。
+        if (!item && r.table_id) {
+          const cand = manualAssistItems.filter((it) =>
+            (String(it.table_id || '') === String(r.table_id) || String(it.qpid || '') === String(r.table_id))
+            && it.status !== 'SETTLED');
+          item = cand.length ? cand[cand.length - 1] : null;
+        }
         if (item) {
           item.status = 'SETTLED';
           item.result = r.result;
