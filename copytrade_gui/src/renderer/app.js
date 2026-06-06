@@ -344,6 +344,9 @@ let _sessionOpenBalance = null;
 let _dailyOpenBalance = null;
 
 let _dailyOpenDate = null;
+// エンジン(課金)が計算する正確な日次PnL。/me/realtime と同値。DAILY TOTAL に最優先表示。
+// (ローカルの残高差分計算は不安定で0のままになるため、engine値があればそれを使う)
+let _engineDailyPnl = null;
 
 let sessionTotal = 0;
 let _balanceConfirmed = false; // エンジンから実残高を受信したら true
@@ -351,6 +354,10 @@ const results = [];
 const manualAssistItems = [];
 let manualAssistEnabled = false;
 let manualAssistEnabledAt = 0;
+// デュアルラインオート(全自動WS BET)中か。engine の manual_assist_mode メッセージの
+// auto_bet_enabled / manual_assist_auto_click から判定。オート時は WIN/LOSE を隠す
+// (自動決済が走るため手動タップは二重決済になる)。
+let manualAutoBetMode = false;
 let activeManualItemId = '';
 // 機能①(HOLD): この卓を固定中か。固定中は他卓のシグナルでスクロール/枠移動しない。
 let manualHoldOn = false;
@@ -587,7 +594,13 @@ function updateSessionDisplay() {
 
   const todayEl = $('#todayPnl');
   if (todayEl) {
-    if (!_balanceConfirmed) {
+    // エンジン(課金=/me/realtime と同値)の日次PnLを最優先。残高確認に依存しない。
+    // 無ければ従来のローカル残高差分にフォールバック。
+    if (typeof _engineDailyPnl === 'number' && isFinite(_engineDailyPnl)) {
+      const d = _engineDailyPnl;
+      todayEl.textContent = `${d >= 0 ? '+$' : '-$'}${Math.abs(d).toFixed(2)}`;
+      todayEl.className = 'today-pnl ' + (d >= 0 ? 'positive' : 'negative');
+    } else if (!_balanceConfirmed) {
       todayEl.textContent = '--';
       todayEl.className = 'today-pnl';
     } else {
@@ -1769,15 +1782,27 @@ function renderManualAssistPanel() {
     }).join('');
   }
 
-  // WIN/LOSE/TIE are ALWAYS pressable (no TAKE step required). The human bets
-  // a NOW manually and taps the result to advance the SEQ/D'Alembert progression.
-  // Skipping (break/away) = simply not tapping = progression unchanged.
-  const resultEnabled = true;
-  $('#manualResultWin')?.toggleAttribute('disabled', !resultEnabled);
-  $('#manualResultLose')?.toggleAttribute('disabled', !resultEnabled);
-  $('#manualResultTie')?.toggleAttribute('disabled', !resultEnabled);
+  // アシスト時: WIN/LOSE/TIE は常に押せる(人間が手動BETして結果をタップ→SEQ進行)。
+  // オート時(デュアルラインオート): 自動決済が走るため手動タップは二重決済になる。
+  // → WIN/LOSE/TIE を非表示にして事故を防ぐ(HOLDは表示維持=スクロール凍結用)。
+  const autoMode = manualAutoBetMode;
+  const resultEnabled = !autoMode;
+  ['#manualResultWin', '#manualResultLose', '#manualResultTie'].forEach((sel) => {
+    const b = $(sel);
+    if (b) {
+      b.style.display = autoMode ? 'none' : '';
+      b.toggleAttribute('disabled', !resultEnabled);
+    }
+  });
+  const modeBadge = $('#manualAssistMode');
+  if (modeBadge) {
+    modeBadge.textContent = autoMode ? 'AUTO' : 'ASSIST';
+    modeBadge.classList.toggle('auto', autoMode);
+  }
   const holdBtn = $('#manualHoldToggle');
   if (holdBtn) {
+    // オート時はスクロール制御も自動なので HOLD も隠す(結果行は全ボタン非表示)。
+    holdBtn.style.display = autoMode ? 'none' : '';
     holdBtn.classList.toggle('active', manualHoldOn);
     holdBtn.textContent = manualHoldOn ? '● HOLD' : 'HOLD';
   }
@@ -2302,9 +2327,21 @@ window.valhalla.onAgentMessage((msg) => {
       break;
     }
 
+    case 'daily_total': {
+      // エンジン(課金)が計算した正確な日次PnL。DAILY TOTAL に表示(/me/realtime と同値)。
+      const d = Number(msg.daily_pnl);
+      if (isFinite(d)) {
+        _engineDailyPnl = d;
+        updateSessionDisplay();
+      }
+      break;
+    }
+
     case 'manual_assist_mode': {
       const enabled = !!msg.enabled;
       manualAssistEnabled = enabled;
+      // オート(全自動)判定: auto_bet_enabled か manual_assist_auto_click。
+      manualAutoBetMode = !!(msg.auto_bet_enabled || msg.manual_assist_auto_click);
       if (enabled) manualAssistEnabledAt = Date.now();
       renderManualAssistPanel();
       addLog(

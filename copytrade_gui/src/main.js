@@ -804,30 +804,30 @@ function buildSpawnSpec(config) {
     if (!Object.prototype.hasOwnProperty.call(envFile, 'BACOPY_MULTI_DIAGNOSTIC_ONLY')) {
       childEnv.BACOPY_MULTI_DIAGNOSTIC_ONLY = '0';
     }
-    if (config && config.live) args.push('--live');
-    if (isDualLineAssist) {
+    // 受け子は常に実BET(--live)。GUIの LIVE Mode チェックは撤去した(チェック忘れで
+    // 賭けない事故防止)。ドライランは管理者用 BACOPY_DUAL_DRYRUN=1 の時だけ。
+    {
+      const _dry = String(childEnv.BACOPY_DUAL_DRYRUN || '').trim().toLowerCase();
+      const _forceDry = (_dry === '1' || _dry === 'true' || _dry === 'on' || _dry === 'yes');
+      if (!_forceDry) args.push('--live');
+    }
+    if (isDualLineAssist || isDualLineAuto) {
+      // 両モードとも manual-assist エンジンを使う(オーバーレイ + NOW)。
+      // BET MODE プルダウンが唯一の切替: アシスト(手動) / オート(全自動WS BET)。
       args.push('--manual-assist');
-      // assist モードで NOW シグナル時に自動クリックBETを行うか。
-      // 既定は OFF（オーバーレイ表示のみ・人間が最終クリック）= 安全側。
-      // GUI トグル(config.manual_assist_auto_click) か .env で明示的に ON にしたときだけ
-      // engine が place_bet() を呼ぶ（dual_line_pragmatic_bot.py が本 env を参照）。
-      if (config && config.manual_assist_auto_click) {
+      if (isDualLineAuto) {
+        // デュアルラインオート: NOW→WS自動BET(チップ/ローディング不要)→dga勝者で
+        // 自動決済→SEQ/ダランベール自動進行。auto-click + WS transport を強制。
         childEnv.BACOPY_MANUAL_ASSIST_AUTO_CLICK = '1';
-      }
-      // 自動フラットBET (両側): 実績ある dga local-signal(multi-chip)経路で全自動着弾。
-      // .env の BACOPY_DGA_LOCAL_SIGNAL=off を上書きして live にする。money mode は
-      // renderer 側で flat に強制済み(自動×SEQ=破産のため)。bafather 管理者専用。
-      if (config && config.dga_auto_bet) {
-        childEnv.BACOPY_DGA_LOCAL_SIGNAL = 'live';
         childEnv.BACOPY_MANUAL_NO_AUTOCLICK = '0';
-        if (config.dga_regular_only) {
-          childEnv.BACOPY_DGA_REGULAR_ONLY = '1';
-        }
-      }
-      // 機能②: 手動アシスト(自動クリック/自動BETでない)はチップ事前選択を$1基準に固定。
-      // SEQ進行で次BETが$5等でも、アクティブチップを$1にして人間が手動で回数を決める。
-      // (慌てて$5チップを連打する過大BET事故の防止。表示NEXT BET額は SEQ のまま。)
-      if (!(config && (config.manual_assist_auto_click || config.dga_auto_bet))) {
+        childEnv.BACOPY_MULTI_BET_TRANSPORT = 'ws';
+        childEnv.BACOPY_ALLOW_WS_BET_TRANSPORT = '1';
+        childEnv.BACOPY_ENABLE_WS_REAL_BET = '1';
+      } else {
+        // デュアルラインアシスト: 人間が手動クリック + WIN/LOSE で進行。自動クリック
+        // はしない(NO_AUTOCLICK=1)。チップ事前選択は$1基準固定(過大BET事故防止)。
+        childEnv.BACOPY_MANUAL_NO_AUTOCLICK = '1';
+        childEnv.BACOPY_MULTI_BET_TRANSPORT = 'click';
         childEnv.BACOPY_MANUAL_CHIP_BASE = String((config && config.manual_chip_base) || '1');
       }
     }

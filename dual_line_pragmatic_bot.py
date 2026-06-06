@@ -196,6 +196,19 @@ def _winner_to_char(w) -> str:
     return ""
 
 
+class _DgaHandBuf:
+    """_settle_confirmed_decision_from_hand / _decision_matches_hand が参照する
+    最小の buf 互換オブジェクト。dga 勝者から VPS-NOW 確定BETを決済する際に、
+    game-WS の本物の buf の代わりに渡す(table_name / qpid_table_id / table_id)。"""
+
+    __slots__ = ("table_name", "qpid_table_id", "table_id")
+
+    def __init__(self, table_name: str = "", qpid_table_id: str = "", table_id: str = ""):
+        self.table_name = table_name
+        self.qpid_table_id = qpid_table_id
+        self.table_id = table_id
+
+
 def _atomic_write_json_file(path: Path, payload: dict) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1306,6 +1319,12 @@ class DualLinePragmaticBot(cp.Collector):
             logger.warning("[MANUAL-ASSIST] command ignored: mode disabled")
             return
         action = str(msg.get("action") or "").strip().lower()
+        # デュアルラインオート(自動WS BET)中は決済が自動(dga勝者駆動)。手動 WIN/LOSE/TIE は
+        # 二重決済になり SEQ/ダランベールが壊れるため拒否する(GUIでも非表示だが保険)。
+        # HOLD 等のスクロール制御は許可。
+        if action == "result" and getattr(self, "manual_assist_auto_click", False):
+            logger.info("[MANUAL-ASSIST] result ignored: auto-bet mode (settlement is automatic)")
+            return
         item_id = str(msg.get("id") or "").strip()
         decision_id = str(msg.get("decision_id") or "").strip()
         key, item = self._find_manual_assist_item(item_id=item_id, decision_id=decision_id)
@@ -1545,6 +1564,7 @@ class DualLinePragmaticBot(cp.Collector):
             # bet/settle requests here; the main loop drains and executes them.
             self._dga_bet_q: deque = deque()     # pending bet requests (bg -> main)
             self._dga_settle_q: deque = deque()  # pending settle requests (bg -> main)
+            self._dga_vps_settle_q: deque = deque()  # VPS-NOW confirmed-bet settle (bg->main)
             self._dga_bets: dict[str, dict] = {} # tid -> open bet {bet_id, side, ...}
             self._dga_lock = threading.Lock()
         self._dga_rx += 1
@@ -1603,11 +1623,26 @@ class DualLinePragmaticBot(cp.Collector):
                         self._dga_settle_q.append(
                             {"tid": tid, "outcome": c, "bet": open_bet, "gid": gid}
                         )
+                    # VPS-NOW 確定BETの決済: この勝者(gid)を main loop に渡し、
+                    # _settle_confirmed_decision_from_hand が gid 厳密一致で決済する。
+                    # マルチプレイ/Speed卓で winner が _on_new_hand に届かない問題の解。
+                    if getattr(self, "_pending_decisions", None):
+                        vq = getattr(self, "_dga_vps_settle_q", None)
+                        if vq is not None:
+                            vq.append({
+                                "tid": tid, "qpid": self._dga_qpid.get(tid, ""),
+                                "gid": gid, "outcome": c,
+                                "name": self._dga_names.get(tid, ""),
+                            })
                 if c in ("P", "B"):
                     self._dga_seq[tid] = self._dga_seq.get(tid, "") + c
                     added = True
                 elif c == "T":
                     added = True
+            # 決済専用フィード(自動BETのSEQ進行用): signal計算/dga発注はせず、
+            # 勝者→VPS決済(上の enqueue)だけ行う。
+            if getattr(self, "_dga_settle_only", False):
+                continue
             if not added:
                 continue
             self._dga_added += 1
@@ -1719,6 +1754,67 @@ class DualLinePragmaticBot(cp.Collector):
                 self._dga_settle_one(s)
             except Exception as e:
                 logger.warning(f"[DGA-SETTLE] error: {e}")
+
+    def _dga_vps_settle_pump(self) -> None:
+        """Main-loop drain: dga 勝者で VPS-NOW 確定BETを決済する。dga signal mode に
+        依存せず常に走る(=自動WS BET時にマルチプレイ/Speed卓の○×/SEQ/ダランベールが
+        進む)。bg(dga)スレッドが enqueue し、ここ(Playwright main loop)で money model を
+        触る。"""
+        q = getattr(self, "_dga_vps_settle_q", None)
+        if not q:
+            return
+        drained = 0
+        while drained < 200:
+            try:
+                s = q.popleft()
+            except IndexError:
+                break
+            drained += 1
+            try:
+                self._settle_vps_from_dga(s)
+            except Exception as e:
+                logger.debug(f"[DGA-VPS-SETTLE] drain error: {e}")
+
+    def _settle_vps_from_dga(self, s: dict) -> None:
+        if not self._pending_decisions:
+            return
+        gid = str(s.get("gid") or "").strip()
+        outcome = str(s.get("outcome") or "").strip().upper()
+        if outcome not in ("P", "B", "T") or not gid:
+            return
+        qpid = str(s.get("qpid") or "").strip()
+        tid = str(s.get("tid") or "").strip()
+        name = str(s.get("name") or "").strip()
+        # _decision_matches_hand は confirmed_bet + gid 厳密一致を要求する。確定BET情報が
+        # まだ pending に付いていなければ executor の非消費 getter で補完する(タイミング保険)。
+        getter = getattr(self.bet_executor, "get_confirmed_bet", None)
+        if callable(getter):
+            for did, p in list(self._pending_decisions.items()):
+                if not isinstance(p, dict) or p.get("settlement_posted"):
+                    continue
+                if isinstance(p.get("confirmed_bet"), dict) and p.get("confirmed_bet"):
+                    continue
+                bid = str(p.get("bet_id") or "")
+                if not bid:
+                    continue
+                try:
+                    ci = getter(bid)
+                except Exception:
+                    ci = None
+                if isinstance(ci, dict) and ci:
+                    p["confirmed_bet"] = ci
+        buf = _DgaHandBuf(table_name=name, qpid_table_id=qpid, table_id=tid)
+        new_hand = {"winner": outcome, "gameId": gid}
+        try:
+            settled = self._settle_confirmed_decision_from_hand(qpid or tid, buf, new_hand, outcome)
+        except Exception as e:
+            logger.warning(f"[DGA-VPS-SETTLE] settle error gid={gid}: {e}")
+            return
+        if settled:
+            logger.info(
+                f"[DGA-VPS-SETTLE] settled via dga winner table={name or qpid or tid} "
+                f"gid={gid} outcome={outcome}"
+            )
 
     def _dga_place_one(self, req: dict) -> None:
         tid = str(req.get("tid") or "")
@@ -1900,15 +1996,29 @@ class DualLinePragmaticBot(cp.Collector):
         BACOPY_DGA_LOCAL_SIGNAL. Safe to call from any executor-setup site."""
         if getattr(self, "_dga_cb_registered", False):
             return
-        if os.getenv("BACOPY_DGA_LOCAL_SIGNAL", "").strip().lower() not in (
+        dga_on = os.getenv("BACOPY_DGA_LOCAL_SIGNAL", "").strip().lower() in (
             "1", "shadow", "livecompare", "live", "true", "on",
-        ):
+        )
+        # 自動BET(manual_assist_auto_click)時は勝者(gameResult)フィードが
+        # マルチプレイ/Speed卓の決済に必須(これらの卓は winner が game-WS の
+        # _on_new_hand に届かず、betsopen の hand-end しか取れない)。dga signal を
+        # 使わなくても「決済専用」で直結 dga gameResult フィードを起こす。
+        settle_feed = bool(
+            getattr(self, "manual_assist_auto_click", False)
+            or os.getenv("BACOPY_DGA_SETTLE_FEED", "").strip().lower() in ("1", "true", "on", "yes")
+        )
+        if not (dga_on or settle_feed):
             return
+        # settle-only: 勝者→VPS決済のみ。signal計算/dga発注はしない。
+        self._dga_settle_only = bool(settle_feed and not dga_on)
         setter = getattr(self.bet_executor, "set_dga_result_callback", None)
         if callable(setter):
             setter(self._on_dga_frame)
             self._dga_cb_registered = True
-            logger.info("[DGA-LOCAL] dga result callback registered (mode=shadow)")
+            logger.info(
+                f"[DGA-LOCAL] dga result callback registered "
+                f"(settle_only={self._dga_settle_only} dga_on={dga_on})"
+            )
 
     def _on_shoe_change(self, table_id: str, buf):
         self._prev_table_scores.pop(table_id, None)  # 新シューで予告履歴リセット
@@ -3161,6 +3271,19 @@ class DualLinePragmaticBot(cp.Collector):
                 self._save_billing_state()
         except Exception as ex:
             logger.debug(f"[BILLING] poll error: {ex}")
+        # GUI の DAILY TOTAL に正確な日次PnL(課金=/me/realtime と同値)を送る。
+        # renderer のローカル残高差分が不安定で 0 のままになる問題の対策。
+        try:
+            send_msg({
+                "type": "daily_total",
+                "daily_pnl": round(float(self._billing_daily_pnl or 0.0), 2),
+                "daily_date": str(self._billing_daily_date or ""),
+                "balance": self._billing_current_balance,
+                "currency": str(self._billing_currency or ""),
+                "count": int(self._billing_count or 0),
+            })
+        except Exception:
+            pass
 
     def _sync_billing_session_state(self) -> None:
         """Step 2: realized daily_bet_pnl を bafather /api/session-state へ POST。
@@ -5957,6 +6080,12 @@ class DualLinePragmaticBot(cp.Collector):
                     self._dga_main_pump()
                 except Exception as e:
                     logger.debug(f"[BOT] dga pump error: {e}")
+                # VPS-NOW 確定BETを dga 勝者で決済(自動WS BET時の○×/SEQ/ダランベール進行)。
+                # dga signal mode off でも走る(settle-only feed)。
+                try:
+                    self._dga_vps_settle_pump()
+                except Exception as e:
+                    logger.debug(f"[BOT] dga vps settle pump error: {e}")
 
                 # ── collector 停滞時の remote snapshot 補助シグナル (2秒ごと) ──
                 if now - last_remote_signal_poll >= 2.0:

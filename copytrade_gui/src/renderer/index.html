@@ -293,6 +293,7 @@
             <label>BET MODE</label>
             <select id="inputBetMode">
               <option value="dual_line">デュアルラインアシスト</option>
+              <option value="dual_line_auto">デュアルラインオート</option>
               <!-- 旧モード(レガシー)は廃止。コード互換のため値のみコメントアウトで保持:
               <option value="flat_1usd">TEST — $1 fixed</option>
               <option value="seq_user10">SEQ — $10 start (10,20,30...)</option>
@@ -352,20 +353,24 @@
               <option value="martingale">martingale</option>
               <option value="dalembert">dalembert</option>
             </select>
-            <div class="form-group">
+            <!-- LIVE Mode は撤去: 受け子は常に実BET。ドライランは管理者用 .env
+                 (BACOPY_DUAL_DRYRUN=1) のみ。チェック忘れで賭けない事故を防ぐ。
+                 app.js 互換のため要素は残すが非表示&常にchecked扱い。 -->
+            <div class="form-group" style="display:none;">
               <label class="checkbox-label">
-                <input type="checkbox" id="inputDualLive"> LIVE Mode (real bets)
+                <input type="checkbox" id="inputDualLive" checked> LIVE Mode (legacy)
               </label>
             </div>
-            <div class="form-group">
+            <!-- レガシー: 自動化は BET MODE プルダウン(デュアルラインオート)に統合済。
+                 これらは app.js 互換のため残すが非表示(チェックしても無効=プルダウンが優先)。 -->
+            <div class="form-group" style="display:none;">
               <label class="checkbox-label">
-                <input type="checkbox" id="inputManualAssistAutoClick"> Assist Auto-Click (NOW時に自動BET / 未チェック=オーバーレイ表示のみ)
+                <input type="checkbox" id="inputManualAssistAutoClick"> Assist Auto-Click (legacy)
               </label>
             </div>
-            <div style="height:1px; background:var(--border); margin:10px 0;"></div>
-            <div class="form-group">
+            <div class="form-group" style="display:none;">
               <label class="checkbox-label">
-                <input type="checkbox" id="inputDgaAutoBet"> 🤖 自動フラットBET (両側・dga) — ON時は SEQ不可・<b>flat強制</b>で全自動着弾
+                <input type="checkbox" id="inputDgaAutoBet"> 🤖 自動フラットBET (legacy)
               </label>
             </div>
             <div class="form-group" id="dgaRegularOnlyGroup" style="display:none;">
