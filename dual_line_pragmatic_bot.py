@@ -479,6 +479,8 @@ class DualLinePragmaticBot(cp.Collector):
         self._follow_pattern_key = ""
         self._follow_chain = 0            # この追従での連勝数
         self._follow_last_bet_at = 0.0    # 追従BET最終時刻(タイムアウト監視用)
+        self._follow_bet_id = ""          # 進行中の追従BETのbet_id(失敗即検知用)
+        self._follow_did = ""             # 進行中の追従BETのdecision_id(pending掃除用)
         # 利確(profit_stop)到達でGUIへ1回だけ停止通知を出す用。
         self._profit_stop_sent = False
         self.notify_signal = notify_signal
@@ -2900,6 +2902,8 @@ class DualLinePragmaticBot(cp.Collector):
         self._follow_next_side = ""
         self._follow_pattern_key = ""
         self._follow_chain = 0
+        self._follow_bet_id = ""
+        self._follow_did = ""
 
     def _follow_on_settled(self, *, side: str, result: str, pattern_key: str,
                            qpid: str, table_name: str) -> None:
@@ -2990,6 +2994,8 @@ class DualLinePragmaticBot(cp.Collector):
             "is_follow": True,
         }
         self._follow_last_bet_at = time.time()
+        self._follow_bet_id = str(bet_id or "")
+        self._follow_did = did
         self.total_signals += 1
         try:
             self._send_manual_assist_item(
@@ -6267,10 +6273,23 @@ class DualLinePragmaticBot(cp.Collector):
                     self._dga_vps_settle_pump()
                 except Exception as e:
                     logger.debug(f"[BOT] dga vps settle pump error: {e}")
-                # 追従ウォッチドッグ: 追従BETが決済不発(窓取りこぼし/未確定)で
-                # スタックしたら一定時間でリセット(VPS NOWの無視ガードを解除)＋
+                # 追従BET失敗(pending_signal_stale 等=窓に間に合わず未着弾)を即検知して
+                # 追従終了。181秒も待たずに他卓NOWへ復帰させる(機会損失/ブロック防止)。
+                if getattr(self, "_follow_active", False) and getattr(self, "_follow_bet_id", ""):
+                    _cf = getattr(self.bet_executor, "consume_failed_bet", None)
+                    if callable(_cf):
+                        try:
+                            _fi = _cf(self._follow_bet_id)
+                        except Exception:
+                            _fi = None
+                        if isinstance(_fi, dict) and _fi:
+                            logger.warning(f"[FOLLOW] bet failed ({_fi.get('reason')}) -> END chain (resume NOW)")
+                            if self._follow_did:
+                                self._pending_decisions.pop(self._follow_did, None)
+                            self._follow_reset(reason="bet_failed")
+                # 追従ウォッチドッグ(保険): 決済も失敗も来ずスタックしたら短時間でリセット＋
                 # 取りこぼした追従pendingを掃除(残留防止)。
-                _ft = float(os.getenv("BACOPY_FOLLOW_TIMEOUT_SEC", "180") or 180)
+                _ft = float(os.getenv("BACOPY_FOLLOW_TIMEOUT_SEC", "75") or 75)
                 if getattr(self, "_follow_active", False) and self._follow_last_bet_at \
                         and (now - self._follow_last_bet_at) > _ft:
                     logger.warning(f"[FOLLOW] timeout {now - self._follow_last_bet_at:.0f}s no settle -> reset")

@@ -1834,7 +1834,11 @@ class LiveBetExecutor:
         queued_at = float((bet or {}).get("queued_at") or time.time())
         return max(0.0, time.time() - queued_at)
 
-    def _max_bet_signal_age_sec(self) -> float:
+    def _max_bet_signal_age_sec(self, bet: dict[str, Any] | None = None) -> float:
+        # 追従/TIEプッシュBETは前ハンド決済時に置くため、次のベット窓(最大~30s先)まで
+        # 保持できるよう通常より長い上限にする(VPS NOWは20sのまま=古いNOWを弾く)。
+        if isinstance(bet, dict) and bet.get("is_follow"):
+            return float(os.getenv("BACOPY_FOLLOW_MAX_BET_SIGNAL_AGE_SEC", "45") or 45)
         return float(os.getenv("BACOPY_MAX_BET_SIGNAL_AGE_SEC", "20") or 20)
 
     def _mark_bet_failed(self, bet: dict[str, Any] | None, reason: str, phase: str = "bet_failed", **extra: Any) -> None:
@@ -4128,7 +4132,7 @@ class LiveBetExecutor:
                 pending_age = self._bet_signal_age(self._pending_bet)
                 pending_snapshot = dict(self._pending_bet)
 
-        max_signal_age = self._max_bet_signal_age_sec()
+        max_signal_age = self._max_bet_signal_age_sec(pending_snapshot)
         if pending_snapshot and pending_age > max_signal_age:
             logger.warning(
                 f"[LIVE] drop stale signal pending bet "
@@ -4778,6 +4782,9 @@ class LiveBetExecutor:
                 "signal_game_id": str(md.get("signal_game_id") or "").strip(),
                 "signal_hand_count": int(md.get("signal_hand_count") or 0),
                 "seq_at_predict": str(md.get("seq_at_predict") or ""),
+                # 追従/TIEプッシュのBETは前ハンド決済時に置くため、次のベット窓まで
+                # 通常(20s)より長く保持する(_max_bet_signal_age_sec が参照)。
+                "is_follow": bool(md.get("is_follow") or str(md.get("source") or "") == "follow"),
             }
         logger.info(f"[BET-QUEUED] side={side} ${amount:.2f} table={target_table} known_tables={list(self._table_states.keys())[:6]}")
         if self._multi_lobby_mode and self._multi_bet_transport == "click" and on_owner_thread:
@@ -4831,7 +4838,7 @@ class LiveBetExecutor:
         self._start_active_now_bet_hold(bet, str(bet.get("table_name") or self._table_name or bet.get("table_id") or ""))
 
         age = self._bet_signal_age(bet)
-        max_age = self._max_bet_signal_age_sec()
+        max_age = self._max_bet_signal_age_sec(bet)
         logger.info(
             f"[TRY-BET] signal age={age:.1f}s max={max_age:.1f}s "
             f"decision={bet.get('decision_id') or '-'} signal_game={bet.get('signal_game_id') or '-'}"
@@ -4906,7 +4913,7 @@ class LiveBetExecutor:
             antenna_ok = self.is_table_in_antenna_zone(bet_table_id, str(side or ""))
             if prepared != bet_table_id and not antenna_ok:
                 age_before_focus = self._bet_signal_age(bet)
-                max_age_before_focus = self._max_bet_signal_age_sec()
+                max_age_before_focus = self._max_bet_signal_age_sec(bet)
                 if age_before_focus <= max_age_before_focus:
                     try:
                         st_for_prepare = self._table_states.get(bet_table_id) or {}
