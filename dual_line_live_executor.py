@@ -1607,10 +1607,26 @@ def _build_lpbet_xml(*, table_id: str, game_id: str, user_id: str,
                      bc: str, amount: float) -> str:
     ck = str(int(time.time() * 1000))
     amt = str(int(amount)) if float(amount).is_integer() else str(amount)
+    # game module 名: マルチエリア(マルチテーブル)では Pragmatic client が
+    # gm="mtb_desktop" を送る(実機キャプチャ 2026-06-06 で確認)。単一卓の
+    # "baccarat_desktop" を流用すると Stake がBETを受理せず残高が動かない
+    # (= 過去 WS transport が封印された真因)。env で上書き可。
+    gm = (os.getenv("BACOPY_LPBET_GM", "") or "mtb_desktop").strip() or "mtb_desktop"
+    # bc は数値コード(実機キャプチャ 2026-06-06): Player=0 / Banker=1。
+    # 単一卓用の文字 "B"/"P" を流用すると Stake が弾く or 別の側へ着弾するため
+    # ここで数値へ変換する。既に数値なら素通し。
+    _bc = str(bc).strip().upper()
+    if _bc in ("B", "BANKER", "1"):
+        bc_num = "1"
+    elif _bc in ("P", "PLAYER", "0"):
+        bc_num = "0"
+    else:
+        bc_num = _bc
+    # 実機の lpbet 開きタグは ck="..." 直後に '>'(空白なし)。バイト一致させる。
     return (
         f'<command channel="table-{table_id}">'
-        f'<lpbet gm="baccarat_desktop" gId="{game_id}" uId="{user_id}" ck="{ck}"  >'
-        f'<bet amt="{amt}" bc="{bc}" ck="{ck}"/>'
+        f'<lpbet gm="{gm}" gId="{game_id}" uId="{user_id}" ck="{ck}">'
+        f'<bet amt="{amt}" bc="{bc_num}" ck="{ck}"/>'
         f'</lpbet></command>'
     )
 
@@ -3678,7 +3694,7 @@ class LiveBetExecutor:
 
     def _on_ws_sent(self, data: str, ws_table_id: str = "") -> None:
         """送信メッセージから tableId / userId を補完。"""
-        _raw = repr(data[:120]) if data else "(empty)"
+        _raw = repr(data[:400]) if data else "(empty)"
         logger.info(f"[WS-SENT-RAW] tid={ws_table_id} len={len(data) if data else 0} raw={_raw}")
         if not data:
             return
@@ -3780,9 +3796,60 @@ class LiveBetExecutor:
 
     # ── tick (bot.run() から定期呼出) ────────────────────────────────
 
+    def _maybe_fire_ws_test_bet(self, now: float) -> None:
+        """検証専用ワンショット: BACOPY_WS_BET_TEST_ONCE=1 のとき、開窓中の卓へ
+        $1(既定) のWS BETを1回だけ送る。money/SEQ モデルには一切触らず、send_bet の
+        transport ゲートも経由せず _ws_send を直接叩く(= Stake が WS lpbet を受理して
+        残高が動くかの素の検証)。1回撃ったら自動で武装解除する。"""
+        if str(os.getenv("BACOPY_WS_BET_TEST_ONCE", "")).strip().lower() not in ("1", "true", "yes", "on"):
+            return
+        if getattr(self, "_ws_test_fired", False):
+            return
+        host = "cbcf6qas8fscb222"
+        cand = None
+        for tid, st in list(self._table_states.items()):
+            if tid == host:
+                continue
+            gid = str(st.get("bets_open_game_id") or "")
+            closed = str(st.get("bets_closed_game_id") or "")
+            age = now - float(st.get("last_bets_open_at") or 0.0)
+            if gid and gid != closed and 0.0 < age < 6.0 and st.get("ws_url"):
+                cand = (tid, gid, st)
+                break
+        if not cand:
+            return
+        tile, gid, st = cand
+        uid = str(self._user_id or st.get("user_id") or "")
+        if not uid:
+            logger.warning("[WS-BET-TEST] no user_id yet; will retry next tick")
+            return
+        self._ws_test_fired = True
+        amount = float(os.getenv("BACOPY_WS_BET_TEST_AMT", "1") or 1)
+        side = (os.getenv("BACOPY_WS_BET_TEST_SIDE", "P") or "P").strip().upper()
+        bc = "B" if side in ("B", "BANKER") else "P"
+        xml = _build_lpbet_xml(table_id=tile, game_id=gid, user_id=uid, bc=bc, amount=amount)
+        try:
+            before = dict(self._stake_balance_by_currency)
+        except Exception:
+            before = {}
+        logger.info(
+            f"[WS-BET-TEST] FIRING one-shot WS bet table={tile} gid={gid} side={bc} "
+            f"amt=${amount} uid=...{uid[-6:]} balance_before={before} xml={xml!r}"
+        )
+        try:
+            res = self._ws_send(tile, xml)
+        except Exception as ex:
+            logger.warning(f"[WS-BET-TEST] _ws_send raised: {ex}")
+            res = {"ok": False, "reason": f"exception:{ex}"}
+        logger.info(f"[WS-BET-TEST] _ws_send result={res}")
+
     def tick(self) -> None:
         now = time.time()
         page = self._lobby_page
+        try:
+            self._maybe_fire_ws_test_bet(now)
+        except Exception as ex:
+            logger.debug(f"[WS-BET-TEST] hook failed: {ex}")
 
         if self._multi_lobby_mode and page is not None:
             try:
@@ -4347,17 +4414,9 @@ class LiveBetExecutor:
         if self._multi_lobby_mode and now - self._last_idle_recover_check_at >= max(0.2, idle_recover_interval):
             self._last_idle_recover_check_at = now
             self._auto_recover_idle_dialogs("tick")
-            # betsopen フィードが長時間途絶 = セッション/WS 死亡の可能性 → 復旧を予約。
-            # 通常はチャンネルホストが連続 betsopen するので、薄いシグナル中も発火しない。
-            try:
-                feed_dead = float(os.getenv("BACOPY_FEED_DEAD_SEC", "180") or 180)
-                if (feed_dead > 0 and self._last_bets_open_at > 0
-                        and (now - self._last_bets_open_at) > feed_dead
-                        and not self._bot_now_lock_active()):
-                    self._session_recover_pending = True
-            except Exception:
-                pass
-            # セッション復旧(モーダル閉鎖後 / フィード途絶) → ロビーへ自動再入場。
+            # セッション復旧: モーダル(長時間セッション/カスタマーサポート)を閉じた時だけ
+            # ロビーへ自動再入場する。※フィード途絶ウォッチドッグは手動アシスト中に誤発動
+            # (NOW/BET中にロビーへ飛ぶ)したため撤去した。トリガーはモーダル閉鎖のみ。
             try:
                 self._maybe_recover_session_lobby(now)
             except Exception as ex:
