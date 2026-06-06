@@ -4323,6 +4323,22 @@ class DualLinePragmaticBot(cp.Collector):
             )
             return
 
+        # ── Fix B: 同一 decision の二重配信を入口で弾く(idempotent intake) ──────
+        # VPS マスターは未消費 decision を poll の度に再配信し得る。1回目で実BETを
+        # 置いた後に同じ did が再到達すると executor の _pending_bet を「再武装」し、
+        # その時にはシグナルが古く _try_execute_bet が stale 破棄→_mark_bet_failed
+        # を登録する。これが「確定済みの本物のBET」を失敗扱いに上書きし、決済も追従も
+        # 止める(実機 2026-06-07 のドラゴン不追従の真因)。既に①pending_decisions に
+        # 在庫がある or ②同 did の NOW-lock が bet_id 付き(=BET発注済み)なら、再配信は
+        # 無視して元のBETの決済に委ねる。bet_id 無しの NOW-lock(=受付のみ未発注)は
+        # 従来通り再試行を許す(リトライ動作は維持)。
+        if did and did in self._pending_decisions:
+            logger.info(f"[DECISION] SKIP duplicate (pending bet exists) for {did[:12]}")
+            return
+        if now_lock and str(now_lock.get("decision_id") or "") == did and str(now_lock.get("bet_id") or ""):
+            logger.info(f"[DECISION] SKIP duplicate (bet already placed via NOW-lock) for {did[:12]}")
+            return
+
         ex = self.bet_executor
 
         # ── Manual-assist reachability gate ──────────────────────────────────
@@ -5178,6 +5194,30 @@ class DualLinePragmaticBot(cp.Collector):
                     failed_info = self.bet_executor.consume_failed_bet(bet_id)
             except Exception:
                 failed_info = None
+            # ── Fix A: 発注/約定が SOFT失敗(stale/skip)に勝つ ────────────────────
+            # 二重配信の stale 破棄は、実際に発注され直後に確定する本物のBETと同じ
+            # bet_id に "failed" を載せ得る(失敗:13s→確定:15s の順序が実機で発生)。
+            # これを適用すると local_bet_failed が立ち決済(=追従)が止まる。失敗理由が
+            # SOFT(signal_too_old / bet_skipped*)で、かつ既に確定 or ブックへ送信済み
+            # (has_sent_bet)なら、その失敗は無視し決済継続に委ねる。HARD失敗(reject等)
+            # と「未送信の正当な skip」は従来通り格下げする。
+            if isinstance(failed_info, dict) and failed_info:
+                _freason = str(failed_info.get("reason") or "")
+                if _freason in ("signal_too_old", "bet_skipped_stale", "bet_skipped", "bet_skip"):
+                    _already = bool(confirmed_info) or bool(p.get("confirmed_bet")) or bool(p.get("local_bet_sent"))
+                    if not _already and bet_id:
+                        try:
+                            _hsb = getattr(self.bet_executor, "has_sent_bet", None)
+                            if callable(_hsb) and bool(_hsb(bet_id)):
+                                _already = True
+                        except Exception:
+                            pass
+                    if _already:
+                        logger.warning(
+                            f"[DECISION] ignore SOFT failed-bet ({_freason}) for already-sent/confirmed "
+                            f"{did[:12]}; settlement continues"
+                        )
+                        failed_info = None
             if isinstance(failed_info, dict) and failed_info:
                 reason = str(failed_info.get("reason") or "bet_failed")
                 phase = str(failed_info.get("phase") or "bet_failed")
