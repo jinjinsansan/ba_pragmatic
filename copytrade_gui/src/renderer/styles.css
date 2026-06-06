@@ -1,3 +1,9 @@
+/* デジタル時計フォント(7セグ・同梱woff2・オフライン) — NEXT BET の数字用 */
+@font-face {
+  font-family: 'DSEG7';
+  src: url('fonts/DSEG7Classic-Bold.woff2') format('woff2');
+  font-weight: 400 900; font-style: normal; font-display: swap;
+}
 /* ============================================================
    BACOPYRECEIVER — "BETTING COCKPIT" redesign
    Target: Electron ~480x720 | Offline (no web fonts / no CDN)
@@ -362,19 +368,21 @@ html[data-variant="user"] .os-tag   { display: none !important; }
 }
 
 /* NEXT BET — MANUAL ASSISTヘッダー内。普段は水色、NOWの色(赤=Banker/青=Player)に追従、ゆっくり点滅。 */
+/* NEXT BET: 枠線なし・中央(左MANUAL ASSISTと右AUTOの間)を埋めて大きく・数字は7セグ。 */
 .manual-next-bet {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 3px 16px; border-radius: var(--radius-sm); min-width: 118px;
-  border: 1px solid rgba(0,229,255,0.30); background: rgba(0,229,255,0.04);
-  animation: mnb-blink 2.6s ease-in-out infinite;
+  flex: 1 1 auto;            /* 左タイトルと右バッジの間の余白を埋める */
+  padding: 0 12px; border: none; background: transparent; min-width: 0;
 }
-.manual-next-bet .mnb-label { font-family: var(--font-hud); font-size: 10px; letter-spacing: 0.22em; color: var(--text-muted); }
-.manual-next-bet .mnb-amt { font-family: var(--font-hud); font-weight: 900; font-size: 26px; line-height: 1.1; color: var(--accent); text-shadow: 0 0 14px rgba(0,229,255,0.55); }
-.manual-next-bet.now-b { border-color: rgba(255,45,85,0.55); background: rgba(255,45,85,0.06); }
-.manual-next-bet.now-b .mnb-amt { color: var(--lose); text-shadow: 0 0 16px rgba(255,45,85,0.70); }
-.manual-next-bet.now-p { border-color: rgba(45,123,255,0.55); background: rgba(45,123,255,0.06); }
-.manual-next-bet.now-p .mnb-amt { color: #3d8bff; text-shadow: 0 0 16px rgba(45,123,255,0.70); }
-@keyframes mnb-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+.manual-next-bet .mnb-label { font-family: var(--font-hud); font-size: 10px; letter-spacing: 0.22em; color: var(--text-muted); margin-bottom: 1px; }
+.manual-next-bet .mnb-amt {
+  font-family: 'DSEG7', var(--font-mono);   /* 7セグ・デジタル時計フォント($はmonoにフォールバック) */
+  font-weight: 700; font-size: 46px; line-height: 1.0; letter-spacing: 0.02em;
+  color: var(--accent); text-shadow: 0 0 18px rgba(0,229,255,0.55);
+  font-variant-numeric: tabular-nums;
+}
+.manual-next-bet.now-b .mnb-amt { color: var(--lose); text-shadow: 0 0 20px rgba(255,45,85,0.75); }
+.manual-next-bet.now-p .mnb-amt { color: #3d8bff; text-shadow: 0 0 20px rgba(45,123,255,0.75); }
 .manual-result-btn {
   border: 1px solid var(--border); background: var(--surface-hi); color: var(--text);
   border-radius: var(--radius-sm); cursor: pointer;
