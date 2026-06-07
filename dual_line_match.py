@@ -34,9 +34,12 @@ LIVE_SIGNAL_PATTERNS = frozenset({
 # (dual_line_all_patterns_report.html / 全データT込み方式で選定)。
 # v3 の niconico|dragon|P(50.5%) は基準未満のため v4 から外れる。
 # v3 と別モードとして並走・forward検証する (PLAN_DUAL_LINE_V4_10PATTERN.md)。
+# 【2026-06-07 入替】最弱候補 niconico|niconico|B (102k 再BTで 50.0%/-0.0221/Z-0.26)
+#   を外し、新bline定義(5個以上・逆1個まで・T無視)で見つかった
+#   bline|telecho|B (51.7%/+0.0078/Z+1.68) を投入。v3(6パターン)は無変更。
 LIVE_SIGNAL_PATTERNS_V4 = frozenset({
     "sansan|telecho|P",
-    "niconico|niconico|B",
+    "bline|telecho|B",
     "telecho|niconico|P",
     "niconico|nikoichi|B",
     "telecho|niconico|B",
