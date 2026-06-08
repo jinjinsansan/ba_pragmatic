@@ -3480,14 +3480,17 @@ class DualLinePragmaticBot(cp.Collector):
                 "total_bets": int(self._billing_count),
                 "last_updated_at": _utc_now_iso(),
             }
-            # ── SEQ進行(dual_seq)を Supabase に相乗りバックアップ ─────────────
-            # 既存の課金POSTへ同梱し session_state カラムへの「単一ライター」を保つ。
-            # 別POSTを足すと upsert で互いを丸ごと上書きし、課金 or SEQ が消える。
-            # cron/settle は daily_bet_pnl(優先1)を読むため dual_seq 追加は無影響。
+            # ── SEQ進行(dual_seq)を session_state に相乗り(単一ライター・clobber回避) ──
+            # ★ライブ money 物体ではなく、メインループがアトミックに書いたローカル
+            #   ファイル(MONEY_STATE_PATH)から読む。この関数は専用スレッドからのみ
+            #   呼ばれるので、ファイル読取ならメインループ(決済/追従)に一切干渉しない。
             try:
-                state["dual_seq"] = self.money.to_state_dict()
+                if MONEY_STATE_PATH.exists():
+                    state["dual_seq"] = json.loads(
+                        MONEY_STATE_PATH.read_text(encoding="utf-8-sig")
+                    )
             except Exception as _seq_ex:
-                logger.debug(f"[BILLING-SYNC] dual_seq attach failed: {_seq_ex}")
+                logger.debug(f"[BILLING-SYNC] dual_seq read failed: {_seq_ex}")
             # リアルタイム残高(/me/realtime 表示用)。Stake口座WSの捕捉値がある時のみ付与。
             if self._billing_current_balance is not None and self._billing_last_balance_at:
                 try:
@@ -3507,11 +3510,13 @@ class DualLinePragmaticBot(cp.Collector):
             email = getattr(self, "_billing_email", "")
             key = getattr(self, "_billing_api_key", "")
             if not email or not key:
-                logger.info(f"[BILLING-SYNC] not sent (no email/api_key); payload={json.dumps(state)}")
+                logger.info("[BILLING-SYNC] not sent (no email/api_key)")
                 return
-            import urllib.request as _ur
             url = f"{getattr(self, '_billing_site', 'https://www.bafather.uk').rstrip('/')}/api/session-state"
             body = json.dumps({"email": email, "api_key": key, "session_state": state}).encode("utf-8")
+            # この関数は専用スレッド(_session_state_sync_loop)からのみ呼ばれるので、
+            # 同期 urlopen でメインループは一切ブロックしない。
+            import urllib.request as _ur
             req = _ur.Request(
                 url, data=body,
                 headers={"Content-Type": "application/json", "User-Agent": "LAPLACE-dualline/1.0"},
@@ -3528,6 +3533,23 @@ class DualLinePragmaticBot(cp.Collector):
             )
         except Exception as ex:
             logger.warning(f"[BILLING-SYNC] post failed: {ex}")
+
+    def _session_state_sync_loop(self) -> None:
+        """billing + dual_seq の Supabase 同期を、メインループから完全に独立した
+        専用スレッドで回す。これにより SEQ-Supabase バックアップが決済フラッシュ/
+        テレコ追従のタイミングに構造的に影響できない(回帰の根治)。LIVE のみ起動。
+        dual_seq はメインループがアトミックに書いたローカルファイルから読むので、
+        ライブ money 物体には触れない=スレッド競合も無い。"""
+        import time as _t
+        while not getattr(self, "_stop_session_sync", False):
+            try:
+                self._sync_billing_session_state()
+            except Exception as ex:
+                logger.warning(f"[SEQ-SYNC] loop error: {ex}")
+            for _ in range(60):  # 60秒(1秒刻みで停止フラグ確認)
+                if getattr(self, "_stop_session_sync", False):
+                    return
+                _t.sleep(1.0)
 
     def _restore_seq_from_supabase(self) -> None:
         """起動時、Supabase の session_state.dual_seq から SEQ を復元する。
@@ -5997,12 +6019,26 @@ class DualLinePragmaticBot(cp.Collector):
                 self._restore_seq_from_supabase()
             except Exception as _rex:
                 logger.warning(f"[SEQ-RESTORE] failed: {_rex}")
-        # 起動直後に一度同期しておく(reset 時は空 SEQ で Supabase を上書き=古い SEQ 消去/
-        # resume 時は復元済み SEQ を即座にサーバへ反映)。
+        # 起動時点の状態をローカルファイルへ確実に書き出す。reset 時は空 SEQ が
+        # 書かれ、専用スレッドがそれを Supabase へ反映して古い dual_seq を上書き
+        # クリアする(これが無いと reset 後の再起動で古い SEQ を誤復元する)。
         try:
-            self._sync_billing_session_state()
+            self.money._save_state()
         except Exception:
             pass
+        # billing + dual_seq の Supabase 同期は、メインループから完全に独立した
+        # 専用スレッドで回す。これで SEQ-Supabase バックアップが決済/追従の
+        # タイミングに構造的に影響できない(以前 dual_seq 同梱でメインループ上の
+        # 同期POSTが重くなり追従を遅延させた回帰の根治)。LIVE のみ。
+        if self.bet_executor.is_live:
+            try:
+                import threading as _th
+                _th.Thread(
+                    target=self._session_state_sync_loop, name="seq-sync", daemon=True
+                ).start()
+                logger.info("[SEQ-SYNC] background session-state sync thread started")
+            except Exception as _tex:
+                logger.warning(f"[SEQ-SYNC] thread start failed: {_tex}")
 
         launch_opts: dict = {
             "headless": self.headless,
@@ -6481,10 +6517,9 @@ class DualLinePragmaticBot(cp.Collector):
                     last_billing_poll = now
                     self._poll_bet_history_billing()
 
-                # ── 課金: session-state を bafather へ同期 (60秒ごと) ──
-                if self.bet_executor.is_live and now - last_billing_sync >= 60.0:
-                    last_billing_sync = now
-                    self._sync_billing_session_state()
+                # ── session-state(billing + dual_seq)の同期はメインループでは行わない。
+                #    専用スレッド _session_state_sync_loop が60秒ごとに実施する
+                #    (メインループ=決済/追従処理を一切ブロックしないため)。
 
                 # ── 定期ステータスレポート ───────────────────────
                 if now - last_report >= report_interval:
