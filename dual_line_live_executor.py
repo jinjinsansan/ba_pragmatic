@@ -4504,6 +4504,14 @@ class LiveBetExecutor:
     def _perform_switch(self, req: dict) -> None:
         """受け子モードの _join_table を使って bet_page を対象卓へ入場させる。"""
         intent = str(req.get("intent") or "preposition").strip().lower()
+        # 機能①拡張(HOLD): スクロール凍結中は、HOLD直前に既にキュー済の
+        # スキャン系switch(予告/準備/手動アシスト)も「実行段階」で捨てる。
+        # enqueueゲート(_request_switch)だけだと、凍結する直前にキューへ入った
+        # 予告がそのまま処理され、稀に黄色枠が動いてしまう取りこぼしがあった。
+        # 実BET(decision/bet/fallback_join)は止めない。
+        if getattr(self, "_scroll_frozen", False) and intent in ("preposition", "prepare", "manual_assist"):
+            logger.info(f"[ASSIST-HOLD] scroll-frozen: drop queued switch at perform intent={intent}")
+            return
         logger.info(f"[SWITCH] _perform_switch: intent={intent} multi={self._multi_lobby_mode} req={dict(list(req.items())[:4])}")
         if self._multi_lobby_mode and intent != "fallback_join":
             table_id = str(req.get("table_id") or "").strip()

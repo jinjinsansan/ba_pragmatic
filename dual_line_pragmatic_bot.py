@@ -3480,6 +3480,14 @@ class DualLinePragmaticBot(cp.Collector):
                 "total_bets": int(self._billing_count),
                 "last_updated_at": _utc_now_iso(),
             }
+            # ── SEQ進行(dual_seq)を Supabase に相乗りバックアップ ─────────────
+            # 既存の課金POSTへ同梱し session_state カラムへの「単一ライター」を保つ。
+            # 別POSTを足すと upsert で互いを丸ごと上書きし、課金 or SEQ が消える。
+            # cron/settle は daily_bet_pnl(優先1)を読むため dual_seq 追加は無影響。
+            try:
+                state["dual_seq"] = self.money.to_state_dict()
+            except Exception as _seq_ex:
+                logger.debug(f"[BILLING-SYNC] dual_seq attach failed: {_seq_ex}")
             # リアルタイム残高(/me/realtime 表示用)。Stake口座WSの捕捉値がある時のみ付与。
             if self._billing_current_balance is not None and self._billing_last_balance_at:
                 try:
@@ -3520,6 +3528,58 @@ class DualLinePragmaticBot(cp.Collector):
             )
         except Exception as ex:
             logger.warning(f"[BILLING-SYNC] post failed: {ex}")
+
+    def _restore_seq_from_supabase(self) -> None:
+        """起動時、Supabase の session_state.dual_seq から SEQ を復元する。
+        ローカルファイル(__init__ で読込済)より total_bets が大きい時のみ採用＝
+        より進んだ状態を優先。正常再起動(ローカルが現在値)ではローカルを保持し
+        デグレを防ぐ。プロファイル破損/ファイル削除でローカルが空の時はサーバから
+        深い SEQ を復活させる。"""
+        email = getattr(self, "_billing_email", "")
+        key = getattr(self, "_billing_api_key", "")
+        if not email or not key:
+            logger.info("[SEQ-RESTORE] skipped (no email/api_key)")
+            return
+        import urllib.request as _ur
+        import urllib.parse as _up
+        base = getattr(self, "_billing_site", "https://www.bafather.uk").rstrip("/")
+        url = (
+            f"{base}/api/session-state"
+            f"?email={_up.quote(email)}&api_key={_up.quote(key)}"
+        )
+        try:
+            req = _ur.Request(
+                url, headers={"User-Agent": "LAPLACE-dualline/1.0"}, method="GET"
+            )
+            with _ur.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as ex:
+            logger.warning(f"[SEQ-RESTORE] GET failed: {ex}")
+            return
+        ss = (data or {}).get("session_state") or {}
+        seq = ss.get("dual_seq")
+        if not isinstance(seq, dict):
+            logger.info("[SEQ-RESTORE] no dual_seq on server; keep local")
+            return
+        local_bets = int(getattr(self.money, "total_bets", 0) or 0)
+        try:
+            server_bets = int(seq.get("total_bets", 0) or 0)
+        except Exception:
+            server_bets = 0
+        if server_bets > local_bets:
+            self.money.apply_state_dict(seq)
+            try:
+                self.money._save_state()
+            except Exception:
+                pass
+            logger.info(
+                f"[SEQ-RESTORE] restored from Supabase: total_bets {local_bets}->{server_bets} "
+                f"seq_level={self.money.seq_level} session_pnl={self.money.session_pnl:+.2f}"
+            )
+        else:
+            logger.info(
+                f"[SEQ-RESTORE] local newer/equal (local={local_bets} server={server_bets}); keep local"
+            )
 
     # ── 状態保存/復元 ──────────────────────────────────────────────
 
@@ -5927,6 +5987,23 @@ class DualLinePragmaticBot(cp.Collector):
             f"api_key={'set' if self._billing_api_key else 'MISSING'} site={self._billing_site}"
         )
 
+        # ── SEQ 永続化(durable): 起動時の Supabase 復元 ───────────────────────
+        # --reset で無ければ Supabase の session_state.dual_seq から SEQ を復元する。
+        # ローカルファイル(__init__ で読込済)より進んでいる(total_bets 大)場合のみ採用
+        # ＝正常再起動でのデグレを避け、プロファイル破損/ファイル削除時はサーバから復活。
+        # reset 時はスキップ(古い SEQ の誤復元防止)。
+        if not getattr(self, "_reset_done", False):
+            try:
+                self._restore_seq_from_supabase()
+            except Exception as _rex:
+                logger.warning(f"[SEQ-RESTORE] failed: {_rex}")
+        # 起動直後に一度同期しておく(reset 時は空 SEQ で Supabase を上書き=古い SEQ 消去/
+        # resume 時は復元済み SEQ を即座にサーバへ反映)。
+        try:
+            self._sync_billing_session_state()
+        except Exception:
+            pass
+
         launch_opts: dict = {
             "headless": self.headless,
             "persistent_context": True,
@@ -6630,6 +6707,8 @@ def main(argv: list[str] | None = None) -> int:
         no_vps_poll=getattr(args, "no_vps_poll", False),
         manual_assist=bool(getattr(args, "manual_assist", False)),
     )
+    # --reset 指定時は起動時の Supabase 復元をスキップ(古い SEQ を誤復元しない)。
+    bot._reset_done = bool(getattr(args, "reset", False))
 
     bot._send_manual_assist_mode()
     if bot.manual_assist:

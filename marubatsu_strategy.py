@@ -136,6 +136,12 @@ def finalize_set(
     new_overshoot = calc_overshoot(prev_overshoot, diff)
     calc_slashed(sets, new_overshoot, diff)
     next_unit_idx = calc_next_unit_idx(sets, current_unit_idx, diff, new_overshoot, seq_len=len(_seq))
+    # 負け越し(overshoot)が残っている限り、初期BET額(idx0)には戻さない。
+    # 勝ち越しセットが上位overshootの参照セットを全て斜線で消すと calc_next_unit_idx が
+    # 参照を失い idx0(=$1) を返す事があったが、回収途中(overshoot>0)で初期額に戻すのは
+    # 設計に反する。idx0 は overshoot==0 の時のみ。overshoot>0 なら最低でも idx1($2)。
+    if new_overshoot > 0:
+        next_unit_idx = max(next_unit_idx, 1)
     set_profit = diff * _seq[current_unit_idx] if current_unit_idx < len(_seq) else diff * _seq[-1]
     cumulative_profit = prev_cumulative_profit + set_profit
 

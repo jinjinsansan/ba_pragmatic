@@ -316,67 +316,75 @@ class BetManager:
 
     # ── 状態保存 ────────────────────────────────────────────────
 
+    def to_state_dict(self) -> dict:
+        """SEQ/セッション状態を辞書化。ローカル保存と Supabase 同期(dual_seq)で共用。"""
+        return {
+            "mode": self.mode,
+            "unit": self.unit,
+            "profit_stop": self.profit_stop,
+            "loss_cut": self.loss_cut,
+            "on_limit": self.on_limit,
+            "session_pnl": round(self.session_pnl, 2),
+            "total_bets": self.total_bets,
+            "total_wins": self.total_wins,
+            "total_losses": self.total_losses,
+            "total_ties": self.total_ties,
+            "seq_level": self.seq_level,
+            "seq7_sets": [s.__dict__ for s in (self._seq7_tracker.sets if self._seq7_tracker else [])],
+            "seq7_current_turns": list(self._seq7_tracker.current_turns) if self._seq7_tracker else [],
+            "loss_count": self.loss_count,
+            "limit_reached": self.limit_reached,
+            "limit_reason": self.limit_reason,
+        }
+
     def _save_state(self) -> None:
         if not self.state_path:
             return
         try:
-            self.state_path.write_text(
-                json.dumps(
-                    {
-                        "mode": self.mode,
-                        "unit": self.unit,
-                        "profit_stop": self.profit_stop,
-                        "loss_cut": self.loss_cut,
-                        "on_limit": self.on_limit,
-                        "session_pnl": round(self.session_pnl, 2),
-                        "total_bets": self.total_bets,
-                        "total_wins": self.total_wins,
-                        "total_losses": self.total_losses,
-                        "total_ties": self.total_ties,
-                        "seq_level": self.seq_level,
-                        "seq7_sets": [s.__dict__ for s in (self._seq7_tracker.sets if self._seq7_tracker else [])],
-                        "seq7_current_turns": list(self._seq7_tracker.current_turns) if self._seq7_tracker else [],
-                        "loss_count": self.loss_count,
-                        "limit_reached": self.limit_reached,
-                        "limit_reason": self.limit_reason,
-                    },
-                    indent=2,
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
+            text = json.dumps(self.to_state_dict(), indent=2, ensure_ascii=False)
+            # アトミック書込: tmp に書いてから os.replace で置換する。
+            # これで途中状態のファイルを読む事故や、二重プロセスの書き込み競合での
+            # 空ファイル化(=SEQ消失)を防ぐ。
+            tmp = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, self.state_path)
         except Exception as e:
-            logger.debug(f"money state save failed: {e}")
+            logger.warning(f"money state save failed: {e}")
+
+    def apply_state_dict(self, s: dict) -> None:
+        """辞書から SEQ/セッション状態を復元する。ローカルファイルと
+        Supabase(dual_seq)復元の両方から呼ぶ。設定値(mode/unit/profit_stop/
+        loss_cut)は復元しない＝GUI から渡された現在値を正とする。"""
+        self.session_pnl = float(s.get("session_pnl", 0.0))
+        self.total_bets = int(s.get("total_bets", 0))
+        self.total_wins = int(s.get("total_wins", 0))
+        self.total_losses = int(s.get("total_losses", 0))
+        self.total_ties = int(s.get("total_ties", 0))
+        self.seq_level = int(s.get("seq_level", 0))
+        if self._seq7_tracker is not None:
+            raw_sets = s.get("seq7_sets", []) or []
+            parsed_sets: list[SetData] = []
+            if isinstance(raw_sets, list):
+                for item in raw_sets:
+                    if isinstance(item, dict):
+                        try:
+                            parsed_sets.append(SetData(**item))
+                        except Exception:
+                            continue
+            self._seq7_tracker.sets = parsed_sets
+            raw_turns = s.get("seq7_current_turns", []) or []
+            if isinstance(raw_turns, list):
+                self._seq7_tracker.current_turns = [t for t in raw_turns if t in ("O", "X")]
+            self.seq_level = self._seq7_tracker.current_unit_idx
+        self.loss_count = int(s.get("loss_count", 0))
+        self.limit_reached = bool(s.get("limit_reached", False))
+        self.limit_reason = str(s.get("limit_reason", ""))
 
     def _load_state(self) -> None:
         if not self.state_path or not self.state_path.exists():
             return
         try:
             s = json.loads(self.state_path.read_text(encoding="utf-8-sig"))
-            self.session_pnl = float(s.get("session_pnl", 0.0))
-            self.total_bets = int(s.get("total_bets", 0))
-            self.total_wins = int(s.get("total_wins", 0))
-            self.total_losses = int(s.get("total_losses", 0))
-            self.total_ties = int(s.get("total_ties", 0))
-            self.seq_level = int(s.get("seq_level", 0))
-            if self._seq7_tracker is not None:
-                raw_sets = s.get("seq7_sets", []) or []
-                parsed_sets: list[SetData] = []
-                if isinstance(raw_sets, list):
-                    for item in raw_sets:
-                        if isinstance(item, dict):
-                            try:
-                                parsed_sets.append(SetData(**item))
-                            except Exception:
-                                continue
-                self._seq7_tracker.sets = parsed_sets
-                raw_turns = s.get("seq7_current_turns", []) or []
-                if isinstance(raw_turns, list):
-                    self._seq7_tracker.current_turns = [t for t in raw_turns if t in ("O", "X")]
-                self.seq_level = self._seq7_tracker.current_unit_idx
-            self.loss_count = int(s.get("loss_count", 0))
-            self.limit_reached = bool(s.get("limit_reached", False))
-            self.limit_reason = str(s.get("limit_reason", ""))
-            # 設定は復元しない（GUI の値が正）
+            self.apply_state_dict(s)
         except Exception as e:
             logger.debug(f"money state load failed: {e}")

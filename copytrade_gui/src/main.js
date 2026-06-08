@@ -268,7 +268,10 @@ function schedulePeriodicRestart() {
     console.log('[periodic-restart] firing (preventive restart)');
     _telegramNotifyFromMain('🔄 bacopy periodic restart (' + h + 'h maintenance)');
     try {
-      const cfg = lastStartConfig;
+      // 定期再起動は必ず resume=true で再spawnし SEQ を温存する。
+      // (resume=false だと main が状態ファイルを削除し engine に --reset を渡すため、
+      //  6時間ごとに毎回 SEQ が消えてしまう。これが「勝手にリセット」の原因だった。)
+      const cfg = Object.assign({}, lastStartConfig, { resume: true });
       const generation = ++_botGeneration;
       userInitiatedStop = false;
 
@@ -1150,9 +1153,13 @@ function _doStartBot(config, generation = _botGeneration) {
         const isDualLine = lastMode === 'dual_line' || lastMode === 'dual_line_auto'
           || lastMode === 'dual_line_assist' || lastMode === 'dual_line_manual';
         const envNow = loadDotEnv();
-        const dualLineAutoRestart = String(envNow.BACOPY_DUAL_LINE_AUTO_RESTART || '0').trim() === '1';
+        // 既定で dual-line のクラッシュ自動復旧を ON にする(従来は '0'=OFF)。
+        // SEQ は resume=true + Supabase 復元で温存されるので「リセットされる危険」は解消済み。
+        // 既存Chrome(:9222)へ再アタッチする方式のため再起動でブラウザは生き残る。
+        // どうしても無効化したい時のみ .env で BACOPY_DUAL_LINE_AUTO_RESTART=0。
+        const dualLineAutoRestart = String(envNow.BACOPY_DUAL_LINE_AUTO_RESTART || '1').trim() === '1';
         if (isDualLine && !dualLineAutoRestart) {
-          const msg = `⚠️ Dual-line engine stopped (code=${code}); auto-restart is disabled to avoid killing the live browser. Press START manually after checking the browser.`;
+          const msg = `⚠️ Dual-line engine stopped (code=${code}); auto-restart is disabled (BACOPY_DUAL_LINE_AUTO_RESTART=0). Press START manually after checking the browser.`;
           console.warn('[Main]', msg);
           sendToRenderer('agent-message', { type: 'log', message: msg });
           autoRestartCount = 0;
@@ -1171,7 +1178,8 @@ function _doStartBot(config, generation = _botGeneration) {
             autoRestartTimer = null;
             if (!botProcess && !userInitiatedStop && lastStartConfig && thisGeneration === _botGeneration) {
               sendToRenderer('agent-message', { type: 'log', message: '🔄 Auto-restart: restarting engine...' });
-              _doStartBot(lastStartConfig, thisGeneration);
+              // クラッシュ自動復旧も resume=true で再spawn(SEQ温存+Supabase復元)。
+              _doStartBot(Object.assign({}, lastStartConfig, { resume: true }), thisGeneration);
             }
           }, AUTO_RESTART_DELAY);
         } else {
