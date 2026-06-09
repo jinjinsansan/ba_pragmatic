@@ -6114,6 +6114,14 @@ class LiveBetExecutor:
         tag = tag_map.get(str(source or "").strip().lower(), "TILE-CENTER")
         if not tid:
             return False
+        # 機能①拡張(HOLD): スクロール凍結中は一切センタリング(スクロール)しない。
+        # _center_multi_tile を直接呼ぶ全経路(now_bet_hold / visible_bet_hold /
+        # mark_bet_resolved 等)をここで一括ガードする。以前は _perform_switch と
+        # _maintain_assist_focus_hold だけが freeze を見ており、NOW枠/BET表示保持の
+        # 再センタリングが凍結を無視して他卓へスクロールしていた(HOLD効かない不具合)。
+        if getattr(self, "_scroll_frozen", False):
+            logger.info(f"[{tag}] skip center: scroll-frozen target={tid!r}")
+            return False
         frame = self._find_pragmatic_frame(target_qpid=tid)
         if not frame:
             logger.info(f"[{tag}] frame not found for center target={tid!r}")
