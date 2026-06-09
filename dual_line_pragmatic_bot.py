@@ -3174,6 +3174,21 @@ class DualLinePragmaticBot(cp.Collector):
             )
         except Exception as ex:
             logger.debug(f"[FOLLOW] on_settled error: {ex}")
+        # 機能(A): 決済が確定した瞬間に NOW-LOCK/黄色枠も解除する。従来は枠の解除が
+        # betsopen hand-end(=次ハンド開始≒26秒後)頼みで、しかも auto_click 時は
+        # _on_executor_hand_end が pure-manual 限定で発火せず、枠が長く残っていた。
+        # ここで解除すれば「枠が残る→消えてから光る」が解消し、枠解除と勝敗フラッシュ
+        # が同時になる。WIN→追従で _follow_place_next が既に新しい NOW-LOCK を張って
+        # いる場合は、_release_now_lock が decision_id 不一致で no-op になる(=追従の
+        # 枠は誤って消さない)ので安全。
+        try:
+            self._release_now_lock(
+                decision_id=str(pending.get("decision_id") or ""),
+                table_id=str(pending.get("table_id") or table_id or ""),
+                reason="settled",
+            )
+        except Exception as ex:
+            logger.debug(f"[NOW-LOCK] settle-time release failed: {ex}")
         return True
 
     def _settle_confirmed_decisions_from_buffers(self) -> None:
@@ -3480,17 +3495,8 @@ class DualLinePragmaticBot(cp.Collector):
                 "total_bets": int(self._billing_count),
                 "last_updated_at": _utc_now_iso(),
             }
-            # ── SEQ進行(dual_seq)を session_state に相乗り(単一ライター・clobber回避) ──
-            # ★ライブ money 物体ではなく、メインループがアトミックに書いたローカル
-            #   ファイル(MONEY_STATE_PATH)から読む。この関数は専用スレッドからのみ
-            #   呼ばれるので、ファイル読取ならメインループ(決済/追従)に一切干渉しない。
-            try:
-                if MONEY_STATE_PATH.exists():
-                    state["dual_seq"] = json.loads(
-                        MONEY_STATE_PATH.read_text(encoding="utf-8-sig")
-                    )
-            except Exception as _seq_ex:
-                logger.debug(f"[BILLING-SYNC] dual_seq read failed: {_seq_ex}")
+            # 注: SEQ永続化(dual_seq)は一旦無効化(タイミング確定後に再導入)。
+            # この sync は billing(daily_bet_pnl 等)のみを送る = 昨日と同じ。
             # リアルタイム残高(/me/realtime 表示用)。Stake口座WSの捕捉値がある時のみ付与。
             if self._billing_current_balance is not None and self._billing_last_balance_at:
                 try:
@@ -6009,27 +6015,9 @@ class DualLinePragmaticBot(cp.Collector):
             f"api_key={'set' if self._billing_api_key else 'MISSING'} site={self._billing_site}"
         )
 
-        # ── SEQ 永続化(durable): 起動時の Supabase 復元 ───────────────────────
-        # --reset で無ければ Supabase の session_state.dual_seq から SEQ を復元する。
-        # ローカルファイル(__init__ で読込済)より進んでいる(total_bets 大)場合のみ採用
-        # ＝正常再起動でのデグレを避け、プロファイル破損/ファイル削除時はサーバから復活。
-        # reset 時はスキップ(古い SEQ の誤復元防止)。
-        if not getattr(self, "_reset_done", False):
-            try:
-                self._restore_seq_from_supabase()
-            except Exception as _rex:
-                logger.warning(f"[SEQ-RESTORE] failed: {_rex}")
-        # 起動時点の状態をローカルファイルへ確実に書き出す。reset 時は空 SEQ が
-        # 書かれ、専用スレッドがそれを Supabase へ反映して古い dual_seq を上書き
-        # クリアする(これが無いと reset 後の再起動で古い SEQ を誤復元する)。
-        try:
-            self.money._save_state()
-        except Exception:
-            pass
-        # billing + dual_seq の Supabase 同期は、メインループから完全に独立した
-        # 専用スレッドで回す。これで SEQ-Supabase バックアップが決済/追従の
-        # タイミングに構造的に影響できない(以前 dual_seq 同梱でメインループ上の
-        # 同期POSTが重くなり追従を遅延させた回帰の根治)。LIVE のみ。
+        # 注: SEQ-Supabase永続化(dual_seq 復元/同梱)は一旦無効化。(A)枠タイミングを
+        # 確定させてから、決済ホットパスに影響しない形で再導入する。
+        # billing(daily_bet_pnl)同期だけは専用スレッドで回す(メインループ無干渉)。
         if self.bet_executor.is_live:
             try:
                 import threading as _th

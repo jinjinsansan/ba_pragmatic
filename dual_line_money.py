@@ -341,15 +341,14 @@ class BetManager:
         if not self.state_path:
             return
         try:
-            text = json.dumps(self.to_state_dict(), indent=2, ensure_ascii=False)
-            # アトミック書込: tmp に書いてから os.replace で置換する。
-            # これで途中状態のファイルを読む事故や、二重プロセスの書き込み競合での
-            # 空ファイル化(=SEQ消失)を防ぐ。
-            tmp = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
-            tmp.write_text(text, encoding="utf-8")
-            os.replace(tmp, self.state_path)
+            # 昨日方式の直接 write_text（決済ホットパスの遅延要因を排除するため
+            # アトミック化(tmp+os.replace)は一旦戻した。タイミング確定後に再検討）。
+            self.state_path.write_text(
+                json.dumps(self.to_state_dict(), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
         except Exception as e:
-            logger.warning(f"money state save failed: {e}")
+            logger.debug(f"money state save failed: {e}")
 
     def apply_state_dict(self, s: dict) -> None:
         """辞書から SEQ/セッション状態を復元する。ローカルファイルと

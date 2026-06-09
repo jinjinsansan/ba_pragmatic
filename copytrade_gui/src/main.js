@@ -24,6 +24,28 @@ let botProcess = null;
 let watchdogProcess = null;
 let activeBotConfigSignature = '';
 
+// ── ログローテーション ───────────────────────────────────────────────
+// engine_cli_capture.log / main_cli_capture.log は appendFileSync の追記専用で
+// 上限が無く、放置すると数GBまで肥大する。bafather では 2.29GB まで膨れ、巨大
+// ファイルへの追記+Defender スキャンで I/O が詰まり、エンジンの stdout 書込が
+// ブロック→決済/追従のメインループが一瞬止まる回帰を起こした。
+// 一定サイズを超えたら .1 へ退避(1世代だけ保持)し、新規ファイルで追記を続ける。
+const CAPTURE_LOG_MAX_BYTES = 50 * 1024 * 1024; // 50MB
+let _engineCaptureWrites = 0;
+let _mainCaptureWrites = 0;
+function _rotateIfTooBig(filePath, maxBytes) {
+  try {
+    const st = fs.statSync(filePath);
+    if (st.size > maxBytes) {
+      const bak = filePath + '.1';
+      try { fs.rmSync(bak, { force: true }); } catch (_) {}
+      // ロック中(Defender スキャン等)は rename が失敗するが、その場合は例外を
+      // 飲んで次回チェック時に再試行する(追記は継続=最悪でも一時的な肥大のみ)。
+      fs.renameSync(filePath, bak);
+    }
+  } catch (_) {}
+}
+
 function _mainLogPath() {
   try { return path.join(app.getPath('userData'), 'logs', 'main_cli_capture.log'); }
   catch (_) { return path.join(os.tmpdir(), 'bacopy-main-cli-capture.log'); }
@@ -32,6 +54,8 @@ function _appendMainCapture(level, args) {
   try {
     const p = _mainLogPath();
     fs.mkdirSync(path.dirname(p), { recursive: true });
+    // 起動直後(カウンタ0)と以後64回ごとにサイズ確認→上限超なら退避。
+    if ((_mainCaptureWrites++ & 63) === 0) _rotateIfTooBig(p, CAPTURE_LOG_MAX_BYTES);
     const msg = (args || []).map((v) => {
       if (typeof v === 'string') return v;
       try { return JSON.stringify(v); } catch (_) { return String(v); }
@@ -705,8 +729,12 @@ function _appendEngineCapture(text) {
   try {
     const logDir = path.join(app.getPath('userData'), 'logs');
     fs.mkdirSync(logDir, { recursive: true });
+    const p = path.join(logDir, 'engine_cli_capture.log');
+    // 起動直後(カウンタ0)と以後64回ごとにサイズ確認→上限超なら退避。
+    // 起動時に既存の巨大ログ(例: 2.29GB)があれば最初の書込で .1 へ追い出される。
+    if ((_engineCaptureWrites++ & 63) === 0) _rotateIfTooBig(p, CAPTURE_LOG_MAX_BYTES);
     fs.appendFileSync(
-      path.join(logDir, 'engine_cli_capture.log'),
+      p,
       `${new Date().toISOString()} ${String(text || '')}`,
       'utf8'
     );
