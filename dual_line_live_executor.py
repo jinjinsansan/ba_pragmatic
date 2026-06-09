@@ -6239,12 +6239,27 @@ class LiveBetExecutor:
             f"[NOW-BET-HOLD] start table={tid} bet_id={str(bet.get('bet_id') or '')[:16] or '-'} "
             f"decision={str(bet.get('decision_id') or '')[:12] or '-'} max_sec={max(30.0, hold_sec):.0f}"
         )
-        self._center_multi_tile(
-            tid,
-            str(table_name or bet.get("table_name") or tid),
-            click=False,
-            source="now_bet_hold",
+        # 描画の中央寄せ(_center_multi_tile)は ~1s かかる同期DOMスクロール。これを
+        # 発注の前に走らせると、高速卓では賭け窓の終端に到達して取り逃す(窓落ち)。
+        # WS送信方式では着弾に DOM 操作は不要なので、初回の同期センタリングを省いて
+        # 先に WS 発注させ、中央寄せ(描画)は maintain ループ(0.5s毎に再センタリング)へ
+        # 任せる。タイルは従来通り中央に来る(表示が発注の直後にずれるだけ)=速さと
+        # 視覚の両立。DOMクリック方式はタイルが画面内に無いとクリックできないので
+        # 従来通り即センタリングする。env で無効化可(=従来挙動)。
+        _defer_center = (
+            os.getenv("BACOPY_WS_DEFER_CENTER", "1").strip() != "0"
+            and str(getattr(self, "_multi_bet_transport", "") or "") != "click"
         )
+        if _defer_center:
+            # last_center=0.0 のままなので maintain ループが次tickで即座に中央寄せする。
+            logger.info("[NOW-BET-HOLD] defer center (WS): send first, recenter via maintain")
+        else:
+            self._center_multi_tile(
+                tid,
+                str(table_name or bet.get("table_name") or tid),
+                click=False,
+                source="now_bet_hold",
+            )
 
     def _clear_active_now_bet_hold(
         self,
