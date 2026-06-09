@@ -1990,8 +1990,18 @@ class LiveBetExecutor:
                         }
             except Exception:
                 continue
-        if self._last_game_bet_confirm_at >= start - 0.1:
-            detail = dict(self._last_game_bet_confirm or {})
+        # 共有チャネルホストWSでは _last_game_bet_confirm が別卓の confirm に即上書き
+        # される(48卓分が流れ、CONFIRM-PROBE は数秒間隔)。自分の game_id の confirm を
+        # 取りこぼさないよう game_id 別台帳から引く。無ければ従来の last を使う。
+        _gc_ledger = getattr(self, "_game_bet_confirms_by_gid", None) or {}
+        _gc_key = str(game_id or "").strip()
+        _gc_hit = _gc_ledger.get(_gc_key) if _gc_key else None
+        if _gc_hit is not None:
+            _gc_detail, _gc_at = dict(_gc_hit[0] or {}), float(_gc_hit[1] or 0.0)
+        else:
+            _gc_detail, _gc_at = dict(self._last_game_bet_confirm or {}), float(self._last_game_bet_confirm_at or 0.0)
+        if _gc_at >= start - 0.1:
+            detail = _gc_detail
             detail_table = str(
                 detail.get("table")
                 or detail.get("tableId")
@@ -2001,8 +2011,22 @@ class LiveBetExecutor:
                 or detail.get("sourcetableId")
                 or ""
             ).strip()
+            # ── game_id 一致なら table id 不問で受理(決済遅延の根本対策) ──────
+            # GAME-BET-CONFIRM は game/gameId を持ち、lpbet は送信時に gId=game_id を
+            # 指定しているので、confirm の game_id が一致すれば「このベットの受理」だと
+            # 一意に断定できる(game_id は全卓グローバルで一意)。マルチロビーの共有
+            # チャネルホストWSでは confirm の table id がホスト卓になり弾かれ、確証が
+            # 不安定な Stake 口座残高 WS 頼みに落ちて決済が遅延していた(=ハンド終了時に
+            # dga 勝者へ確証が間に合わず遅い経路に転落→追従が1手遅れ→テレコ逆張り)。
+            # game_id 照合でベット受理の瞬間に即確証する(口座残高WSに依存しない)。
+            detail_game = str(detail.get("game") or detail.get("gameId") or "").strip()
+            expected_game = str(game_id or "").strip()
+            game_match = bool(
+                expected_game and detail_game and detail_game == expected_game
+                and os.getenv("BACOPY_GAME_CONFIRM_BY_GID", "1").strip() != "0"
+            )
             expected_table = str(table_id or "").strip()
-            if expected_table:
+            if expected_table and not game_match:
                 if detail_table and detail_table != expected_table:
                     logger.warning(
                         f"[LIVE] ignore game_ws_bet confirm for other table: "
@@ -2015,6 +2039,11 @@ class LiveBetExecutor:
                         f"expected={expected_table} detail={detail}"
                     )
                     return None
+            if game_match and detail_table and detail_table != expected_table:
+                logger.info(
+                    f"[GAME-BET-CONFIRM] accept by game_id={expected_game} "
+                    f"(confirm_table={detail_table} bet_table={expected_table or '-'})"
+                )
             actual_amount = 0.0
             try:
                 raw_amount = (
@@ -3636,6 +3665,18 @@ class LiveBetExecutor:
             if isinstance(bet_obj, dict):
                 self._last_game_bet_confirm = dict(bet_obj)
                 self._last_game_bet_confirm_at = time.time()
+                # game_id 別台帳に保存(共有チャネルで last が即上書きされても、自分の
+                # game_id の confirm を _trusted_bet_confirm_since が引けるようにする)。
+                _cg = str(bet_obj.get("game") or bet_obj.get("gameId") or "").strip()
+                if _cg:
+                    _led = getattr(self, "_game_bet_confirms_by_gid", None)
+                    if _led is None:
+                        _led = {}
+                        self._game_bet_confirms_by_gid = _led
+                    _led[_cg] = (dict(bet_obj), time.time())
+                    if len(_led) > 64:  # 古いものから間引く(メモリ上限)
+                        for _k in sorted(_led, key=lambda k: _led[k][1])[:32]:
+                            _led.pop(_k, None)
                 logger.info(
                     f"[GAME-BET-CONFIRM] table={msg_tid or effective_tid or '-'} "
                     f"game={bet_obj.get('game') or bet_obj.get('gameId') or '-'} "
