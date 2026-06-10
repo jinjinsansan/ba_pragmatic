@@ -1,5 +1,15 @@
 # 引継ぎ書 2026-06-10 夕方 — dual-line 速度問題 全解決 → 次は「リバートで失った良い機能の足し戻し」
 
+> ✅ **【2026-06-10 夜 完了】§1の✅4件すべて足し戻し済・bafather実機検証合格。現engine=`68700354`**
+> (= 53144e3 + skip-refocus + 1d323f2 HOLD freeze + fa66b96 HOLD queued-switch破棄 + 9379162 NOW-LOCK settle解除 + 3e72e64 v4セット入替)。
+> - 1つずつ ビルド→swap→実機監視(取り逃し0/freeze低水準)で投入。各engine: 68699234→68699791→68697133→68700354。
+> - **fa66b96のSEQ recovery floor(marubatsu_strategy.py)は適用不要だった**: swap対象4ファイル外でリバートの影響を受けておらず bafather に残存(L143-144)。
+> - **重要発見①**: 53144e3のmatch.pyは既に`dual_line_logic.py`をimportするラッパー(logic.pyの初コミットは3e72e64)。bafatherのlogic.py=HEAD版(新bline定義)なので、リバート後engineは「新検出ロジック+旧V4セット」で動いていた。
+> - **重要発見②**: エンジンはVPS発のv4 decisionも自前ホワイトリストで検査する → 旧V4セットのため`bline|telecho|B`を**全拒否**していた(`rejected non-whitelist`)。「Telegramには来るのにGUIに何も出ない」の真因。優先4適用で解消・受理/BET/決済を実機確認。
+> - 優先3の`reason=settled`はバックストップとして設計どおり動作(通常決済は既存の`decision_settled`厳密解除が先に処理。追従系でロックdid不一致時のみ新解除が発火、17:18-19実証)。
+> - 高速卓の追従窓落ち(chain途中でWIN→次窓が送出前に閉鎖→`bet_window_closed_before_ws_send`でクリーンにEND)は既知の構造制約で**未解決のまま**(06-09からの残課題)。
+> - 残タスク = SEQ-Supabase(最後・決済経路に触れない形でのみ) と user02/03/04への配布(user04最優先)。
+
 > **次セッション最初に読む。** 前セッションで dual-line の「決済(光り)が遅い・追従ミス」を**完全解決**した。
 > 次タスク = **53144e3+skip-refocus の良い土台に、リバートで失った良い修正を1つずつ足し戻して"速い＋全機能入り"の決定版を作る**こと。
 > 詳細な調査経緯は `SESSION_HANDOFF_2026-06-10_REVERT_TO_0606_FAST.md`（必読・本書はその続編の作業指示）。
