@@ -4574,6 +4574,20 @@ class LiveBetExecutor:
                 if intent in ("preposition", "manual_assist", "prepare", "decision"):
                     self._start_assist_focus_hold(target, table_name or target, intent=intent)
                 return
+            # WS-BET最適化: WS送信モードでは予告/手動アシストの卓FOCUS(重DOM)は新卓への
+            # "初回"であっても不要(BETは共有ホストWSから全卓へ送れる・チップ選択も不要)。
+            # 初回FOCUSの5-19s freezeがメインループを塞ぎ、その間に届いた勝敗の決済処理が
+            # 遅れて「枠が残ったまま→遅れて消えて光る」になっていた。視覚(タイル中央寄せ
+            # +枠描画)は軽量な assist-focus-hold(_center_multi_tile)が引き続き担う。
+            # env BACOPY_WS_SKIP_FOCUS=0 で従来挙動(初回FOCUSあり)に戻せる。
+            if (
+                intent in ("preposition", "manual_assist")
+                and self._multi_bet_transport == "ws"
+                and os.getenv("BACOPY_WS_SKIP_FOCUS", "1").strip() != "0"
+            ):
+                logger.info(f"[SWITCH] skip focus (ws transport) target={target} intent={intent}")
+                self._start_assist_focus_hold(target, table_name or target, intent=intent)
+                return
             ok = self._focus_table_in_multi(req)
             logger.info(f"[SWITCH] _focus_table_in_multi result={ok}")
             if not ok and intent == "preposition" and target:
@@ -5251,6 +5265,26 @@ class LiveBetExecutor:
                     _confirm_label = "ws send ok"
                     _notify_label = "BET WS送信済みだが実BET未確認"
                 _lpbet_deadline = time.time() + _lpbet_wait
+                # ★高速確証(根本対策): chrome_attach では lpbet 単独で確証可
+                # (require_trusted 既定0)。従来は stake_delta(不安定な口座残高WS・実測
+                # 7-10s/最大704s)を待ち、それが来ると先に確証→確証が遅れ、ハンド終了時に
+                # dga 勝者へ間に合わず遅い決済経路に転落→追従が1手遅れ→テレコ逆張り。
+                # 自分の lpbet(game_id 一致)を観測した時点で即確証すれば、確証が lpbet 直後
+                # (~0.5s)に立ち、dga 勝者へ即マッチ→決済が速い→追従が間に合う。
+                _bm_pre = (
+                    os.getenv("BACOPY_BROWSER", "")
+                    or os.getenv("BACOPY_DUAL_LINE_BROWSER", "")
+                    or ""
+                ).strip().lower()
+                _chrome_attach_pre = _bm_pre in ("chrome_attach", "chrome-cdp", "cdp")
+                _require_trusted_pre = (
+                    os.getenv("BACOPY_DUAL_REQUIRE_TRUSTED_CONFIRM", "0" if _chrome_attach_pre else "1").strip()
+                    != "0"
+                )
+                _fast_lpbet = (
+                    os.getenv("BACOPY_FAST_LPBET_CONFIRM", "1").strip() != "0"
+                    and not _require_trusted_pre
+                )
                 while time.time() < _lpbet_deadline:
                     if self._last_lpbet_at > lpbet_before_at and (
                         not game_id or self._last_lpbet_gid == game_id
@@ -5267,6 +5301,21 @@ class LiveBetExecutor:
                         if lpbet_confirmed:
                             trusted_confirm["lpbet_observed"] = True
                             trusted_confirm["lpbet_game_id"] = self._last_lpbet_gid
+                        break
+                    # 自分の lpbet(game_id一致)が出たら stake_delta を待たず即確証する。
+                    if _fast_lpbet and lpbet_confirmed:
+                        trusted_confirm = {
+                            "confirm_type": "lpbet_fast",
+                            "confirmed_amount": float(amount),
+                            "game_id": str(game_id or ""),
+                            "table_id": str(bet_table_id or ""),
+                            "lpbet_observed": True,
+                            "lpbet_game_id": self._last_lpbet_gid,
+                        }
+                        logger.info(
+                            f"[LPBET-FAST] confirm via own lpbet game={game_id or '-'} "
+                            f"table={bet_table_id or '-'} (no wait for stake_delta)"
+                        )
                         break
                     now_wait = time.time()
                     if now_wait - self._last_bet_modal_recover_at >= 0.4:
