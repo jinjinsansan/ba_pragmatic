@@ -4581,6 +4581,22 @@ class LiveBetExecutor:
                     f"did={str(bot_lock.get('decision_id') or '-')[:12]}"
                 )
                 return
+            # 同一卓への再FOCUSスキップ: 既に準備済みの卓へ予告(score更新3→2→1)や
+            # manual_assistで再切替すると、FOCUS(重DOM=48卓グリッドからタイル探索+click)が
+            # 5-19秒freezeしてbot全体を止め、決済pump/追従発注/NOWを全部ブロックする
+            # (赤/青枠stuck・追従の窓落ち/逆張り爆死の真因。bafather実機 2026-06-10で特定)。
+            # WS BETにFOCUSは不要なので、既に居る卓はスキップ(中央保持は _start_assist_focus_hold
+            # で継続)。env BACOPY_SKIP_REFOCUS_PREPARED=0 で従来挙動に戻せる。
+            if (
+                intent in ("preposition", "manual_assist")
+                and target
+                and str(getattr(self, "_prepared_table_id", "") or "") == target
+                and os.getenv("BACOPY_SKIP_REFOCUS_PREPARED", "1").strip() != "0"
+            ):
+                logger.info(f"[SWITCH] skip re-focus: already prepared target={target} intent={intent}")
+                if intent in ("preposition", "manual_assist", "prepare", "decision"):
+                    self._start_assist_focus_hold(target, table_name or target, intent=intent)
+                return
             ok = self._focus_table_in_multi(req)
             logger.info(f"[SWITCH] _focus_table_in_multi result={ok}")
             if not ok and intent == "preposition" and target:
