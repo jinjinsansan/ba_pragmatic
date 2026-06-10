@@ -2608,3 +2608,81 @@ renderRecent();
 applyDevMode();
 initModalTabs();
 initAuth();
+
+// ── 毎時勝率パネル(時間帯ヒートストリップ) ──────────────────────────
+// master /api/hourly-stats (main.jsが60秒毎にIPC転送) を描画。
+// 緑発光=60%+ / 赤=40%以下 / 減光シアン=中間。「緑が連なっているか」で
+// 罫線どおりに走っている時間帯かを一目で判断するための計器。
+(() => {
+  const panel = document.getElementById('hourlyPanel');
+  if (!panel || !window.valhalla || !window.valhalla.onHourlyStats) return;
+  const head = document.getElementById('hourlyHead');
+  const body = document.getElementById('hourlyBody');
+  head.addEventListener('click', () => {
+    body.classList.toggle('hidden');
+    panel.classList.toggle('open');
+  });
+  const cls = (wr) => (wr >= 0.60 ? 'good' : (wr <= 0.40 ? 'bad' : 'mid'));
+  const pad2 = (h) => String(h).padStart(2, '0');
+
+  function renderStrip(el, hours) {
+    el.innerHTML = '';
+    const byH = {};
+    for (const h of hours) byH[h.h] = h;
+    const cur = new Date().getHours();
+    for (let i = 7; i >= 0; i--) {
+      const hh = cur - i;
+      if (hh < 0) continue;
+      const d = byH[hh];
+      const seg = document.createElement('span');
+      const wr = d && d.n ? d.w / d.n : null;
+      seg.className = 'hourly-seg ' + (wr === null ? 'empty' : cls(wr));
+      seg.title = `${pad2(hh)}時 ` + (d && d.n ? `${d.n}件 ${Math.round(wr * 100)}%` : 'データなし');
+      el.appendChild(seg);
+    }
+  }
+
+  function renderCur(el, d) {
+    const hs = (d.hours || []).filter((h) => h.n);
+    const last = hs.length ? hs[hs.length - 1] : null;
+    if (!last) { el.textContent = '--%'; el.className = 'hourly-cur'; return; }
+    const wr = last.w / last.n;
+    el.textContent = Math.round(wr * 100) + '%';
+    el.className = 'hourly-cur ' + cls(wr);
+  }
+
+  function renderRows(el, cumEl, d) {
+    el.innerHTML = '';
+    for (const h of (d.hours || [])) {
+      if (!h.n) continue;
+      const wr = h.w / h.n;
+      const row = document.createElement('div');
+      row.className = 'hourly-row ' + cls(wr);
+      const bar = Math.round(wr * 100);
+      row.innerHTML =
+        `<span class="hr-h">${pad2(h.h)}時</span>` +
+        `<span class="hr-n">${h.n}</span>` +
+        `<span class="hr-bar"><span class="hr-bar-fill" style="width:${bar}%"></span></span>` +
+        `<span class="hr-wr">${bar}%</span>`;
+      el.appendChild(row);
+    }
+    cumEl.textContent = d.cum_n
+      ? `累計 ${d.cum_w}/${d.cum_n}  ${(d.cum_w / d.cum_n * 100).toFixed(1)}%`
+      : '本日まだデータなし';
+  }
+
+  window.valhalla.onHourlyStats((data) => {
+    if (!data || !data.ok || !data.v3 || !data.v4) return;
+    renderStrip(document.getElementById('hourlyStrip6'), data.v3.hours || []);
+    renderStrip(document.getElementById('hourlyStrip10'), data.v4.hours || []);
+    renderCur(document.getElementById('hourlyCur6'), data.v3);
+    renderCur(document.getElementById('hourlyCur10'), data.v4);
+    renderRows(document.getElementById('hourlyRows6'), document.getElementById('hourlyCum6'), data.v3);
+    renderRows(document.getElementById('hourlyRows10'), document.getElementById('hourlyCum10'), data.v4);
+    const foot = document.getElementById('hourlyFoot');
+    const parts = [];
+    if ((data.v3.lose_streak || 0) >= 3) parts.push(`6P ▼ ${data.v3.lose_streak}連敗中`);
+    if ((data.v4.lose_streak || 0) >= 3) parts.push(`10P ▼ ${data.v4.lose_streak}連敗中`);
+    foot.textContent = parts.join('   ');
+  });
+})();

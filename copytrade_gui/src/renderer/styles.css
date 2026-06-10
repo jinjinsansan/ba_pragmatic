@@ -820,3 +820,41 @@ body:has(.manual-assist-panel:not(.hidden) .manual-assist-item.now) .now-ambienc
   0%, 100% { opacity: 0.72; }
   50%      { opacity: 1; }
 }
+
+/* ── Hourly win-rate panel (time-of-day heat strip) ──────────────────
+   緑発光=勝率60%+ / 赤=40%以下 / 減光シアン=中間 / 灰=データなし */
+.hourly-panel { padding: 10px 14px; }
+.hourly-head { display: flex; align-items: center; gap: 16px; cursor: pointer; user-select: none; }
+.hourly-title { margin: 0; }
+.hourly-strip-group { display: flex; align-items: center; gap: 7px; }
+.hourly-tag { font-family: var(--font-hud); font-size: 10px; color: var(--text-muted); letter-spacing: 1px; }
+.hourly-strip { display: inline-flex; gap: 2px; align-items: center; height: 14px; }
+.hourly-seg { width: 7px; height: 12px; border-radius: 1px; background: rgba(0,229,255,0.18); }
+.hourly-seg.good { background: var(--win); box-shadow: 0 0 6px rgba(0,255,156,0.55); }
+.hourly-seg.bad { background: var(--lose); box-shadow: 0 0 6px rgba(255,45,85,0.45); }
+.hourly-seg.mid { background: rgba(0,229,255,0.38); }
+.hourly-seg.empty { background: rgba(111,138,166,0.15); height: 6px; }
+.hourly-cur { font-family: var(--font-hud); font-size: 12px; color: var(--text); min-width: 36px; }
+.hourly-cur.good { color: var(--win); text-shadow: 0 0 8px rgba(0,255,156,0.6); }
+.hourly-cur.bad { color: var(--lose); text-shadow: 0 0 8px rgba(255,45,85,0.5); }
+.hourly-caret { margin-left: auto; color: var(--text-dim); font-size: 11px; transition: transform .18s ease; }
+.hourly-panel.open .hourly-caret { transform: rotate(180deg); }
+.hourly-body { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+.hourly-body.hidden { display: none; }
+.hourly-tables { display: flex; gap: 22px; }
+.hourly-table-col { flex: 1; min-width: 0; }
+.hourly-col-title { font-family: var(--font-hud); font-size: 10px; letter-spacing: 2px; color: var(--text-muted); margin-bottom: 6px; }
+.hourly-rows { display: flex; flex-direction: column; gap: 3px; font-family: var(--font-hud); font-size: 11px; }
+.hourly-row { display: flex; align-items: center; gap: 8px; color: var(--text-muted); }
+.hourly-row .hr-h { width: 30px; color: var(--text-dim); }
+.hourly-row .hr-n { width: 28px; text-align: right; }
+.hourly-row .hr-bar { flex: 1; height: 5px; background: rgba(111,138,166,0.12); border-radius: 2px; overflow: hidden; }
+.hourly-row .hr-bar-fill { height: 100%; border-radius: 2px; background: rgba(0,229,255,0.45); }
+.hourly-row.good .hr-bar-fill { background: var(--win); box-shadow: 0 0 5px rgba(0,255,156,0.5); }
+.hourly-row.bad .hr-bar-fill { background: var(--lose); }
+.hourly-row .hr-wr { width: 44px; text-align: right; color: var(--text); }
+.hourly-row.good .hr-wr { color: var(--win); text-shadow: 0 0 7px rgba(0,255,156,0.55); }
+.hourly-row.bad .hr-wr { color: var(--lose); }
+.hourly-cum { margin-top: 7px; font-family: var(--font-hud); font-size: 11px; color: var(--text-muted); }
+.hourly-foot { margin-top: 8px; font-family: var(--font-hud); font-size: 11px; color: var(--lose); }
+.hourly-foot:empty { display: none; }

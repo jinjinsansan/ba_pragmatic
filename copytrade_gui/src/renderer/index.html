@@ -132,6 +132,39 @@
       </div>
     </div>
 
+    <!-- Hourly win-rate panel: time-of-day heat strip, click to expand -->
+    <div class="section glass hourly-panel" id="hourlyPanel">
+      <div class="hourly-head" id="hourlyHead" title="時間帯別勝率(当日JST・10分毎更新)。クリックで展開">
+        <span class="section-header hourly-title">TIME RATE</span>
+        <span class="hourly-strip-group">
+          <span class="hourly-tag">6P</span>
+          <span class="hourly-strip" id="hourlyStrip6"></span>
+          <span class="hourly-cur" id="hourlyCur6">--%</span>
+        </span>
+        <span class="hourly-strip-group">
+          <span class="hourly-tag">10P</span>
+          <span class="hourly-strip" id="hourlyStrip10"></span>
+          <span class="hourly-cur" id="hourlyCur10">--%</span>
+        </span>
+        <span class="hourly-caret" id="hourlyCaret">&#x25BE;</span>
+      </div>
+      <div class="hourly-body hidden" id="hourlyBody">
+        <div class="hourly-tables">
+          <div class="hourly-table-col">
+            <div class="hourly-col-title">6パターン</div>
+            <div class="hourly-rows" id="hourlyRows6"></div>
+            <div class="hourly-cum" id="hourlyCum6"></div>
+          </div>
+          <div class="hourly-table-col">
+            <div class="hourly-col-title">10パターン</div>
+            <div class="hourly-rows" id="hourlyRows10"></div>
+            <div class="hourly-cum" id="hourlyCum10"></div>
+          </div>
+        </div>
+        <div class="hourly-foot" id="hourlyFoot"></div>
+      </div>
+    </div>
+
     <!-- Live Feed -->
     <div class="section glass">
       <div class="section-header">LIVE FEED</div>

@@ -1609,6 +1609,35 @@ async function billingStatus() {
   };
 }
 
+// ── 毎時勝率(時間帯別)パネル: master /api/hourly-stats を60秒毎に取得して
+//    renderer へ転送する。罫線どおりに走る時間帯かの稼働判断材料(Telegram毎時
+//    レポートと同じ集計のJSON版・VPS側cronが10分毎更新)。
+let hourlyStatsTimer = null;
+function startHourlyStatsPoller() {
+  if (hourlyStatsTimer) return;
+  const poll = () => {
+    try {
+      const envFile = loadDotEnv();
+      const base = String(envFile.BACOPY_API_URL || process.env.BACOPY_API_URL || 'https://master.bafather.uk').replace(/\/$/, '');
+      const key = String(envFile.BACOPY_API_KEY || process.env.BACOPY_API_KEY || '').trim();
+      if (!key) return;
+      const u = new URL(base + '/api/hourly-stats');
+      const mod = u.protocol === 'http:' ? require('http') : require('https');
+      const req = mod.get(u, { headers: { Authorization: `Bearer ${key}` }, timeout: 10000 }, (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => {
+          try { sendToRenderer('hourly-stats', JSON.parse(body)); } catch (_) {}
+        });
+      });
+      req.on('timeout', () => req.destroy());
+      req.on('error', () => {});
+    } catch (_) {}
+  };
+  poll();
+  hourlyStatsTimer = setInterval(poll, 60 * 1000);
+}
+
 function createWindow() {
   console.log('[Main] createWindow');
   mainWindow = new BrowserWindow({
@@ -1652,7 +1681,7 @@ app.whenReady().then(() => {
 
   createWindow();
 
-
+  startHourlyStatsPoller();
 
   schedulePeriodicRestart();
   _telegramNotifyFromMain('🟢 bacopy GUI started');
