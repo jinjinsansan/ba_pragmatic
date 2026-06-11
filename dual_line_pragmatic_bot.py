@@ -1664,6 +1664,14 @@ class DualLinePragmaticBot(cp.Collector):
                                 "gid": gid, "outcome": c,
                                 "name": self._dga_names.get(tid, ""),
                             })
+                            # 計装: dga勝者を受信した時刻を記録。これと
+                            # [DGA-VPS-SETTLE](pump処理後)の時刻差で、決済遅延が
+                            # フィード遅延(受信が遅い)か pump/メインループ遅延(受信は
+                            # 速いが処理が遅い)かを切り分ける。
+                            logger.info(
+                                f"[DGA-RECV] winner received gid={gid} "
+                                f"table={self._dga_names.get(tid, '') or tid} outcome={c}"
+                            )
                 if c in ("P", "B"):
                     self._dga_seq[tid] = self._dga_seq.get(tid, "") + c
                     added = True
@@ -3761,8 +3769,13 @@ class DualLinePragmaticBot(cp.Collector):
         key = str(api_key or os.getenv("BACOPY_API_KEY", "")).strip()
         try:
             req = _ur.Request(url, headers={"Authorization": f"Bearer {key}"})
+            _t0 = time.time()  # 計装: メインループのHTTPブロック検出
             with _ur.urlopen(req, timeout=10) as r:
-                return json.loads(r.read().decode("utf-8"))
+                _out = json.loads(r.read().decode("utf-8"))
+            _dt = time.time() - _t0
+            if _dt >= 2.0:
+                logger.warning(f"[API-SLOW] GET {path} took {_dt:.1f}s (main-loop block?)")
+            return _out
         except Exception as e:
             if path == "/api/preposition":
                 now = time.time()
@@ -3796,8 +3809,13 @@ class DualLinePragmaticBot(cp.Collector):
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {key}",
             }, method="POST")
+            _t0 = time.time()  # 計装: メインループのHTTPブロック検出
             with _ur.urlopen(req, timeout=10) as r:
-                return json.loads(r.read().decode("utf-8"))
+                _out = json.loads(r.read().decode("utf-8"))
+            _dt = time.time() - _t0
+            if _dt >= 2.0:
+                logger.warning(f"[API-SLOW] POST {path} took {_dt:.1f}s (main-loop block?)")
+            return _out
         except Exception as e:
             logger.debug(f"[API] POST {path} failed: {e}")
             return {}
@@ -6320,7 +6338,11 @@ class DualLinePragmaticBot(cp.Collector):
                         last_tick_diag = now
                     if now - last_executor_tick >= tick_interval:
                         try:
+                            _tk0 = time.time()  # 計装: pump starve の主犯特定
                             self.bet_executor.tick()
+                            _tkdt = time.time() - _tk0
+                            if _tkdt >= 2.0:
+                                logger.warning(f"[LOOP-SLOW] executor.tick {_tkdt:.1f}s (main-loop block)")
                         except Exception as e:
                             logger.warning(f"[BOT] executor tick error: {e!r}")
                         last_executor_tick = now
@@ -6372,7 +6394,11 @@ class DualLinePragmaticBot(cp.Collector):
                 if now - last_prepos_check >= 3.0:
                     last_prepos_check = now
                     try:
+                        _p0 = time.time()
                         self._check_preposition()
+                        _pdt = time.time() - _p0
+                        if _pdt >= 2.0:
+                            logger.warning(f"[LOOP-SLOW] _check_preposition {_pdt:.1f}s (main-loop block)")
                     except Exception as e:
                         logger.debug(f"[BOT] preposition poll error: {e}")
                     # dga local-signal: keep the passive observer page alive
@@ -6380,7 +6406,11 @@ class DualLinePragmaticBot(cp.Collector):
                     try:
                         ensure = getattr(self.bet_executor, "_ensure_dga_observer", None)
                         if callable(ensure):
+                            _o0 = time.time()
                             ensure()
+                            _odt = time.time() - _o0
+                            if _odt >= 2.0:
+                                logger.warning(f"[LOOP-SLOW] _ensure_dga_observer {_odt:.1f}s (main-loop block)")
                     except Exception as e:
                         logger.debug(f"[BOT] dga observer ensure error: {e}")
                     # READ-ONLY DOM probe (BACOPY_DOM_RESULT_PROBE=1, default off):
@@ -6397,7 +6427,11 @@ class DualLinePragmaticBot(cp.Collector):
                 if now - last_decision_fallback_poll >= 1.0:
                     last_decision_fallback_poll = now
                     try:
+                        _d0 = time.time()
                         self._poll_pending_decisions_fallback()
+                        _ddt = time.time() - _d0
+                        if _ddt >= 2.0:
+                            logger.warning(f"[LOOP-SLOW] _poll_pending_decisions_fallback {_ddt:.1f}s (main-loop block)")
                     except Exception as e:
                         logger.debug(f"[BOT] fallback decision poll error: {e}")
 
@@ -6405,7 +6439,11 @@ class DualLinePragmaticBot(cp.Collector):
                 # latency so the multi-chip placement gets the full window). Only
                 # active in BACOPY_DGA_LOCAL_SIGNAL=live; no-op otherwise. ──
                 try:
+                    _m0 = time.time()
                     self._dga_main_pump()
+                    _mdt = time.time() - _m0
+                    if _mdt >= 2.0:
+                        logger.warning(f"[LOOP-SLOW] _dga_main_pump {_mdt:.1f}s (main-loop block)")
                 except Exception as e:
                     logger.debug(f"[BOT] dga pump error: {e}")
                 # VPS-NOW 確定BETを dga 勝者で決済(自動WS BET時の○×/SEQ/ダランベール進行)。

@@ -226,3 +226,65 @@ SCP: `scp -i <key> -o BatchMode=yes _swap_asar_phase3b.ps1 "Administrator@162.43
 
 ### 学び(操作)
 - `pkill -f`/`pgrep -f` 自己マッチ罠→kill/再起動は .sh をSCPして実行。PowerShell `-Command` クォート崩れ多発→**必ず .ps1 を -File 実行**。GUI名=`BACOPYRECEIVER`/engine=`bacopy_engine`、EXE差替はengine停止必須。
+
+---
+
+## 11. チップ$2過剰着弾バグ = 真因確定+④修正デプロイ済 (2026-05-31 未明)
+
+### 真因(実機ログ19:10で確証, game 14563248719)
+- `_js_click_bet_in_container`(L5682) の**クリック・フォールバック・カスケードが二重ディスパッチ**。
+  text-locator `.click(force=True,timeout=1800)` が**クリック発射後に**1800msタイムアウト→例外。except が次方式へフォールスルー→tagged-locator が**同じBETゾーンを再クリック**。
+  → 同一ゲームに `<lpbet>` が**2回**送出(19:10:06,245 と 19:10:07,397)→ stake_delta=$2($1計画)。
+  `[CLICK-BET] click=1/1` は計画反復数で物理クリック数ではない(誤認の元)。
+- **これが当初の「カスケード二重ディスパッチ」仮説の実体**。①②(過少/ゼロ)は同じtimeoutが「発射前に外れて次も外す」逆向き故障。
+
+### ④修正(commit 7c4903b・feat/dual-line ローカル・未push)
+- `_js_click_bet_in_container` に **`_bet_already_landed()` ゲート**追加(4箇所)。各フォールスルー再クリック前に「このgame_idの送出`<lpbet>`がクリック開始後に出たか」を最大`BACOPY_CLICK_BET_LANDED_WAIT_MS`(既定1200ms)待って確認→出ていれば**再クリックせず return True**。
+- `expected_game_id` 空なら無効=レガシー/単一卓は挙動不変。マルチロビーは送出lpbet=自分のBETのみ&単一executor1ゲームなのでgid一致で誤検知なし。py_compile OK。
+- 黄色枠修正(L5416/L5621)はHEAD在=再ビルドで巻き戻らない事を確認済。
+
+### デプロイ実績(2026-05-31 21:18頃のPCローカル時刻)
+- ローカル再ビルド: `dist/bacopy_engine.exe`=**224547652**(PyInstaller 6.19.0, tbb12.dll警告は既存無害)。
+- bafather swap: `_swap_engine_doublestakefix.ps1`(=yellowfix版の再利用)。`ENGINE_SWAP_OK`, DEPLOYED=224547652。
+- バックアップ: `...\engine\bacopy_engine.exe.bak_20260530_211838`=224547502(旧黄色枠fix版, ロールバック先)。
+- swap前状態: engine=0/gui=4(=$2バグ後にengine停止済、BET非進行で安全だった)。
+
+### ④の追加修正: ガード待ち時間 1200→2500ms (commit 5e1df7c, 2026-05-31 未明)
+- **デプロイ後もv4ライブで$2が2回再発**(22:15 game14565616419 / 22:51 game14566058619, ともに$1→$2)。
+- 原因=**ガードのlpbet待ちが短すぎた(タイミングrace)**。22:15: text-locatorが22:15:45.950でtimeout→ガードが1200ms待って47.172で諦め→**1発目のlpbetは47.486(raiseの1.54s後)に到着**=0.31s遅れで取り逃し→tagged-locatorが再クリック→49.381に2発目lpbet→$2。
+- lpbetスニフ遅延は **0.7〜1.54s** とばらつく。1200msでは不足。
+- **修正**: `BACOPY_CLICK_BET_LANDED_WAIT_MS` 既定 1200→2500ms (commit 5e1df7c)。**さらに再ビルド不要で即適用**するため bafather `resources\.env` に `BACOPY_CLICK_BET_LANDED_WAIT_MS=2500` 追記済(バックアップ `.env.bak_20260531_014001`)。デプロイ済engine(224547652)が**bot再起動時**にこの値を読む。
+- **適用にはGUIでbot停止→起動が必要**(buildSpawnSpec が loadDotEnv を再読込)。
+
+### 4時間ライブ集計(21:18→01:17)= 実態
+- クリック到達27 / 確定15 / 失敗(未着弾)15 / **PARTIAL-BET不一致10** / ガード作動40 / Fast窓スキップ52。
+- PARTIAL内訳: 22:xx=`$1→$2`過大×2(上記race)、**00:xx=`$2→$1`過少×8**(SEQが$2=$1×2枚に上がり片方が乗らない=③の実証)。
+- ガードの "NOT re-clicking" 分岐は00:24/00:33/00:39等で**実際に二重を阻止**(効いてはいる)。
+
+### ★決済根治: VPS結果駆動の決済フォールバック (2026-05-31, commit 1241a65)
+- **問題**: bafatherはSEQをローカルのハンド観測(`_settle_confirmed_decision_from_hand`, game_id厳密一致)で決済。マルチロビーで結果取りこぼし→decisionが`settlement_timeout=900s`まで`processing`凍結→**SEQ停止→未追跡実BET累積**(9:32/9:37実例、両方WINなのにSEQ$6段で凍結=過大エスカレーション)。
+- **検証**: VPS botログで、詰まった2件含む全decisionを**VPSが~30秒で確実に決済**(`[v4-settle] posted settled ... WIN/LOSE`)。`mark_result`(bacopy_db.py L328-351)でbafatherが`bet_sent`済みならVPS done postで**status=done+outcome付きresultに上書き**=masterが保持。
+- **修正(commit 1241a65, dual_line_pragmatic_bot.py)**: `_settle_pending_from_master()`が`GET /api/decisions?status=done`をポーリングし、在庫BET(送信済・未決済)のdidをVPS outcome+**ローカルactual_amount**で決済(`_apply_master_settlement`=ローカル決済をミラー、money.apply_result/GUI resolution更新、**master再postなし**)。`settlement_posted`+popで二重防止。`_flush_pending_decision_results`冒頭で呼ぶ。throttle `BACOPY_MASTER_SETTLE_POLL_SEC=5`、kill-switch `BACOPY_MASTER_SETTLE_ENABLE=1`。詰まり900s→~30sで解消。v3/v4両対応。
+- **要engine再ビルド+デプロイ+GUI再起動**。詳細メモリ [[project_dual_line_settlement_freeze_2026-05-31]]。
+
+### ③過少($2→$1)の真因特定 (2026-05-31 01:47, game14568239019, Baccarat 6)
+- $2=$1×2枚の多チップBETで、**2クリックなのにlpbet=1回・卓確定amount=1**=$1しか乗らず。
+- 内訳: 1枚目=text-locator(信頼click)OK→着弾。**2枚目=cached mouse.click が1枚目の216ms後に発火**(34,155→34,371)。その時1枚目のlpbet(34,398)すら未確定→**2枚目がPragmatic側で吸収/無視**。
+- ＝「クリックが外れた」ではなく**連打が速すぎて2枚目が登録されない**。00:xxの過少8件と同型。
+- **対処(再ビルド不要)**: チップ間待ち `BACOPY_CLICK_BET_INTER_CLICK_MS` 既定45→**400ms**を bafather `resources\.env` 追記(バックアップ `.env.bak_20260531_021746`)。1枚目確定(lpbet~243ms)後に2枚目を打つ。**bot再起動で適用**。
+- ⚠️ これはタイミング仮説。効かなければ次は**コード修正=各チップを毎回trusted text-locatorで打ち直す(cached mouse.click廃止)＋per-click lpbet確認**(L6443/L6471の click_cached_side_once 経路)。要再ビルド。
+- 補足: 04:xx近辺の$4(4枚)は "ignore settled result without local bet confirmation"=多チップほど着弾困難。
+
+### ③多チップ過少の真因確定＋修正 (2026-05-31 03:15→04:20, commit 34b07a8)
+- 実機$4 BET(game14569312119, $1×4枚): 1枚目=locator.click着弾、**2〜4枚目=`click_cached_side_once`が `frame.page.mouse.click(283.3,347.5)` をframe相対座標で実行**→OOPIFのオフセット(約+147,+100)未加算でベットゾーンを外し**全空振り**→lpbet 1回のみ→$4が$1着弾。**$2→$1/$4→$1の過少すべての真因**。400ms遅延は無関係(タイミングではなく座標)。
+- **SEQ自体は正常**(エンジンは$4を正しく計画・送信。GUI/Stake履歴の$1/$2は着弾ミスの結果)。
+- 修正3点(commit 34b07a8): ① `click_cached_side_once` でlocator系キャッシュ座標にiframeオフセット加算→page座標化(高速クリック維持・多枚数$8/$85/$333にスケール) ② `_lpbet_count_by_gid`(送出lpbet=着弾チップ数) ③ ループ後に満額検証+不足リトライ(`BACOPY_CHIP_VERIFY_SETTLE_MS`=2500ms待ち→landed<planned なら不足分再クリック。**均一プラン($1×N)のみ自動リトライ**=誤額過大防止、混在プラン($5+$1)はログのみ。`BACOPY_CHIP_VERIFY_RETRY_ROUNDS`=2)。
+- engine再ビルド(224549722)→bafather swap(`ENGINE_SWAP_OK` 04:20, バックアップ`bacopy_engine.exe.bak_20260531_042055`=224547652)。env(2500ms/400ms)は`.env`常駐で引継ぎ。
+
+### 残作業(次任)
+1. 🔴 **GUI再起動で224549722適用**→ v4ライブで **$2/$4/$6が満額着弾**するか確認。ログ照合: `[CLICK-BET-VERIFY] full amount landed` / lpbet回数=チップ枚数 / `[PARTIAL-BET]`が出ないこと。混在プランで過少が残るなら次は denom 別検証(lpbetに額が載るか要調査)。
+2. 🔴 **①②③ 本丸=per-click着弾検証**(過少$2→$1, クリックtimeout/miss根治, 多チップの確信)。**今や主問題**。
+   - 候補: ① locator click timeout(`BACOPY_CLICK_BET_LOCATOR_TIMEOUT_MS` 既定1800→延長で空振り/フォールスルー減) ② mouse fallback座標精度(betzone座標を使う,geometry混在排除) ③ チップ1枚ごとlpbet/stake delta確認→外れたら同一クリックのみ再試行,規定回数で全体中止。
+3. ① Fast卓の窓切れ(open_to_vps_cap~16.6s > window13s)。対象からFast卓除外 or preposition先行構え拡大。
+4. stuck `dl_v4_2e159333a0dd494f` / `dl_v4_0c79e8532bd34e43` クリーンアップ。
+5. commit 7c4903b / 5e1df7c は未push。
