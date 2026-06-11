@@ -344,9 +344,12 @@ let _sessionOpenBalance = null;
 let _dailyOpenBalance = null;
 
 let _dailyOpenDate = null;
-// エンジン(課金)が計算する正確な日次PnL。/me/realtime と同値。DAILY TOTAL に最優先表示。
-// (ローカルの残高差分計算は不安定で0のままになるため、engine値があればそれを使う)
+// エンジン(課金)が計算する日次PnL(ベット純益累積=daily_bet_pnl)。参考保持。
 let _engineDailyPnl = null;
+// bafather.uk リアルタイム監視(admin/users)と同じ「残高差分」
+// = current_balance - daily_open.balance。DAILY TOTAL ヘッダーはこれを最優先表示し、
+// bafather.uk の各自デイリートータルと一致させる(engine の daily_total msg から算出)。
+let _engineDailyTotal = null;
 
 let sessionTotal = 0;
 let _balanceConfirmed = false; // エンジンから実残高を受信したら true
@@ -596,18 +599,16 @@ function updateSessionDisplay() {
 
   const todayEl = $('#todayPnl');
   if (todayEl) {
-    // エンジン(課金=/me/realtime と同値)の日次PnLを最優先。残高確認に依存しない。
-    // 無ければ従来のローカル残高差分にフォールバック。
-    if (typeof _engineDailyPnl === 'number' && isFinite(_engineDailyPnl)) {
-      const d = _engineDailyPnl;
+    // bafather.uk のリアルタイム監視(admin/users)と同じ残高差分
+    // (current_balance - daily_open.balance)を最優先表示。残高が取れない時は
+    // bafather.uk と同様に "--"(daily_bet_pnl にはフォールバックしない=両者一致)。
+    if (typeof _engineDailyTotal === 'number' && isFinite(_engineDailyTotal)) {
+      const d = _engineDailyTotal;
       todayEl.textContent = `${d >= 0 ? '+$' : '-$'}${Math.abs(d).toFixed(2)}`;
       todayEl.className = 'today-pnl ' + (d >= 0 ? 'positive' : 'negative');
-    } else if (!_balanceConfirmed) {
+    } else {
       todayEl.textContent = '--';
       todayEl.className = 'today-pnl';
-    } else {
-      todayEl.textContent = `${daily >= 0 ? '+$' : '-$'}${Math.abs(daily).toFixed(0)}`;
-      todayEl.className = 'today-pnl ' + (daily >= 0 ? 'positive' : 'negative');
     }
   }
   persistSessionState();
@@ -2116,16 +2117,17 @@ function renderDailyPnl() {
 
   const today = _dailyOpenDate || todayKeyJST();
   const { daily } = _computePnl();
-  const todayEl = $('#todayPnl');
-  if (todayEl) {
-    todayEl.textContent = `${daily >= 0 ? '+$' : '-$'}${Math.abs(daily).toFixed(0)}`;
-    todayEl.className = 'today-pnl ' + (daily >= 0 ? 'positive' : 'negative');
-  }
+  // #todayPnl は updateSessionDisplay が唯一の書き手(bafather.uk 監視と同じ残高差分)。
+  // 旧コードはここでローカル差分(toFixed(0))に上書きして engine 値を潰していた=二重
+  // 書き込み不具合 → 削除。
 
-
-  // 実残高確認済みの場合のみ今日の値を保存（未確認時に 0 で上書きしない）
-  if (_balanceConfirmed) {
-    data[today] = daily;
+  // 履歴(過去14日ストリップ)の「今日」セルはヘッダーと一致させるため、engine の
+  // 残高差分(_engineDailyTotal)を優先。無ければ従来のローカル差分にフォールバック。
+  const haveEngineTotal = (typeof _engineDailyTotal === 'number' && isFinite(_engineDailyTotal));
+  const todayVal = haveEngineTotal ? _engineDailyTotal : daily;
+  // 実残高確認済み or engine値ありの時のみ保存（未確認かつengine無しの時に 0 で潰さない）
+  if (_balanceConfirmed || haveEngineTotal) {
+    data[today] = todayVal;
     saveDailyPnl(data);
   }
 
@@ -2138,8 +2140,8 @@ function renderDailyPnl() {
   for (const k of keys) {
     const v = data[k];
     const isToday = (k === today);
-    // 今日かつ未確認の場合は -- 表示
-    if (isToday && !_balanceConfirmed) {
+    // 今日かつ(残高未確認 & engine残高差分なし)の場合は -- 表示
+    if (isToday && !_balanceConfirmed && !haveEngineTotal) {
       html += `
         <div class="daily-item">
           <div class="daily-date">${k.slice(5)}</div>
@@ -2365,12 +2367,17 @@ window.valhalla.onAgentMessage((msg) => {
     }
 
     case 'daily_total': {
-      // エンジン(課金)が計算した正確な日次PnL。DAILY TOTAL に表示(/me/realtime と同値)。
+      // エンジン(課金)が計算した日次値。
       const d = Number(msg.daily_pnl);
-      if (isFinite(d)) {
-        _engineDailyPnl = d;
-        updateSessionDisplay();
+      if (isFinite(d)) _engineDailyPnl = d;
+      // bafather.uk 監視(admin/users)と同一式: current_balance - daily_open.balance。
+      // 両方そろった時のみ更新(ws無音で balance 欠落時は直前値を保持=ちらつき防止)。
+      const _bal = Number(msg.balance);
+      const _open = Number(msg.daily_open_balance);
+      if (isFinite(_bal) && isFinite(_open)) {
+        _engineDailyTotal = _bal - _open;
       }
+      updateSessionDisplay();
       break;
     }
 

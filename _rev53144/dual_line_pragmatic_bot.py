@@ -3475,6 +3475,11 @@ class DualLinePragmaticBot(cp.Collector):
                 "daily_pnl": round(float(self._billing_daily_pnl or 0.0), 2),
                 "daily_date": str(self._billing_daily_date or ""),
                 "balance": self._billing_current_balance,
+                # bafather.uk リアルタイム監視(admin/users)と同じ残高差分
+                # (current_balance - daily_open.balance)を GUI でも出せるよう
+                # 当日始値残高を同梱。/api/session-state の daily_open.balance と同値。
+                "daily_open_balance": (round(float(self._billing_balance_open), 4)
+                                       if self._billing_balance_open is not None else None),
                 "currency": str(self._billing_currency or ""),
                 "count": int(self._billing_count or 0),
             })
