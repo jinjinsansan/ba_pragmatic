@@ -3537,6 +3537,31 @@ class DualLinePragmaticBot(cp.Collector):
                         "date": self._billing_balance_open_date,
                         "balance": round(float(self._billing_balance_open), 4),
                     }
+            # ── フリート監視用 bot_status (admin/users 表示・後方互換の追加)。値は
+            # エンジンが既に保持(新規計算なし)。課金フィールドとは別オブジェクトで
+            # settle cron に無影響。失敗しても billing 本体に波及させない。
+            try:
+                ms = self.money.status_dict()
+                auto = (not self.manual_assist) or bool(self.manual_assist_auto_click)
+                state["bot_status"] = {
+                    "running": True,
+                    "mode": "auto" if auto else "manual",
+                    "follow": bool(self._follow_enabled),
+                    "follow_active": bool(self._follow_active),
+                    "follow_chain": int(self._follow_chain or 0),
+                    "money_mode": ms.get("mode"),
+                    "unit": ms.get("unit"),
+                    "next_bet": round(float(self.money.next_bet() or 0.0), 2),
+                    "seq_level": ms.get("seq_level"),
+                    "seq_overshoot": ms.get("seq_overshoot"),  # 負け越し(推奨指標)
+                    "loss_cut": ms.get("loss_cut"),
+                    "wins": int(self.wins or 0),
+                    "losses": int(self.losses or 0),
+                    "win_rate": ms.get("win_rate"),
+                    "updated_at": _utc_now_iso(),
+                }
+            except Exception as _bs_e:
+                logger.debug(f"[BILLING-SYNC] bot_status build failed: {_bs_e}")
             email = getattr(self, "_billing_email", "")
             key = getattr(self, "_billing_api_key", "")
             if not email or not key:
