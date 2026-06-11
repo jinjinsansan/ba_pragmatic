@@ -2,7 +2,7 @@
 
 BetManager:
   - フラット ベット（単一ユニット）
-  - SMALL SEQ シリーズ (0.2/1/3/6 start)
+  - SMALL SEQ シリーズ (0.2/1/3/6/10 start)
   - 純粋マーチンゲール
   - 利確 / 損切
   - 利確/損切後の動作: STOP or RESTART
@@ -55,12 +55,21 @@ SEQ_SMALL6 = [
     290, 330, 380, 440, 510, 600, 720, 840, 1000, 1200, 1400, 1600, 1800, 2000,
 ]
 
+SEQ_SMALL10 = [
+    10, 20, 30,
+    50, 70, 90, 110, 130,
+    160, 200, 240, 280, 320,
+    370, 420, 470, 520, 570, 620,
+    680, 740, 800, 860, 920, 980, 1050,
+]
+
 BET_MODES = {
     "flat": "1 unit flat",
     "small02": "SMALL SEQ $0.20 start",
     "small1": "SMALL SEQ $1 start",
     "small3": "SMALL SEQ $3 start",
     "small6": "SMALL SEQ $6 start",
+    "small10": "SMALL SEQ $10 start",
     "martingale": "pure Martingale",
     "dalembert": "D'Alembert (+/-1 unit)",
 }
@@ -116,7 +125,7 @@ class BetManager:
         self.seq_level: int = 0  # SEQ 配列の index
         self.current_seq = self._resolve_seq()
         self._seq7_tracker: MaruBatsuTracker | None = None
-        if self.mode in ("small02", "small1", "small3", "small6"):
+        if self.mode in ("small02", "small1", "small3", "small6", "small10"):
             self._seq7_tracker = MaruBatsuTracker(
                 chip_base=1.0,
                 seq=list(self.current_seq),
@@ -145,6 +154,8 @@ class BetManager:
             return list(SEQ_SMALL3)
         if m == "small6":
             return list(SEQ_SMALL6)
+        if m == "small10":
+            return list(SEQ_SMALL10)
         return [1.0]
 
     # ── ベット計算 ──────────────────────────────────────────────
