@@ -3452,6 +3452,17 @@ class DualLinePragmaticBot(cp.Collector):
                 mult = self._billing_num(c[3]) if len(c) > 3 else None
                 if stake is None or mult is None or not self._billing_is_baccarat(game):
                     continue
+                # 倍率サニティガード: バカラ配当倍率は小さい(P/B~2, Tie~9,
+                # サイドベット<~30)。これを大きく超える/負の値は、ベット履歴DOMの
+                # 誤読(実測 mult=1501.50→+$13504 の幻ベットで daily_bet_pnl が
+                # +$14k に膨張し課金/表示を破壊)。誤読は課金しない(uuidはseen済みで
+                # 再評価されない)。課金ユーザーの過剰請求も恒久防止。
+                if mult > 30.0 or mult < 0.0:
+                    logger.warning(
+                        f"[BILLING] skip implausible mult={mult} game={game!r} "
+                        f"stake={stake} (bet-history DOM parse error?)"
+                    )
+                    continue
                 net = stake * (mult - 1.0)
                 self._billing_daily_pnl += net
                 self._billing_count += 1
