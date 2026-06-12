@@ -475,6 +475,7 @@ async function startBotFlow({ auto = false } = {}) {
     // 自動フラットBET ON時は money mode を flat に強制(自動×SEQ=破産)。
     money_mode: settings.dga_auto_bet ? 'flat' : (settings.dual_money_mode || 'flat'),
     money_unit: settings.dual_unit || 100,
+    seq_turns: settings.seq_turns === 5 ? 5 : 7,
     dual_mode: settings.dual_mode || 'v3',
     on_limit: settings.dual_on_limit || 'stop',
     manual_assist_auto_click: !!settings.manual_assist_auto_click,
@@ -730,7 +731,7 @@ const DEFAULT_SETTINGS = {
   dga_auto_bet: false,
   dga_regular_only: true,
 };
-const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small06', 'small1', 'small6', 'small10', 'dual_line', 'dual_line_assist', 'dual_line_auto', 'dual_line_auto_follow']);
+const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small06', 'small1', 'small6', 'small10', 'small30', 'dual_line', 'dual_line_assist', 'dual_line_auto', 'dual_line_auto_follow']);
 
 function normalizeBetMode(mode) {
   return ALLOWED_BET_MODES.has(mode) ? mode : 'flat_1usd';
@@ -801,6 +802,7 @@ setTimeout(() => {
 function _applyMoneyTypeVisibility() {
   const seq = ($('#inputMoneyType')?.value || 'seq') === 'seq';
   if ($('#seqVariantGroup')) $('#seqVariantGroup').style.display = seq ? '' : 'none';
+  if ($('#seqTurnsGroup')) $('#seqTurnsGroup').style.display = seq ? '' : 'none';
   if ($('#flatVariantGroup')) $('#flatVariantGroup').style.display = seq ? 'none' : '';
   if ($('#dualUnitGroup')) $('#dualUnitGroup').style.display = seq ? 'none' : '';
 }
@@ -1107,6 +1109,7 @@ $('#btnSettings')?.addEventListener('click', async () => {
   if ($('#dualLineMoneyGroup')) $('#dualLineMoneyGroup').style.display = isDL ? '' : 'none';
   _loadMoneyModeUI(s.dual_money_mode || 'small1');
   if ($('#inputDualUnit')) $('#inputDualUnit').value = s.dual_unit || 100;
+  if ($('#inputSeqTurns')) $('#inputSeqTurns').value = String(s.seq_turns === 5 ? 5 : 7);
   if ($('#inputDualLive')) $('#inputDualLive').checked = !!s.dual_live;
   if ($('#inputManualAssistAutoClick')) $('#inputManualAssistAutoClick').checked = !!s.manual_assist_auto_click;
   if ($('#inputDgaAutoBet')) $('#inputDgaAutoBet').checked = !!s.dga_auto_bet;
@@ -1259,6 +1262,7 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     mode: isDualLine ? (isDualLineAssist ? 'dual_line_assist' : 'dual_line_auto') : 'executor',
     dual_money_mode: $('#inputDualMoneyMode')?.value || 'flat',
     dual_unit: parseFloat($('#inputDualUnit')?.value || 100),
+    seq_turns: parseInt($('#inputSeqTurns')?.value || '7', 10),
     dual_mode: $('#inputDualMode')?.value || 'v3',
     dual_live: $('#inputDualLive')?.checked || false,
     dual_on_limit: 'stop',  // 利確はSEQ保持で停止(restart=リセットは使わない)

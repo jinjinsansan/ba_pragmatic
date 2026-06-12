@@ -2,7 +2,7 @@
 
 BetManager:
   - フラット ベット（単一ユニット）
-  - SMALL SEQ シリーズ (0.2/0.6/1/3/6/10 start)
+  - SMALL SEQ シリーズ (0.2/0.6/1/3/6/10/30 start)
   - 1-2-3打法 (bet123: 1回目1単位→2回目2単位→同結果連続なら3回目3単位→リセット)
   - 純粋マーチンゲール
   - 利確 / 損切
@@ -72,6 +72,14 @@ SEQ_SMALL10 = [
     680, 740, 800, 860, 920, 980, 1050,
 ]
 
+# 旧 NewSEQ30 (bacopy_executor_pragmatic_ws_live.py SEQ_NEW[1:]) 由来・投資家向け
+SEQ_SMALL30 = [
+    30, 50, 70,
+    110, 150, 200, 250, 300,
+    370, 450, 530, 610, 700, 810, 940,
+    1090, 1260, 1440, 1640, 1870, 2150, 2450, 2800,
+]
+
 BET_MODES = {
     "flat": "1 unit flat",
     "small02": "SMALL SEQ $0.20 start",
@@ -80,6 +88,7 @@ BET_MODES = {
     "small3": "SMALL SEQ $3 start",
     "small6": "SMALL SEQ $6 start",
     "small10": "SMALL SEQ $10 start",
+    "small30": "SMALL SEQ $30 start (ex-NewSEQ30)",
     "martingale": "pure Martingale",
     "dalembert": "D'Alembert (+/-1 unit)",
     "bet123": "1-2-3 method (1/2/3 units cycle)",
@@ -111,6 +120,7 @@ class BetManager:
         loss_cut: float = 0.0,
         on_limit: Literal["stop", "restart"] = "stop",
         state_path: Optional[Path] = None,
+        seq_set_size: int = 7,
     ):
         self.mode = str(mode or "flat").strip().lower()
         if self.mode not in ALLOWED_MODES:
@@ -135,12 +145,14 @@ class BetManager:
         # SEQ モード状態
         self.seq_level: int = 0  # SEQ 配列の index
         self.current_seq = self._resolve_seq()
+        # セット長(7=標準 / 5=5ターン制)。全SMALL SEQで選択可。
+        self.seq_set_size: int = 5 if int(seq_set_size or 7) == 5 else 7
         self._seq7_tracker: MaruBatsuTracker | None = None
-        if self.mode in ("small02", "small06", "small1", "small3", "small6", "small10"):
+        if self.mode in ("small02", "small06", "small1", "small3", "small6", "small10", "small30"):
             self._seq7_tracker = MaruBatsuTracker(
                 chip_base=1.0,
                 seq=list(self.current_seq),
-                set_size=7,
+                set_size=self.seq_set_size,
             )
 
         # Martingale 状態
@@ -173,6 +185,8 @@ class BetManager:
             return list(SEQ_SMALL6)
         if m == "small10":
             return list(SEQ_SMALL10)
+        if m == "small30":
+            return list(SEQ_SMALL30)
         return [1.0]
 
     # ── ベット計算 ──────────────────────────────────────────────
@@ -354,6 +368,7 @@ class BetManager:
             "win_rate": round(self.win_rate, 1),
             "seq_level": self.seq_level,
             "seq_turn": seq_turn,
+            "seq_set_size": self.seq_set_size,
             "seq_overshoot": seq_overshoot,
             "seq7_sets": seq7_sets,
             "seq7_current_turns": seq7_current_turns,
@@ -380,6 +395,7 @@ class BetManager:
             "total_losses": self.total_losses,
             "total_ties": self.total_ties,
             "seq_level": self.seq_level,
+            "seq_set_size": self.seq_set_size,
             "seq7_sets": [s.__dict__ for s in (self._seq7_tracker.sets if self._seq7_tracker else [])],
             "seq7_current_turns": list(self._seq7_tracker.current_turns) if self._seq7_tracker else [],
             "loss_count": self.loss_count,
@@ -423,9 +439,17 @@ class BetManager:
                         except Exception:
                             continue
             self._seq7_tracker.sets = parsed_sets
+            # セット長が前回保存時と違う場合は進行中セットを破棄して仕切り直し
+            # (確定済みセット=overshoot/段位置は数値で保存されているため引き継がれる)
+            saved_set_size = int(s.get("seq_set_size", 7) or 7)
             raw_turns = s.get("seq7_current_turns", []) or []
-            if isinstance(raw_turns, list):
+            if saved_set_size == self.seq_set_size and isinstance(raw_turns, list):
                 self._seq7_tracker.current_turns = [t for t in raw_turns if t in ("O", "X")]
+            elif raw_turns:
+                logger.info(
+                    f"[money] seq set size changed {saved_set_size}->{self.seq_set_size}: "
+                    f"discard in-progress turns ({len(raw_turns)})"
+                )
             self.seq_level = self._seq7_tracker.current_unit_idx
         self.loss_count = int(s.get("loss_count", 0))
         self.b123_step = max(0, min(2, int(s.get("b123_step", 0))))

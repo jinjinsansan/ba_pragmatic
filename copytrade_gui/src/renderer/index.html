@@ -364,7 +364,16 @@
                 <option value="small3">スモールSEQ 3$</option>
                 <option value="small6">スモールSEQ 6$</option>
                 <option value="small10">スモールSEQ 10$</option>
+                <option value="small30">スモールSEQ 30$（投資家向け）</option>
               </select>
+            </div>
+            <div class="form-group" id="seqTurnsGroup">
+              <label>ターン制（セット長）</label>
+              <select id="inputSeqTurns">
+                <option value="7">7ターン制（標準）</option>
+                <option value="5">5ターン制</option>
+              </select>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">切替時は進行中のセットを破棄して仕切り直し（負け越し・段位置は保持）。</div>
             </div>
             <div class="form-group" id="flatVariantGroup" style="display:none;">
               <label>進行タイプ</label>
@@ -394,6 +403,7 @@
               <option value="small3">small3</option>
               <option value="small6">small6</option>
               <option value="small10">small10</option>
+              <option value="small30">small30</option>
               <option value="martingale">martingale</option>
               <option value="dalembert">dalembert</option>
               <option value="bet123">bet123</option>

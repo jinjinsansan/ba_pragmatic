@@ -442,6 +442,7 @@ class DualLinePragmaticBot(cp.Collector):
         bet_executor: BetExecutor | None = None,
         no_vps_poll: bool = False,
         manual_assist: bool = False,
+        seq_set_size: int = 7,
     ):
         super().__init__(headless=headless, raw_log=raw_log)
         self.use_v2_filter = use_v2_filter
@@ -493,6 +494,7 @@ class DualLinePragmaticBot(cp.Collector):
             profit_stop=profit_stop, loss_cut=loss_cut,
             on_limit=on_limit,
             state_path=MONEY_STATE_PATH,
+            seq_set_size=seq_set_size,
         )
         # 利確で停止→再起動(再開)時: 新セッションとして session_pnl=0 + limit解除で
         # 再アーム(利確額は据置)。SEQ進行(seq7/seq_level)はそのまま継続(=リセットしない)。
@@ -3553,6 +3555,7 @@ class DualLinePragmaticBot(cp.Collector):
                     "unit": ms.get("unit"),
                     "next_bet": round(float(self.money.next_bet() or 0.0), 2),
                     "seq_level": ms.get("seq_level"),
+                    "seq_turns": ms.get("seq_set_size"),  # 5/7ターン制
                     "seq_overshoot": ms.get("seq_overshoot"),  # 負け越し(推奨指標)
                     "loss_cut": ms.get("loss_cut"),
                     "wins": int(self.wins or 0),
@@ -6554,6 +6557,10 @@ def main(argv: list[str] | None = None) -> int:
         help="flat/martingale の 1 unit 額 ($)"
     )
     ap.add_argument(
+        "--seq-turns", type=int, default=7, choices=[5, 7],
+        help="SEQ のセット長 (7=標準 / 5=5ターン制)"
+    )
+    ap.add_argument(
         "--profit-target", type=float, default=0.0, help="利確ライン ($)"
     )
     ap.add_argument(
@@ -6699,6 +6706,7 @@ def main(argv: list[str] | None = None) -> int:
         bet_executor=bet_executor,
         no_vps_poll=getattr(args, "no_vps_poll", False),
         manual_assist=bool(getattr(args, "manual_assist", False)),
+        seq_set_size=int(getattr(args, "seq_turns", 7) or 7),
     )
 
     bot._send_manual_assist_mode()

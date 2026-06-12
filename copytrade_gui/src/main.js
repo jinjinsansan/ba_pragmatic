@@ -871,6 +871,8 @@ function buildSpawnSpec(config) {
     if (config && config.money_mode) args.push('--money-mode', String(config.money_mode));
     // money_unit 未設定時は chip_base にフォールバック
     args.push('--money-unit', String((config && config.money_unit) ? config.money_unit : chipBase));
+    // SEQ セット長 (7=標準 / 5=5ターン制)
+    if (config && Number(config.seq_turns) === 5) args.push('--seq-turns', '5');
     if (config && config.profit_target) args.push('--profit-target', String(config.profit_target));
     if (config && config.loss_cut) args.push('--loss-cut', String(config.loss_cut));
     if (config && config.on_limit) args.push('--on-limit', String(config.on_limit));
