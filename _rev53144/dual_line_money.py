@@ -2,7 +2,7 @@
 
 BetManager:
   - フラット ベット（単一ユニット）
-  - SMALL SEQ シリーズ (0.2/1/3/6/10 start)
+  - SMALL SEQ シリーズ (0.2/0.6/1/3/6/10 start)
   - 1-2-3打法 (bet123: 1回目1単位→2回目2単位→同結果連続なら3回目3単位→リセット)
   - 純粋マーチンゲール
   - 利確 / 損切
@@ -51,6 +51,14 @@ SEQ_SMALL1 = [
     48, 55, 63, 73, 85, 100, 120, 140, 167, 200, 233, 267, 300, 333,
 ]
 
+# SMALL02 のちょうど3倍(全段がチップ最小単位 $0.2 の倍数)
+SEQ_SMALL06 = [
+    0.6, 1.2, 1.8, 2.4, 3.6, 4.8, 6.0,
+    7.8, 9.6, 11.4, 13.8, 16.8, 19.2,
+    22.2, 25.8, 28.8, 33.0, 37.8, 43.8, 51.0, 60.0, 72.0,
+    84.0, 100.2, 120.0, 139.8, 160.2, 180.0, 199.8,
+]
+
 SEQ_SMALL6 = [
     6, 10, 14, 24, 34, 46, 60, 76, 94, 114, 136, 166, 194, 224, 256,
     290, 330, 380, 440, 510, 600, 720, 840, 1000, 1200, 1400, 1600, 1800, 2000,
@@ -67,6 +75,7 @@ SEQ_SMALL10 = [
 BET_MODES = {
     "flat": "1 unit flat",
     "small02": "SMALL SEQ $0.20 start",
+    "small06": "SMALL SEQ $0.60 start",
     "small1": "SMALL SEQ $1 start",
     "small3": "SMALL SEQ $3 start",
     "small6": "SMALL SEQ $6 start",
@@ -127,7 +136,7 @@ class BetManager:
         self.seq_level: int = 0  # SEQ 配列の index
         self.current_seq = self._resolve_seq()
         self._seq7_tracker: MaruBatsuTracker | None = None
-        if self.mode in ("small02", "small1", "small3", "small6", "small10"):
+        if self.mode in ("small02", "small06", "small1", "small3", "small6", "small10"):
             self._seq7_tracker = MaruBatsuTracker(
                 chip_base=1.0,
                 seq=list(self.current_seq),
@@ -154,6 +163,8 @@ class BetManager:
         m = self.mode
         if m == "small02":
             return list(SEQ_SMALL02)
+        if m == "small06":
+            return list(SEQ_SMALL06)
         if m == "small1":
             return list(SEQ_SMALL1)
         if m == "small3":
