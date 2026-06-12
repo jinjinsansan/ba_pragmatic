@@ -1768,6 +1768,10 @@ class LiveBetExecutor:
         self._sent_bet_ids: set[str] = set()
         self._confirmed_bets: dict[str, dict[str, Any]] = {}
         self._failed_bet_ids: dict[str, dict[str, Any]] = {}
+        # lpbet_fast系(自分の送信エコーのみ)で確証したBETの後追い検証用レコード。
+        # bet_server_validated() がサーバ受理の証拠(GAME-BET-CONFIRM/残高変動)を
+        # 再確認するまで「未検証」として保持する(幻決済ガード 2026-06-12)。
+        self._fast_confirm_pending: dict[str, dict[str, Any]] = {}
         self._bet_send_in_progress: bool = False
         self._last_bet_sent_at: float = 0.0
         self._stake_balance_by_currency: dict[str, float] = {}
@@ -4841,6 +4845,9 @@ class LiveBetExecutor:
                 # 追従/TIEプッシュのBETは前ハンド決済時に置くため、次のベット窓まで
                 # 通常(20s)より長く保持する(_max_bet_signal_age_sec が参照)。
                 "is_follow": bool(md.get("is_follow") or str(md.get("source") or "") == "follow"),
+                # 追従の方向再計算用(送信直前に bot のリゾルバが最新出目から再導出)
+                "follow_kind": str(md.get("follow_kind") or ""),
+                "follow_qpid": str(md.get("qpid_table_id") or ""),
             }
         logger.info(f"[BET-QUEUED] side={side} ${amount:.2f} table={target_table} known_tables={list(self._table_states.keys())[:6]}")
         if self._multi_lobby_mode and self._multi_bet_transport == "click" and on_owner_thread:
@@ -4916,6 +4923,23 @@ class LiveBetExecutor:
             return
 
         side = bet["side"]
+        # ── 追従の方向再計算(2026-06-12): キュー後にハンドが進む(窓落ちで1ハンド
+        # スキップ)と「前ベット結果の逆」はテレコでちょうど逆向きになる。送信直前に
+        # bot 注入のリゾルバが最新確定出目から側を再導出する(''=変更なし)。
+        if bet.get("is_follow"):
+            try:
+                _fsr = getattr(self, "_follow_side_resolver", None)
+                if callable(_fsr):
+                    _ns = str(_fsr(bet) or "").upper()
+                    if _ns in ("P", "B") and _ns != side:
+                        logger.info(
+                            f"[TRY-BET] follow side recomputed: {side} -> {_ns} "
+                            f"table={bet.get('table_id')} kind={bet.get('follow_kind') or '-'}"
+                        )
+                        side = _ns
+                        bet["side"] = _ns
+            except Exception as _fsre:
+                logger.debug(f"[TRY-BET] follow side resolver error: {_fsre}")
         amount = bet["amount"]
         requested_table = str(bet.get("table_id") or "").strip()
         chosen_table = str(table_id or requested_table or self._table_id or "").strip()
@@ -5375,6 +5399,34 @@ class LiveBetExecutor:
                     "game_id": str(game_id or ""),
                 }
                 logger.info(f"[LIVE] bet sent OK ck={ck}")
+
+            # ── 幻決済ガード(2026-06-12): lpbet_* 確証(=自分の送信エコーのみ)は
+            # 「送れた」証明であって「サーバが受理した」証明ではない。ターボ卓の
+            # 短窓では betsclosed 直前送信がサイレントドロップされ、賭かっていない
+            # のに WIN/LOSE 決済され SEQ が進む事故が実測された(20:31 Turbo)。
+            # ここでは検証レコードだけ残し、決済直前に bot 側が
+            # bet_server_validated() で GAME-BET-CONFIRM/残高変動の後追い証拠を要求する。
+            if trusted_confirm and str(trusted_confirm.get("confirm_type") or "").startswith("lpbet_"):
+                try:
+                    _bid_fc = str(bet.get("bet_id") or "").strip()
+                    if _bid_fc:
+                        if len(self._fast_confirm_pending) > 30:
+                            _oldest = sorted(
+                                self._fast_confirm_pending.items(),
+                                key=lambda kv: float(kv[1].get("confirmed_at") or 0.0),
+                            )[: len(self._fast_confirm_pending) - 30]
+                            for _k, _ in _oldest:
+                                self._fast_confirm_pending.pop(_k, None)
+                        self._fast_confirm_pending[_bid_fc] = {
+                            "start": float(confirm_start_at),
+                            "amount": float(amount),
+                            "game_id": str(game_id or ""),
+                            "table_id": str(bet_table_id or ""),
+                            "before_balances": dict(before_balances),
+                            "confirmed_at": time.time(),
+                        }
+                except Exception:
+                    pass
 
             # ── Partial-bet guard (multi-chip safety) ──
             # When SEQ progresses past $1 the chip plan needs several clicks
@@ -7899,6 +7951,44 @@ class LiveBetExecutor:
         bet_id = f"dl_{uuid.uuid4().hex[:12]}"
         self.send_bet(side=side, amount=amount, table_id=target, bet_id=bet_id, metadata=md)
         return bet_id
+
+    def bet_server_validated(self, bet_id: str) -> bool:
+        """幻決済ガード: lpbet_fast系で確証したBETに、サーバ受理の後追い証拠
+        (GAME-BET-CONFIRM / 残高変動)が来ているかを決済直前に確認する。
+        - fast確証でない(=trusted済み/レガシー)BET → True
+        - 証拠あり → True (レコード消去)
+        - 証拠なし → False (呼び出し側=botが決済を破棄)
+        注意: GAME-BET-CONFIRM の卓IDはチャネルホスト名で届くため、
+        _trusted_bet_confirm_since の卓ID照合(ミスマッチ無視)を回避する目的で
+        table_id="" で呼ぶ(時刻+金額で照合。BETは常に単発在庫なので衝突しない)。"""
+        bid = str(bet_id or "").strip()
+        if not bid:
+            return True
+        rec = self._fast_confirm_pending.get(bid)
+        if not isinstance(rec, dict):
+            return True
+        try:
+            tc = self._trusted_bet_confirm_since(
+                start=float(rec.get("start") or 0.0),
+                amount=float(rec.get("amount") or 0.0),
+                game_id=str(rec.get("game_id") or ""),
+                table_id="",
+                before_balances=rec.get("before_balances") or {},
+            )
+        except Exception as ex:
+            logger.debug(f"[PHANTOM-GUARD] validation check failed (fail-open): {ex}")
+            self._fast_confirm_pending.pop(bid, None)
+            return True
+        if tc:
+            self._fast_confirm_pending.pop(bid, None)
+            return True
+        logger.warning(
+            f"[PHANTOM-GUARD] bet_id={bid} has NO server confirmation since send "
+            f"(amount=${float(rec.get('amount') or 0.0):.2f} table={rec.get('table_id') or '-'} "
+            f"game={rec.get('game_id') or '-'})"
+        )
+        self._fast_confirm_pending.pop(bid, None)
+        return False
 
     def consume_sent_bet(self, bet_id: str) -> bool:
         bid = str(bet_id or "").strip()

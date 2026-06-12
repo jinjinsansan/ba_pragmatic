@@ -489,6 +489,11 @@ class DualLinePragmaticBot(cp.Collector):
         self.notify_resolution = notify_resolution
         self.notify_tie = notify_tie
         self.bet_executor: BetExecutor = bet_executor or DryRunBetExecutor()
+        # 追従の方向再計算リゾルバを executor に注入(送信直前に最新出目から再導出)。
+        try:
+            setattr(self.bet_executor, "_follow_side_resolver", self._resolve_follow_side_at_send)
+        except Exception:
+            pass
         self.money = BetManager(
             mode=money_mode, unit=money_unit,
             profit_stop=profit_stop, loss_cut=loss_cut,
@@ -2897,6 +2902,50 @@ class DualLinePragmaticBot(cp.Collector):
             return "P" if last == "B" else "B"   # 逆張り
         return last                              # dragon = 順張り(同じ側)
 
+    def _latest_table_outcome(self, qpid: str) -> str:
+        """その卓の最新確定出目('P'/'B'、TIEは遡ってスキップ)。不明なら ''。"""
+        try:
+            for buf in self.buffers.values():
+                if getattr(buf, "qpid_table_id", "") == qpid:
+                    for h in reversed(buf.hands or []):
+                        c = _winner_to_char(h.get("winner"))
+                        if c in ("P", "B"):
+                            return c
+                    return ""
+        except Exception:
+            pass
+        return ""
+
+    def _resolve_follow_side_at_send(self, bet: dict) -> str:
+        """executor が送信直前に呼ぶ: 追従の側を最新出目から再計算して返す(''=変更なし)。
+        キュー後にハンドが進む(窓落ちで1ハンドスキップ)と「前ベット結果の逆」は
+        テレコでちょうど逆向きになるため、送信時点の最新出目を正とする。"""
+        try:
+            kind = str(bet.get("follow_kind") or "")
+            qpid = str(bet.get("follow_qpid") or bet.get("table_id") or "")
+            cur = str(bet.get("side") or "").upper()
+            if kind not in ("telecho", "dragon") or not qpid:
+                return ""
+            latest = self._latest_table_outcome(qpid)
+            if latest not in ("P", "B"):
+                return ""
+            new_side = self._follow_compute_next(kind, latest)
+            if new_side == cur:
+                return ""
+            did = str(bet.get("decision_id") or "")
+            pd = self._pending_decisions.get(did)
+            if isinstance(pd, dict):
+                pd["side"] = new_side
+            self._follow_next_side = new_side
+            logger.info(
+                f"[FOLLOW] side recomputed at send: {cur} -> {new_side} "
+                f"(latest={latest} kind={kind} table={qpid})"
+            )
+            return new_side
+        except Exception as ex:
+            logger.debug(f"[FOLLOW] side resolver failed: {ex}")
+            return ""
+
     def _follow_reset(self, reason: str = "") -> None:
         if self._follow_active:
             logger.info(f"[FOLLOW] END reason={reason or '-'} chain={self._follow_chain} table={self._follow_table_name or self._follow_table_id}")
@@ -2988,6 +3037,7 @@ class DualLinePragmaticBot(cp.Collector):
         md = {
             "table_name": name, "qpid_table_id": qpid,
             "pattern_key": self._follow_pattern_key, "decision_id": did, "source": "follow",
+            "follow_kind": self._follow_kind,
         }
         self._start_now_lock(decision_id=did, table_id=qpid, table_name=name, side=side)
         try:
@@ -3052,6 +3102,66 @@ class DualLinePragmaticBot(cp.Collector):
             return False
 
         bet_id = str(pending.get("bet_id") or "")
+
+        # ── 幻決済ガード(2026-06-12): lpbet_fast(自分の送信エコーのみ)で確証した
+        # BETは、決済前にサーバ受理の後追い証拠(GAME-BET-CONFIRM/残高変動)を要求。
+        # 証拠が無ければ実際には賭かっていない(ターボ卓の短窓サイレントドロップ)
+        # ため、決済せず error 破棄して SEQ/PnL/追従を進めない。
+        _sv_check = getattr(self.bet_executor, "bet_server_validated", None)
+        if bet_id and callable(_sv_check):
+            try:
+                _sv_ok = bool(_sv_check(bet_id))
+            except Exception:
+                _sv_ok = True  # fail-open: ガード故障で実BETを落とさない
+            if not _sv_ok:
+                _pg_table = str(pending.get("table_name") or getattr(buf, "table_name", "") or table_id)
+                _pg_amount = float(pending.get("amount") or 0.0)
+                logger.warning(
+                    f"[PHANTOM-GUARD] drop unconfirmed bet at settle: did={did} "
+                    f"bet_id={bet_id} table={_pg_table} side={side} amount=${_pg_amount:.2f}"
+                )
+                pending["local_bet_failed"] = True
+                pending["settlement_posted"] = True
+                try:
+                    self._api_post(
+                        f"/api/decisions/{did}/result",
+                        {
+                            "result": {
+                                "error": "phantom_no_server_confirm",
+                                "phase": "bet_unconfirmed",
+                                "table_id": str(pending.get("table_id") or table_id or ""),
+                                "table_name": _pg_table,
+                                "bet": {"amount": _pg_amount, "side": side, "bet_id": bet_id},
+                            },
+                            "status": "error",
+                        },
+                        base_url=str(pending.get("source_base_url") or ""),
+                        api_key=str(pending.get("source_api_key") or ""),
+                    )
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self.bet_executor, "consume_sent_bet"):
+                        self.bet_executor.consume_sent_bet(bet_id)
+                except Exception:
+                    pass
+                self._release_now_lock(
+                    decision_id=did,
+                    table_id=str(pending.get("table_id") or table_id or ""),
+                    bet_id=bet_id,
+                    reason="phantom_bet",
+                )
+                self._pending_decisions.pop(did, None)
+                self.pending.pop(str(pending.get("table_id") or ""), None)
+                self.pending.pop(str(table_id or ""), None)
+                self._follow_reset(reason="phantom_bet")
+                _send_telegram(
+                    f"⚠️ BET未受理を検出(幻決済ガード)\n{_pg_table}\n"
+                    f"{side} ${_pg_amount:.2f}\nSEQ/PnLは進めません"
+                )
+                send_action(f"⚠️ PHANTOM-GUARD {_pg_table}: {side} ${_pg_amount:.2f} not accepted — dropped")
+                return True
+
         confirmed_info = pending.get("confirmed_bet") if isinstance(pending.get("confirmed_bet"), dict) else {}
         if bet_id and hasattr(self.bet_executor, "consume_confirmed_bet"):
             try:
@@ -3115,6 +3225,13 @@ class DualLinePragmaticBot(cp.Collector):
         )
 
         table_name = str(pending.get("table_name") or getattr(buf, "table_name", "") or table_id)
+        # 課金ガード: 実際に賭けて決済した卓名を登録(以後この卓のベット履歴のみ課金)。
+        try:
+            _ng = self._billing_norm_game(table_name)
+            if _ng:
+                self._billing_my_games.add(_ng)
+        except Exception:
+            pass
         self._post_decision_settlement(
             decision_id=did,
             table_id=str(pending.get("table_id") or table_id),
@@ -3310,6 +3427,13 @@ class DualLinePragmaticBot(cp.Collector):
         return ("baccarat" in g.lower()) or ("バカラ" in g)
 
     @staticmethod
+    def _billing_norm_game(name) -> str:
+        """卓名を照合用に正規化(小文字・空白/記号除去)。ベット履歴DOMの表示名と
+        bot内部の table_name の軽微な表記揺れを吸収する。"""
+        s = str(name or "").lower()
+        return re.sub(r"[^a-z0-9぀-ヿ一-鿿]+", "", s)
+
+    @staticmethod
     def _billing_jst_date() -> str:
         # JST = UTC+9; avoid timedelta import by shifting the epoch.
         return time.strftime("%Y-%m-%d", time.gmtime(time.time() + 9 * 3600))
@@ -3323,6 +3447,11 @@ class DualLinePragmaticBot(cp.Collector):
         self._billing_prev_date: str = ""
         self._billing_count: int = 0
         self._billing_seeded: bool = False
+        # 課金=「自分が実際に賭けた卓」のベットのみ受理する(2026-06-12)。Stakeベット
+        # 履歴DOMが「My Bets」でなく全プレイヤーフィードを表示する事故(user05で+$1,871
+        # 幻)対策。決済成功時に卓名を追加し、poll はこの集合の卓のみ課金。集合が空の
+        # 間(起動直後/未ベット)は従来どおり倍率ガードのみ(後方互換・過小側=安全)。
+        self._billing_my_games: set = set()
         # 残高(リアルタイム表示用) — Stake口座WSの捕捉値から取得して送る
         self._billing_currency: str = ""
         self._billing_current_balance = None      # float | None
@@ -3464,6 +3593,11 @@ class DualLinePragmaticBot(cp.Collector):
                 mult = self._billing_num(c[3]) if len(c) > 3 else None
                 if stake is None or mult is None or not self._billing_is_baccarat(game):
                     continue
+                # 「自分が賭けた卓」のみ課金(他人フィード混入ガード)。卓名を正規化
+                # 照合。集合が空の間は適用しない(後方互換)。賭けてない卓はseen化のみ。
+                if self._billing_my_games:
+                    if self._billing_norm_game(game) not in self._billing_my_games:
+                        continue
                 # 倍率サニティガード: バカラ配当倍率は小さい(P/B~2, Tie~9,
                 # サイドベット<~30)。これを大きく超える/負の値は、ベット履歴DOMの
                 # 誤読(実測 mult=1501.50→+$13504 の幻ベットで daily_bet_pnl が
