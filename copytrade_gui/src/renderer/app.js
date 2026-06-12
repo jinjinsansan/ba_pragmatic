@@ -1786,6 +1786,10 @@ function renderManualAssistPanel() {
         ? Math.max(0, Math.ceil((expiry - now) / 1000))
         : 0;
       const canTake = status === 'NOW';
+      const followReason = String(item.follow_reason || '');
+      const followLine = followReason
+        ? `<div class="manual-meta" style="color:#ffcc66;font-size:11px;">${esc(followReason)}</div>`
+        : '';
       return `
         <div class="manual-assist-item ${status.toLowerCase()}" data-id="${esc(item.id)}">
           <div class="manual-status">${esc(status)}</div>
@@ -1795,6 +1799,7 @@ function renderManualAssistPanel() {
               <span class="manual-side ${sideCls}">${esc(sideLabel)}</span>
               $${amount}${remain ? ` | ${remain}s` : ''}${pattern ? ` | ${esc(pattern)}` : ''}
             </div>
+            ${followLine}
           </div>
           <div class="manual-item-actions"></div>
         </div>

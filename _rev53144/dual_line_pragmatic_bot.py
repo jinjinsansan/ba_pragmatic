@@ -481,6 +481,7 @@ class DualLinePragmaticBot(cp.Collector):
         self._follow_last_bet_at = 0.0    # 追従BET最終時刻(タイムアウト監視用)
         self._follow_bet_id = ""          # 進行中の追従BETのbet_id(失敗即検知用)
         self._follow_did = ""             # 進行中の追従BETのdecision_id(pending掃除用)
+        self._follow_reason = ""          # 直近追従の根拠表示(GUIアシストパネル用)
         # 利確(profit_stop)到達でGUIへ1回だけ停止通知を出す用。
         self._profit_stop_sent = False
         self.notify_signal = notify_signal
@@ -820,6 +821,7 @@ class DualLinePragmaticBot(cp.Collector):
         expires_sec: float = 30.0,
         result: str = "",
         pnl: float | None = None,
+        follow_reason: str = "",
     ) -> None:
         """Emit the manual operator queue item without touching auto-bet state."""
         if not self.manual_assist:
@@ -863,6 +865,7 @@ class DualLinePragmaticBot(cp.Collector):
             "gui_next_bet": ms.get("next_bet"),
             "result": str(result or ""),
             "pnl": pnl,
+            "follow_reason": str(follow_reason or ""),
         }
         logger.info(
             f"[AUTO-PROBE] manual_item status={status} id={item_id} "
@@ -2904,6 +2907,7 @@ class DualLinePragmaticBot(cp.Collector):
         self._follow_chain = 0
         self._follow_bet_id = ""
         self._follow_did = ""
+        self._follow_reason = ""
 
     def _follow_on_settled(self, *, side: str, result: str, pattern_key: str,
                            qpid: str, table_name: str) -> None:
@@ -2930,6 +2934,7 @@ class DualLinePragmaticBot(cp.Collector):
             if not self._follow_kind:
                 self._follow_kind = self._follow_big_kind(pattern_key)
             self._follow_next_side = side  # 反転しない・同じ側
+            self._follow_reason = f"TIEプッシュ: 同側{side}を再BET"
             logger.info(f"[CHAIN] TIE push table={self._follow_table_name} reBET={side}")
             self._follow_place_next()
             return
@@ -2945,6 +2950,10 @@ class DualLinePragmaticBot(cp.Collector):
                 self._follow_pattern_key = pattern_key
                 self._follow_chain += 1
                 self._follow_next_side = self._follow_compute_next(kind, side)
+                _kind_label = "テレコ継続" if kind == "telecho" else "ドラゴン同側"
+                self._follow_reason = (
+                    f"追従#{self._follow_chain}: 前結果{side}→{self._follow_next_side}（{_kind_label}）"
+                )
                 logger.info(
                     f"[FOLLOW] WIN chase kind={kind} table={self._follow_table_name} "
                     f"won={side} next={self._follow_next_side} chain={self._follow_chain}"
@@ -3002,6 +3011,7 @@ class DualLinePragmaticBot(cp.Collector):
                 status="NOW", table_id=qpid, table_name=name, qpid=qpid, side=side,
                 amount=amount, pattern_key=self._follow_pattern_key,
                 decision_id=did, source="follow", expires_sec=30.0,
+                follow_reason=self._follow_reason,
             )
             self._send_gui_money_status()
         except Exception:
