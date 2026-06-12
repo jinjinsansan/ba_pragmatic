@@ -6382,12 +6382,29 @@ class LiveBetExecutor:
             f"[NOW-BET-HOLD] start table={tid} bet_id={str(bet.get('bet_id') or '')[:16] or '-'} "
             f"decision={str(bet.get('decision_id') or '')[:12] or '-'} max_sec={max(30.0, hold_sec):.0f}"
         )
-        self._center_multi_tile(
-            tid,
-            str(table_name or bet.get("table_name") or tid),
-            click=False,
-            source="now_bet_hold",
+        # ── 送信高速化(2026-06-12): WS transport では送信前の同期センタリングを
+        # スキップする。_center_multi_tile は61卓グリッドのスクロールで ~2.7s ブロック
+        # し、_try_execute_bet 冒頭(本関数)→WS送信(クリティカルパス)を毎回遅延させ、
+        # 高速卓の賭け窓を取り逃して「光りが遅い→テレコ間に合わない→方向ズレ」の真因に
+        # なっていた(20:31/22:08 実測 決定→送信 ~8秒)。視認は毎tickの
+        # _maintain_active_now_bet_hold が ~0.5s 後(=送信後)に後追いセンタリングする。
+        # env BACOPY_WS_SEND_BEFORE_CENTER=0 で従来動作(送信前センタリング)に戻せる。
+        _ws_fast_send = (
+            self._multi_bet_transport == "ws"
+            and os.getenv("BACOPY_WS_SEND_BEFORE_CENTER", "1").strip() != "0"
         )
+        if _ws_fast_send:
+            logger.info(
+                f"[NOW-BET-HOLD] defer center (ws fast-send) table={tid} "
+                f"— maintain loop recenters after WS send"
+            )
+        else:
+            self._center_multi_tile(
+                tid,
+                str(table_name or bet.get("table_name") or tid),
+                click=False,
+                source="now_bet_hold",
+            )
 
     def _clear_active_now_bet_hold(
         self,
