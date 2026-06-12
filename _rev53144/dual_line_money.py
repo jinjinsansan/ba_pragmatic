@@ -3,6 +3,7 @@
 BetManager:
   - フラット ベット（単一ユニット）
   - SMALL SEQ シリーズ (0.2/1/3/6/10 start)
+  - 1-2-3打法 (bet123: 1回目1単位→2回目2単位→同結果連続なら3回目3単位→リセット)
   - 純粋マーチンゲール
   - 利確 / 損切
   - 利確/損切後の動作: STOP or RESTART
@@ -72,6 +73,7 @@ BET_MODES = {
     "small10": "SMALL SEQ $10 start",
     "martingale": "pure Martingale",
     "dalembert": "D'Alembert (+/-1 unit)",
+    "bet123": "1-2-3 method (1/2/3 units cycle)",
 }
 ALLOWED_MODES = set(BET_MODES.keys())
 
@@ -138,6 +140,10 @@ class BetManager:
             os.getenv("BACOPY_MARTINGALE_MAX_BET", "0") or 0
         )
 
+        # 1-2-3打法 状態 (0=1単位, 1=2単位, 2=3単位)
+        self.b123_step: int = 0
+        self.b123_prev_won: Optional[bool] = None  # 1回目の勝敗(2回目の分岐判定用)
+
         # 前回のベット額（結果反映まで保持）
         self._last_bet_amount: float = 0.0
 
@@ -188,6 +194,15 @@ class BetManager:
                     return 0.0
                 amount = min(amount, remaining_loss)
             return max(amount, 0.0)
+        elif self.mode == "bet123":
+            # 1-2-3打法: 段数は apply_result の状態機械が管理
+            amount = self.unit * (self.b123_step + 1)
+            if self.loss_cut > 0:
+                remaining_loss = self.loss_cut + self.session_pnl
+                if remaining_loss <= 0:
+                    return 0.0
+                amount = min(amount, remaining_loss)
+            return max(amount, 0.0)
         else:
             seq = self.current_seq
             if self._seq7_tracker is not None:
@@ -231,7 +246,7 @@ class BetManager:
                 self._seq7_tracker.add_result("player")
                 self.seq_level = self._seq7_tracker.current_unit_idx
             # 従来SEQ: 勝ったら先頭に戻る
-            elif self.mode not in ("flat", "martingale", "dalembert"):
+            elif self.mode not in ("flat", "martingale", "dalembert", "bet123"):
                 self.seq_level = 0
             # Martingale: リセット / D'Alembert: 1段下げる(下限0)
             if self.mode == "dalembert":
@@ -246,11 +261,22 @@ class BetManager:
                 self._seq7_tracker.add_result("banker")
                 self.seq_level = self._seq7_tracker.current_unit_idx
             # 従来SEQ: レベル進行
-            elif self.mode not in ("flat", "martingale", "dalembert"):
+            elif self.mode not in ("flat", "martingale", "dalembert", "bet123"):
                 self.seq_level = min(self.seq_level + 1, len(self.current_seq) - 1)
             # Martingale / D'Alembert: 1段上げる
             if self.mode in ("martingale", "dalembert"):
                 self.loss_count += 1
+
+        # 1-2-3打法: 1回目→必ず2単位 / 2回目→1回目と同結果なら3単位・割れたらリセット / 3回目→必ずリセット
+        if self.mode == "bet123":
+            if self.b123_step == 0:
+                self.b123_prev_won = won
+                self.b123_step = 1
+            elif self.b123_step == 1:
+                self.b123_step = 2 if self.b123_prev_won == won else 0
+            else:
+                self.b123_step = 0
+            self.seq_level = self.b123_step  # 表示用ミラー
 
         # 利確 / 損切判定
         self._check_limits()
@@ -285,6 +311,8 @@ class BetManager:
         self.session_pnl = 0.0
         self.seq_level = 0
         self.loss_count = 0
+        self.b123_step = 0
+        self.b123_prev_won = None
         self.limit_reached = False
         self.limit_reason = ""
         logger.info("[money] session reset (restart mode)")
@@ -348,6 +376,8 @@ class BetManager:
                         "seq7_sets": [s.__dict__ for s in (self._seq7_tracker.sets if self._seq7_tracker else [])],
                         "seq7_current_turns": list(self._seq7_tracker.current_turns) if self._seq7_tracker else [],
                         "loss_count": self.loss_count,
+                        "b123_step": self.b123_step,
+                        "b123_prev_won": self.b123_prev_won,
                         "limit_reached": self.limit_reached,
                         "limit_reason": self.limit_reason,
                     },
@@ -386,6 +416,9 @@ class BetManager:
                     self._seq7_tracker.current_turns = [t for t in raw_turns if t in ("O", "X")]
                 self.seq_level = self._seq7_tracker.current_unit_idx
             self.loss_count = int(s.get("loss_count", 0))
+            self.b123_step = max(0, min(2, int(s.get("b123_step", 0))))
+            _bpw = s.get("b123_prev_won", None)
+            self.b123_prev_won = _bpw if isinstance(_bpw, bool) else None
             self.limit_reached = bool(s.get("limit_reached", False))
             self.limit_reason = str(s.get("limit_reason", ""))
             # 設定は復元しない（GUI の値が正）

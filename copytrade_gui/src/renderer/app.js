@@ -1544,12 +1544,12 @@ function _fmtAmt(v) {
   return (v % 1 === 0) ? v.toFixed(0) : v.toFixed(1);
 }
 
-// Build the bet ladder for martingale (unit*2^k) / dalembert (unit*(k+1)),
-// marking the current level. Window is sized around the current level.
+// Build the bet ladder for martingale (unit*2^k) / dalembert (unit*(k+1)) /
+// bet123 (unit*1,2,3 fixed cycle), marking the current level.
 function _betLadder(mode, unit, level) {
   const u = Number(unit) || 1;
   const cur = Math.max(0, Number(level) || 0);
-  const span = Math.max(cur + 3, 7);
+  const span = mode === 'bet123' ? 2 : Math.max(cur + 3, 7);
   const out = [];
   for (let k = 0; k <= span; k += 1) {
     const amount = mode === 'martingale' ? u * Math.pow(2, k) : u * (k + 1);
@@ -1564,13 +1564,17 @@ function _betLadder(mode, unit, level) {
 function renderProgressionPanel(ms, mode) {
   if (!isDevMode()) return;
   const unit = Number(ms.unit) || 1;
-  const level = Number(ms.loss_count) || 0;
+  const level = mode === 'bet123' ? (Number(ms.seq_level) || 0) : (Number(ms.loss_count) || 0);
   const nextBet = Number(ms.next_bet) || 0;
   const pnl = Number(ms.session_pnl) || 0;
   if (mode === 'martingale') {
     _setSigPanel('MARTINGALE', ['LOSSES', 'NEXT $', 'MAX $', 'PNL $'], 'BET LADDER (x2)');
     const sd = $('#sigDrift');
     if (sd) sd.textContent = (Number(ms.martingale_max_bet) > 0) ? _fmtAmt(Number(ms.martingale_max_bet)) : '--';
+  } else if (mode === 'bet123') {
+    _setSigPanel('123BET', ['STEP', 'NEXT $', 'UNIT $', 'PNL $'], 'BET CYCLE (1-2-3)');
+    const sd = $('#sigDrift');
+    if (sd) sd.textContent = _fmtAmt(unit);
   } else {
     _setSigPanel("D'ALEMBERT", ['LEVEL', 'NEXT $', 'STEP $', 'PNL $'], 'BET LADDER (+1u)');
     const sd = $('#sigDrift');
@@ -1612,7 +1616,7 @@ function applyMoneyStatusToSignalPanel(ms) {
   if (!ms || typeof ms !== 'object') return;
   updateNextBetCard(ms);
   const mode = String(ms.mode || '').toLowerCase();
-  if (mode === 'martingale' || mode === 'dalembert') {
+  if (mode === 'martingale' || mode === 'dalembert' || mode === 'bet123') {
     renderProgressionPanel(ms, mode);
     return;
   }
