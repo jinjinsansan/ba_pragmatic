@@ -4923,10 +4923,15 @@ class LiveBetExecutor:
             return
 
         side = bet["side"]
-        # ── 追従の方向再計算(2026-06-12): キュー後にハンドが進む(窓落ちで1ハンド
-        # スキップ)と「前ベット結果の逆」はテレコでちょうど逆向きになる。送信直前に
-        # bot 注入のリゾルバが最新確定出目から側を再導出する(''=変更なし)。
-        if bet.get("is_follow"):
+        # ── 追従の方向再計算(2026-06-12) ⚠️デフォルト無効(2026-06-12夜)。
+        # 当初は「窓落ちで1ハンド飛ぶとテレコの正解が反転する」対策だったが、実機で
+        # **窓落ちゼロ(age=0.0s・betsopen即発火)でも側を反転**し、テレコの正しい側を
+        # 誤った側へ書き換えて取り逃す事故が実証された(22:45 Thai Speed Bac2: 正解P→
+        # ②がBへ反転→実Bで負け、かつ決済記録はPのまま=送信側と記録側のdesync/幻WIN)。
+        # 真因=_latest_table_outcome が「追従の参照ハンド」でなく buffer の絶対最新
+        # (=賭ける1手先)を拾い、確定済みの正しい追従側を上書きするため。
+        # env BACOPY_FOLLOW_RECOMPUTE_AT_SEND=1 で再有効化可(再設計まで既定OFF)。
+        if bet.get("is_follow") and os.getenv("BACOPY_FOLLOW_RECOMPUTE_AT_SEND", "0").strip() == "1":
             try:
                 _fsr = getattr(self, "_follow_side_resolver", None)
                 if callable(_fsr):
