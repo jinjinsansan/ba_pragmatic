@@ -600,6 +600,67 @@ async function ensureCdpChrome(envFile) {
   }
 }
 
+// ── CDP Chrome watchdog (auto-recover :9222 death) ──────────────────────────
+// 受け子GUIが「気づいたら停止」する最頻原因 = betting用デバッグChrome(:9222)が
+// 死ぬ → engine connect_over_cdp ECONNREFUSED → fatal → 自動再起動もChrome不在で
+// 連続失敗 → MAX_AUTO_RESTARTS到達で放置(実測8時間ダウン 2026-06-13 user02/恭平くん)。
+// 本ウォッチドッグは bot稼働中に :9222 を定期死活監視し、落ちていれば Chrome を
+// 自動再起動し、エンジンが落ちたまま諦めていれば再武装する(8時間ダウン→約1分で自動復帰)。
+// env BACOPY_CDP_WATCHDOG=0 で無効化・BACOPY_CDP_WATCHDOG_SEC で間隔変更。
+let _cdpWatchdogTimer = null;
+let _cdpWatchdogBusy = false;
+let _lastCdpNotifyAt = 0;
+function _cdpNotifyThrottled(text) {
+  const now = Date.now();
+  if (now - _lastCdpNotifyAt < 5 * 60 * 1000) return;  // Telegram通知は最大5分に1回
+  _lastCdpNotifyAt = now;
+  try { _telegramNotifyFromMain(text); } catch (_) {}
+}
+function startCdpWatchdog() {
+  if (_cdpWatchdogTimer) return;
+  const sec = Math.max(20, parseInt(process.env.BACOPY_CDP_WATCHDOG_SEC || '45', 10) || 45);
+  console.log('[cdp-watchdog] started, interval=' + sec + 's');
+  _cdpWatchdogTimer = setInterval(async () => {
+    if (_cdpWatchdogBusy) return;
+    _cdpWatchdogBusy = true;
+    try {
+      // bot が動くべき状態(START済・ユーザ停止でない)でのみ作動
+      if (userInitiatedStop || !lastStartConfig) return;
+      const env = loadDotEnv();
+      if (String(env.BACOPY_CDP_WATCHDOG || '1').trim() !== '1') return;
+      const port = _cdpPortFromUrl(env.BACOPY_CHROME_CDP_URL || process.env.BACOPY_CHROME_CDP_URL || 'http://127.0.0.1:9222');
+      if (!(await isCdpUp(port))) {
+        console.warn('[cdp-watchdog] :' + port + ' DOWN — relaunching Chrome');
+        _cdpNotifyThrottled('🩹 CDP Chrome(:' + port + ')が落ちていたため自動再起動しました');
+        await ensureCdpChrome(env);
+      }
+      // エンジンが止まっているが本来動くべき(fast auto-restart が諦めた等)→
+      // Chrome が生きていれば再武装(fast restart timer 進行中は触らない)
+      if (!botProcess && !_botSpawning && !userInitiatedStop && lastStartConfig && !autoRestartTimer) {
+        if (await isCdpUp(port)) {
+          console.warn('[cdp-watchdog] engine down but should be running — restarting (resume)');
+          _cdpNotifyThrottled('🔄 エンジンが停止していたため自動復帰しました(ウォッチドッグ)');
+          autoRestartCount = 0;
+          try {
+            _doStartBot(Object.assign({}, lastStartConfig, { resume: true }), _botGeneration);
+          } catch (e) { console.warn('[cdp-watchdog] restart err:', e && e.message); }
+        }
+      }
+    } catch (e) {
+      console.warn('[cdp-watchdog] error:', e && e.message);
+    } finally {
+      _cdpWatchdogBusy = false;
+    }
+  }, sec * 1000);
+}
+function stopCdpWatchdog() {
+  if (_cdpWatchdogTimer) {
+    clearInterval(_cdpWatchdogTimer);
+    _cdpWatchdogTimer = null;
+    console.log('[cdp-watchdog] stopped');
+  }
+}
+
 function startSupportTunnel() {
   if (_supportTunnelProc) return;
   const envFile = loadDotEnv();
@@ -1158,6 +1219,7 @@ function _doStartBot(config, generation = _botGeneration) {
 
 
   startWatchdog();
+  startCdpWatchdog();
 
   const thisProcess = botProcess;
   const thisSpawnAt = lastSpawnAt;
@@ -1204,12 +1266,25 @@ function _doStartBot(config, generation = _botGeneration) {
           const msg = `🔄 Auto-restart (${autoRestartCount}/${MAX_AUTO_RESTARTS}) — retry in ${AUTO_RESTART_DELAY/1000}s`;
           console.log('[Main]', msg);
           sendToRenderer('agent-message', { type: 'log', message: msg });
-          autoRestartTimer = setTimeout(() => {
+          autoRestartTimer = setTimeout(async () => {
             autoRestartTimer = null;
             if (!botProcess && !userInitiatedStop && lastStartConfig && thisGeneration === _botGeneration) {
-              sendToRenderer('agent-message', { type: 'log', message: '🔄 Auto-restart: restarting engine...' });
-              // クラッシュ自動復旧も resume=true で再spawn(SEQ温存+Supabase復元)。
-              _doStartBot(Object.assign({}, lastStartConfig, { resume: true }), thisGeneration);
+              // 再起動前に :9222 Chrome の生存を確認し、死んでいれば先に復活させる。
+              // これをしないと Chrome が落ちた時 engine が ECONNREFUSED で何度も即死し、
+              // MAX_AUTO_RESTARTS を浪費して放置される(2026-06-13 user02 8時間ダウンの真因)。
+              try {
+                const _env = loadDotEnv();
+                const _port = _cdpPortFromUrl(_env.BACOPY_CHROME_CDP_URL || process.env.BACOPY_CHROME_CDP_URL || 'http://127.0.0.1:9222');
+                if (!(await isCdpUp(_port))) {
+                  sendToRenderer('agent-message', { type: 'log', message: `🩹 CDP Chrome(:${_port}) down — relaunching before engine restart` });
+                  await ensureCdpChrome(_env);
+                }
+              } catch (e) { console.warn('[auto-restart] cdp ensure err:', e && e.message); }
+              if (!botProcess && !userInitiatedStop && lastStartConfig && thisGeneration === _botGeneration) {
+                sendToRenderer('agent-message', { type: 'log', message: '🔄 Auto-restart: restarting engine...' });
+                // クラッシュ自動復旧も resume=true で再spawn(SEQ温存+Supabase復元)。
+                _doStartBot(Object.assign({}, lastStartConfig, { resume: true }), thisGeneration);
+              }
             }
           }, AUTO_RESTART_DELAY);
         } else {
@@ -1243,6 +1318,7 @@ function _doStartBot(config, generation = _botGeneration) {
 function stopBot() {
   _botGeneration++;
   _botSpawning = false;
+  stopCdpWatchdog();  // ユーザ停止時はCDPウォッチドッグも止める(意図しない自動再起動を防ぐ)
   if (!botProcess) {
     stopWatchdog();
     return;
