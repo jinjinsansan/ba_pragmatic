@@ -1025,7 +1025,7 @@ function _validateConfigForSpawn(cfg) {
   return null;
 }
 
-function startBot(config) {
+async function startBot(config) {
   const cfg = config || {};
   const verr = _validateConfigForSpawn(cfg);
   if (verr) {
@@ -1042,6 +1042,18 @@ function startBot(config) {
     sendToRenderer('agent-message', { type: 'log', message: '[spawn] ignored duplicate start request for active config' });
     return;
   }
+  // ── START時は :9222 Chrome を先に起動し、bind を待ってからエンジンを spawn する。
+  // これをしないと engine が先に立ち上がり Chrome 未起動 → connect_over_cdp
+  // ECONNREFUSED で数回即死し、起動直後に「クラッシュ→自動復帰」が見える
+  // (2026-06-13 user05/梶原さん)。ensureCdpChrome は :9222 が既に上なら即スキップ。
+  try {
+    const _env = loadDotEnv();
+    const _port = _cdpPortFromUrl(_env.BACOPY_CHROME_CDP_URL || process.env.BACOPY_CHROME_CDP_URL || 'http://127.0.0.1:9222');
+    if (!(await isCdpUp(_port))) {
+      sendToRenderer('agent-message', { type: 'log', message: `[起動] CDP Chrome(:${_port}) を起動し接続を待っています…` });
+      await ensureCdpChrome(_env);
+    }
+  } catch (e) { console.warn('[startBot] cdp ensure err:', e && e.message); }
   const generation = ++_botGeneration;
   if (autoRestartTimer) {
     clearTimeout(autoRestartTimer);
