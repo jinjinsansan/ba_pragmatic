@@ -1615,11 +1615,18 @@ def _build_lpbet_xml(*, table_id: str, game_id: str, user_id: str,
     # bc は数値コード(実機キャプチャ 2026-06-06): Player=0 / Banker=1。
     # 単一卓用の文字 "B"/"P" を流用すると Stake が弾く or 別の側へ着弾するため
     # ここで数値へ変換する。既に数値なら素通し。
+    # ★ただし bc 符号は Stake が配信する Pragmatic クライアントのビルドに依存し、
+    #   個体によって異なる(user06 実測: Banker=10 / Player=11。手動BETで実証・受理。
+    #   01-05 は Banker=1 / Player=0)。ハードコードした 1/0 を送ると、別符号の
+    #   クライアントの口座では "カスタマーサポート" 拒否になる(=user06 の真因)。
+    #   受け子ごとに env で上書きできるようにする(既定は従来の 1/0 = 既存機に無影響)。
+    _bc_banker = (os.getenv("BACOPY_BC_BANKER", "") or "1").strip() or "1"
+    _bc_player = (os.getenv("BACOPY_BC_PLAYER", "") or "0").strip() or "0"
     _bc = str(bc).strip().upper()
     if _bc in ("B", "BANKER", "1"):
-        bc_num = "1"
+        bc_num = _bc_banker
     elif _bc in ("P", "PLAYER", "0"):
-        bc_num = "0"
+        bc_num = _bc_player
     else:
         bc_num = _bc
     # 実機の lpbet 開きタグは ck="..." 直後に '>'(空白なし)。バイト一致させる。
