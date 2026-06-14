@@ -5083,11 +5083,20 @@ class LiveBetExecutor:
         # 再取得の無限ループに陥る。env で自分の正しい Pragmatic id を渡したらそれを
         # 必ず使い、フィードからのスクレイプ/フォールバックを一切行わない。
         # (env 未設定なら従来挙動のまま = 既存ユーザーに無影響)
-        # 優先順位: ①env(手動ピン) ②手動BETから学習した自分のuId(_own_user_id) ③従来スクレイプ。
-        # ②は共有フィードの他人uId(st["user_id"])より優先する。手動BETを1回でも置けば
-        # 自分の正しいppc-uIdを学習でき、以後の自動WS BETがサーバ受理される。
+        # 優先順位: ①env(手動ピン・ppc形式のみ) ②手動BETから学習した自分のuId(_own_user_id)
+        # ③従来スクレイプ。②は共有フィードの他人uId(st["user_id"])より優先する。手動BETを
+        # 1回でも置けば自分の正しいppc-uIdを学習でき、以後の自動WS BETがサーバ受理される。
+        # ★重要: GUI(copytrade_gui/src/main.js buildSpawnSpec)は起動時に
+        #   `if (config.user_id) childEnv.BACOPY_USER_ID = config.user_id` で
+        #   BACOPY_USER_ID を **Supabaseアカウントの UUID**(=config.user_id=session.user.id)
+        #   で強制上書きする。これは lpbet に必要な Pragmatic 接続ID(ppc...)とは別物で、
+        #   そのまま送るとサーバ拒否("カスタマーサポート"モーダル)になる。よって
+        #   **UUID形式の BACOPY_USER_ID は採用しない**(=従来の「env未設定」と同じ挙動に戻し、
+        #   _own_user_id / スクレイプで正しい ppc を使う)。これが user06 で env も自動学習も
+        #   効かなかった真因(UUIDが最優先で全てを潰していた)。
         _env_uid = os.getenv("BACOPY_USER_ID", "").strip()
-        if _env_uid:
+        _env_is_uuid = bool(re.match(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-', _env_uid))
+        if _env_uid and not _env_is_uuid:
             user_id = _env_uid
         elif self._own_user_id:
             user_id = self._own_user_id
