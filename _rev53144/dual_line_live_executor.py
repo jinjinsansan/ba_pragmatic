@@ -1680,6 +1680,15 @@ class LiveBetExecutor:
         self._manual_assist_watch_until: float = 0.0
         self._manual_assist_watch_target: str = ""
         self._user_id: str = ""              # userId (for lpbet)
+        # 自分の Pragmatic 接続 uId(ppc...)。共有マルチエリア WS のフィードには他人の
+        # uId も多数流れるため受信からは確定できない。自分の手動 lpbet 送信(=bot送信で
+        # ない lpbet)からのみ確定採取し、以後の bot 自動 BET でこれを最優先で使う。
+        # セッション(接続)ごとに変わる値なのでクロスセッション永続はしない(in-memory)。
+        self._own_user_id: str = ""
+        # bot 自身が送出した lpbet の ck 集合(直近のみ)。_on_ws_sent で手動 lpbet と
+        # 区別するために使う(bot 送信の ck は自分の uId 学習に使わない)。
+        self._bot_sent_cks: set[str] = set()
+        self._bot_sent_cks_order: list[str] = []
         self._game_id: str = ""              # current game id
         self._phase: str = "waiting"         # waiting | ready | betting
 
@@ -3716,6 +3725,20 @@ class LiveBetExecutor:
                 # 1チップ着弾ごとに1回。多チップBETの満額検証に使う。
                 self._lpbet_count_by_gid[gid] = self._lpbet_count_by_gid.get(gid, 0) + 1
             logger.info(f"[LPBET-CONFIRM] WS lpbet detected: gId={gid!r} table={ws_table_id!r}")
+            # 自分の Pragmatic 接続 uId を確定採取する。bot 自身が送った lpbet(ck が
+            # _bot_sent_cks に在る)は除外し、手動BET(=06自身のクライアントが送る lpbet)
+            # の uId="ppc..." のみを採用する。共有WSフィードの他人 uId は混入しない。
+            m_ck_lp = re.search(r'\bck="([^"]+)"', data)
+            ck_lp = str(m_ck_lp.group(1) if m_ck_lp else "").strip()
+            if not (ck_lp and ck_lp in self._bot_sent_cks):
+                m_own = re.search(r'\buId="([^"]+)"', data)
+                own_uid = str(m_own.group(1) if m_own else "").strip()
+                if own_uid and own_uid != self._own_user_id:
+                    self._own_user_id = own_uid
+                    logger.info(
+                        f"[OWN-USER-ID] learned from manual lpbet: ...{own_uid[-8:]} "
+                        f"(used for bot WS BET; foreign-feed uId no longer scraped)"
+                    )
         if not self._user_id:
             m_uid_any = re.search(r'"(?:userId|uId)"\s*:\s*"([^"]{6,})"', data)
             if m_uid_any:
@@ -5053,20 +5076,36 @@ class LiveBetExecutor:
         bet_id = str(bet.get("bet_id") or "").strip()
         st = self._table_states.get(bet_table_id) or self._table_states.get(chosen_table) or {}
         game_id = str(game_id or st.get("game_id") or st.get("bets_open_game_id") or self._game_id or "").strip()
-        user_id = str(st.get("user_id") or self._user_id or os.getenv("BACOPY_USER_ID", "").strip())
-        if not user_id:
-            for _st in self._table_states.values():
-                uid = str((_st or {}).get("user_id") or "").strip()
-                if uid:
-                    user_id = uid
-                    break
-        if not user_id:
-            user_id = self._try_discover_user_id()
-        if user_id and st and not st.get("user_id"):
-            st["user_id"] = user_id
-        if user_id and not self._user_id:
-            self._user_id = user_id
-            self._persist_user_id(user_id)
+        # BACOPY_USER_ID env が設定されていれば最優先で固定する。
+        # 共有マルチエリア WS(cbcf6qas8fscb222)のフィードには全プレイヤーの userId が
+        # 流れるため、自分のセッションがフィードに出ない口座(新規等)では他人の uId を
+        # スクレイプして毎BET拒否("カスタマーサポート"モーダル)→user_idリセット→他人ID
+        # 再取得の無限ループに陥る。env で自分の正しい Pragmatic id を渡したらそれを
+        # 必ず使い、フィードからのスクレイプ/フォールバックを一切行わない。
+        # (env 未設定なら従来挙動のまま = 既存ユーザーに無影響)
+        # 優先順位: ①env(手動ピン) ②手動BETから学習した自分のuId(_own_user_id) ③従来スクレイプ。
+        # ②は共有フィードの他人uId(st["user_id"])より優先する。手動BETを1回でも置けば
+        # 自分の正しいppc-uIdを学習でき、以後の自動WS BETがサーバ受理される。
+        _env_uid = os.getenv("BACOPY_USER_ID", "").strip()
+        if _env_uid:
+            user_id = _env_uid
+        elif self._own_user_id:
+            user_id = self._own_user_id
+        else:
+            user_id = str(st.get("user_id") or self._user_id or "")
+            if not user_id:
+                for _st in self._table_states.values():
+                    uid = str((_st or {}).get("user_id") or "").strip()
+                    if uid:
+                        user_id = uid
+                        break
+            if not user_id:
+                user_id = self._try_discover_user_id()
+            if user_id and st and not st.get("user_id"):
+                st["user_id"] = user_id
+            if user_id and not self._user_id:
+                self._user_id = user_id
+                self._persist_user_id(user_id)
 
         expected_signal_game_id = str(bet.get("signal_game_id") or "").strip()
         stale_tile_game_id_ok = ""
@@ -7768,6 +7807,14 @@ class LiveBetExecutor:
             ck = str(m_ck.group(1) if m_ck else "").strip()
             self._last_lpbet_gid = gid
             self._last_lpbet_at = time.time()
+            # bot 自身の送信 ck を記録(直近20件)。_on_ws_sent で手動 lpbet と区別し、
+            # 自分の uId 学習に bot 送信を混入させないため。
+            if ck:
+                self._bot_sent_cks.add(ck)
+                self._bot_sent_cks_order.append(ck)
+                if len(self._bot_sent_cks_order) > 20:
+                    _old = self._bot_sent_cks_order.pop(0)
+                    self._bot_sent_cks.discard(_old)
             logger.info(
                 f"[WS-BET-SEND] direct lpbet sent marker mode={mode} "
                 f"channel={channel or '-'} gId={gid or '-'} ck={ck or '-'}"
