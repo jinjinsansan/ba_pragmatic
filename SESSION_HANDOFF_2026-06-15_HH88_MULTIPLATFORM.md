@@ -3,6 +3,27 @@
 
 ---
 
+## ★★ 最新状況(2026-06-15 続セッション末)= hh88 実機bet**動作確認済み(受理+勝利)** ★★
+bafather(本番Stake機)で hh88 を実機稼働させ、**ボットの自動WS BETが受理され勝利**するところまで到達。残りは**オーバーレイ表示の間欠**(見た目のみ・betは正常)。
+
+**動くようにするまでに潰した3つの真因(全て解決済み・デプロイ済み):**
+1. **route_web_socket が pusher を壊す** → CDP注入WSブリッジに置換(§11)。
+2. **BET金額が小さすぎ($0.2→0.2HKD<最低2HKD)で無言拒否** → hh88は`amt`をHKDへスケール(`_build_lpbet_xml` で `amt=round(amount*BACOPY_HH88_BET_MULT[既定10])`・最低`BACOPY_HH88_MIN_BET[既定2]`)。small02→2HKD。commit `58953eb`。
+3. **uId取り違え(共有チャネルホスト汚染・user06同根)** → ボットが古いキャッシュ/他人のuIdを送って拒否。正しいuId=`ppc1735343648462`(jpa0001で固定)。GUIが`BACOPY_USER_ID`をSupabase UUIDで上書き→engineがUUIDを弾く→毎回手動BETで`_own_user_id`学習が必要だった。**修正=GUIがhh88時に`BACOPY_HH88_UID`(.env)のppc値を`BACOPY_USER_ID`にピン留め**(commit `7b90988`)。bafather `.env` に `BACOPY_HH88_UID=ppc1735343648462` 設定済み。→ 再起動で手動BET不要。
+
+**bafather 現状(デプロイ済み):**
+- engine = **診断ビルド**(MD5 `BC066E2`・`[HH88-FIRE-XML]`/`[HH88-SENT-LPBET]` 詳細ログ入り・amt scaling入り)。動作OKだがログ冗長。
+- GUI asar = uIdピン留め+URLコピー/「betting Chromeで開く」+platform永続化 入り(最新)。
+- `.env`: `BACOPY_PLATFORM=hh88` / `BACOPY_HH88_UID=ppc1735343648462`。
+- ロールバック: engine `bacopy_engine.exe.bak_20260615_204111`(amt前) / 各asar `.bak_2026...`。
+
+**残タスク(次セッション):**
+- **C: オーバーレイ/スクロールが間欠**。真因=`_find_pragmatic_frame` が Playwright `page.frames` 依存で、hh88の `client.pragmaticplaylive.net/desktop/multibaccarat` は **game-iframe-v2 内の cross-origin 入れ子OOPIF** → Playwrightが検出できる時/できない時がある(`[ASSIST-HOLD] frame not found for center`)。betはCDP注入で別経路なので常に成功。**修正方針=オーバーレイのフレーム取得をCDP/リトライ方式にしてPlaywright依存をやめる**。ローカルでhh88再現→検証してから本番投入(焦らない)。
+- 診断engineを**クリーン版**(冗長ログ削減)へ差し替え。amt scaling/uId pin/diag-capture(任意)は維持。
+- HKD↔USD 換算(表示DAILY TOTAL/課金が$建てのまま=Phase3)。
+
+---
+
 ## 0. 一行サマリ & 次にやること
 **hh88 は Stake と同一の Pragmatic マルチバカラ・バックエンド。実BET受理は実証済み。プラットフォーム層も実装済み。
 ~~残る唯一のブロッカー = エンジンの `route_web_socket(pattern="**")` が hh88 の起動(pusher等)を壊すこと。~~
