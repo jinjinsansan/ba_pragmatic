@@ -1325,6 +1325,8 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
       const envPayload = {
         telegram_bot_token: $('#inputTelegramToken')?.value.trim() || '',
         telegram_chat_id:   $('#inputTelegramChat')?.value.trim()  || '',
+        // プラットフォーム選択を .env に保存 → 次回アイコン起動で正しいカジノが開く。
+        platform: $('#inputPlatform')?.value || 'stake',
       };
 
 

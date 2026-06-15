@@ -1935,6 +1935,9 @@ app.whenReady().then(() => {
     if ('telegram_bot_token' in s) updates.TELEGRAM_BOT_TOKEN = s.telegram_bot_token || '';
     if ('telegram_chat_id' in s)   updates.TELEGRAM_CHAT_ID   = s.telegram_chat_id || '';
     if ('support_enabled' in s)    updates.BACOPY_SUPPORT_ENABLED = s.support_enabled ? '1' : '0';
+    // プラットフォーム選択を .env に永続化 → デスクトップアイコン起動時の
+    // ensureCdpChrome が正しいカジノ(Stake/hh88)のURLでブラウザを開ける。
+    if ('platform' in s)           updates.BACOPY_PLATFORM = (s.platform === 'hh88') ? 'hh88' : 'stake';
     try {
       saveDotEnv(updates);
       return { ok: true };
