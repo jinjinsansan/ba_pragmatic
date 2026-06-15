@@ -184,11 +184,19 @@ certutil -hashfile dist/bacopy_engine.exe MD5
 - **uId**: フックの送信フレームから捕捉(`__bacopyUid`)。hh88 は uId 非検証なので fallback でも可。
 - **py_compile 両ファイル OK**。`git diff` = executor +216 / bot +5 行。
 
-### ビルド済み(2026-06-15 続セッション)
-- `dist/bacopy_engine.exe`(224,626,745 bytes) **MD5=`257cdb99d380d71df5724d1b3bdbf7cc`**。`_rev53144`をrootへ一時コピー→PyInstaller→git restore で生成(BUILD_RC=0・ログに `Building because dual_line_live_executor.py changed`=変更反映確認)。**未E2E・未commit・未デプロイ**。
+### ✅ビルド & E2E合格 & commit済み(2026-06-15 続セッション)
+- `dist/bacopy_engine.exe`(224,626,745 bytes) **MD5=`257cdb99d380d71df5724d1b3bdbf7cc`**。`_rev53144`をrootへ一時コピー→PyInstaller→git restore で生成(BUILD_RC=0)。
+- **★ローカルE2E合格(CDP 9223・hh88 multibaccarat 手動オープン)**: ログ実測 ↓
+  - `[HH88-BRIDGE] re-injected into 3 frame(s)` → `[HH88-BRIDGE] channel-host socket captured → is_multi_table_ws=True`
+  - `[WS-BET-TEST] FIRING ... table=speedbca14gesbc2 gid=14502055221 side=B amt=$2.0 uid=...202242`
+  - `[WS-SEND] hh88 __bacopyFire OK`(socket無しフレームは`no_socket`でskip→正フレームで送出)
+  - `[GAME-BET-CONFIRM] amount=2` → **`[WIN-CONFIRM] own bet settled via win: gId=14502055221 nwb=-2.0 (server-accepted)`**
+  - = route_web_socket無し・pusher非破壊で実BET受理・決済確証。PoCと一致。
+- **commit `d05dd63`** on `feat/dual-line`(engine 2ファイル+本書)。**未push・未デプロイ**(bafatherはStakeなのでIS_HH88ゲートで無影響)。
 
 ### 残タスク
-1. **ローカルE2E**(§6): CDP Chrome(9223)で hh88 multibaccarat を開く → §6 の env で engine 起動 → `[HH88-BRIDGE] channel-host socket captured` → betsopen 取込 → `BACOPY_WS_BET_TEST_ONCE=1` で1発 → `[WIN-CONFIRM] ... nwb=` 確認。
+1. ~~ローカルE2E~~ ✅完了(上記)。
+2. push(ユーザー判断)。bafather への hh88 投入は別途(Stake本番機なので別個体/別フォルダ推奨)。
 2. 合格 → §7 でビルド(`_rev53144`)→ MD5 → commit。
 3. GUI: main.js にプラットフォーム選択UI(childEnv へ `BACOPY_PLATFORM` 等を配線)。**排他**(Stake/hh88 同時不可)を担保。
 4. HKD→USD 換算(課金/週次連携・Phase3)。
