@@ -195,8 +195,15 @@ certutil -hashfile dist/bacopy_engine.exe MD5
 - **commit `d05dd63`** on `feat/dual-line`(engine 2ファイル+本書)。**未push・未デプロイ**(bafatherはStakeなのでIS_HH88ゲートで無影響)。
 
 ### 残タスク
-1. ~~ローカルE2E~~ ✅完了(上記)。
-2. push(ユーザー判断)。bafather への hh88 投入は別途(Stake本番機なので別個体/別フォルダ推奨)。
+1. ~~ローカルE2E~~ ✅完了(上記)。push ✅(`d05dd63`/`eca39e2`)。
+2. ~~GUIプラットフォーム選択UI~~ ✅完了(**commit `4b575db`**・未push)。`copytrade_gui` に `#inputPlatform`(Stake/hh88)追加:
+   - `index.html` セレクト / `app.js` DEFAULT_SETTINGS.platform='stake'・保存/読込・`buildStartConfig`の`...s`展開でconfigへ。
+   - `main.js buildSpawnSpec`: `config.platform`→`childEnv.BACOPY_PLATFORM`・hh88は ws transport + WS実BET を強制(CDP注入はclick不可)。
+   - `main.js ensureCdpChrome`: hh88 は hh88 ログインURLを開く(Stakeロビーでなく)。`startBot` が `cfg.platform` を Chrome起動 env へ。
+   - **排他**(片側のみ)。Stakeは全経路で既定`stake`=無影響。**未テスト(Electron実起動での目視確認推奨)・未asarビルド**。
+3. push(GUI分 `4b575db`)・GUI asar再ビルド→hh88受け子インストーラ。
+4. HKD→USD 換算(課金/週次連携・Phase3)。
+5. bafather への hh88 投入は別途(Stake本番機なので別個体/別フォルダ推奨)。
 2. 合格 → §7 でビルド(`_rev53144`)→ MD5 → commit。
 3. GUI: main.js にプラットフォーム選択UI(childEnv へ `BACOPY_PLATFORM` 等を配線)。**排他**(Stake/hh88 同時不可)を担保。
 4. HKD→USD 換算(課金/週次連携・Phase3)。
