@@ -970,6 +970,16 @@ function buildSpawnSpec(config) {
       childEnv.BACOPY_ENABLE_WS_REAL_BET = '1';
       childEnv.BACOPY_MANUAL_ASSIST_AUTO_CLICK = '1';
       childEnv.BACOPY_MANUAL_NO_AUTOCLICK = '0';
+      // ★uId ピン留め: 上の方(L877)で BACOPY_USER_ID は Supabase の UUID で上書きされる。
+      //   engine は WS lpbet に Pragmatic の ppc-id が必要で、UUID は弾く→毎回「手動BETで
+      //   _own_user_id を学習」が必要になっていた。hh88 の ppc-id を .env(BACOPY_HH88_UID)で
+      //   ピン留めできるようにし、ここで BACOPY_USER_ID を ppc 値に差し替える(UUIDより後勝ち)。
+      //   ppc 形式のみ採用(UUID/空は無視=従来どおり _own_user_id 学習にフォールバック)。
+      const _hkUid = String(childEnv.BACOPY_HH88_UID || envFile.BACOPY_HH88_UID || '').trim();
+      if (_hkUid && !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-/.test(_hkUid)) {
+        childEnv.BACOPY_USER_ID = _hkUid;
+        console.log('[AUTO-PROBE] hh88: pinned BACOPY_USER_ID to ppc uId from BACOPY_HH88_UID');
+      }
     }
     if (config && config.no_v2_filter) args.push('--no-v2-filter');
     if (config && config.money_mode) args.push('--money-mode', String(config.money_mode));
