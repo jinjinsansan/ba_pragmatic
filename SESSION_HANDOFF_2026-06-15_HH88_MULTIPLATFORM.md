@@ -202,8 +202,12 @@ certutil -hashfile dist/bacopy_engine.exe MD5
    - `main.js ensureCdpChrome`: hh88 は hh88 ログインURLを開く(Stakeロビーでなく)。`startBot` が `cfg.platform` を Chrome起動 env へ。
    - **排他**(片側のみ)。Stakeは全経路で既定`stake`=無影響。**未テスト(Electron実起動での目視確認推奨)・未asarビルド**。
 3. ~~push(GUI分)~~ ✅完了(`4b575db`/`b3fcd01` push済)。~~GUI asar~~ ✅bafatherへデプロイ&目視確認済(下記)。
-4. HKD→USD 換算(課金/週次連携・Phase3)。
-5. bafather への hh88 **エンジン**投入は別途(Stake本番機なので別個体/別フォルダ推奨。GUIのdropdownは入ったが engine は現状 Stake用のまま)。
+4. ★**bafather のエンジン.exe を hh88対応版(MD5 `257cdb99…`)へ差替え**(同一マシン・同一GUIでカジノ切替する設計の最後のピース)。
+   - **「別個体/別フォルダ」は不要・誤った推奨だった**(2026-06-15訂正)。設計は「**同じGUI・同じbafatherで dropdown により Stake⇄hh88 を切替**」。
+   - 現状 bafather の engine は旧Stake版で hh88非対応 → dropdownをhh88にしても route_web_socket で壊れる。新engineは `IS_HH88` ゲートで Stake挙動不変+hh88追加なので**1つのexeで両対応**。
+   - 差替え先 = `C:\BACOPYRECEIVER_user01\resources\engine\bacopy_engine.exe`(GUI asar と同じ要領で swap)。
+   - 制約は「**同時BET不可**」のみ → STOP→dropdown切替→(hh88マルチエリアを開く)→START で運用。
+5. HKD→USD 換算(課金/週次連携・Phase3)。
 
 ### bafather GUI デプロイ済み(2026-06-15 続セッション)
 - GUI asar(electron-builder --dir・**254,683 bytes**・dropdown入り)を bafather `C:\BACOPYRECEIVER_user01\resources\app.asar` へ差替え。
