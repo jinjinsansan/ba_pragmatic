@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('valhalla', {
 
   // Misc
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  openBettingUrl: (url) => ipcRenderer.invoke('open-betting-url', url),
 });
 
 // Settings モーダル (Telegram / SYSTEM タブ) 用の追加 API.

@@ -1134,6 +1134,25 @@ $('#btnSettings')?.addEventListener('click', async () => {
         } catch (_) { fallback(); }
       };
     }
+    // 「betting Chromeで開く」: 9222 Chrome に hh88 タブを開かせる(ワンクリック)。
+    const openBtn = $('#btnOpenHh88Url');
+    if (openBtn && inp) {
+      openBtn.onclick = async () => {
+        const url = inp.value || '';
+        const o = openBtn.textContent;
+        openBtn.disabled = true;
+        openBtn.textContent = '開いています…';
+        let res = null;
+        try {
+          if (window.valhalla && window.valhalla.openBettingUrl) {
+            res = await window.valhalla.openBettingUrl(url);
+          }
+        } catch (_) {}
+        const ok = res && res.ok;
+        openBtn.textContent = ok ? '開きました' : '失敗(Chrome未起動?)';
+        setTimeout(() => { openBtn.textContent = o; openBtn.disabled = false; }, 2000);
+      };
+    }
   })();
   if ($('#inputDualLive')) $('#inputDualLive').checked = !!s.dual_live;
   if ($('#inputManualAssistAutoClick')) $('#inputManualAssistAutoClick').checked = !!s.manual_assist_auto_click;

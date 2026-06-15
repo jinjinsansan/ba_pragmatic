@@ -539,6 +539,28 @@ function isCdpUp(port) {
     } catch (_) { finish(false); }
   });
 }
+// betting Chrome(CDP:port)に新規タブで url を開かせる。Chrome 111+ は PUT /json/new。
+// 既存タブのナビゲーションでなく新タブを開く方式(ログイン中の他タブを潰さない)。
+function openUrlInCdpChrome(port, url) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const http = require('http');
+      const req = http.request(
+        { host: '127.0.0.1', port, path: '/json/new?' + String(url || ''), method: 'PUT', timeout: 4000 },
+        (res) => {
+          let body = '';
+          res.on('data', (c) => { body += c; });
+          res.on('end', () => finish({ ok: res.statusCode === 200, status: res.statusCode, body: body.slice(0, 200) }));
+        }
+      );
+      req.on('error', (e) => finish({ ok: false, error: String(e && e.message || e) }));
+      req.on('timeout', () => { try { req.destroy(); } catch (_) {} finish({ ok: false, error: 'timeout' }); });
+      req.end();
+    } catch (e) { finish({ ok: false, error: String(e && e.message || e) }); }
+  });
+}
 function findChromeExe() {
   const cands = [
     process.env.BACOPY_CHROME_EXE,
@@ -1813,6 +1835,27 @@ app.whenReady().then(() => {
   ipcMain.handle('window-close', () => { if (mainWindow) mainWindow.close(); return { ok: true }; });
 
   ipcMain.handle('open-external', (_evt, url) => shell.openExternal(String(url || '')));
+
+  // betting Chrome(:9222 等)に新規タブで URL を開く(hh88 ワンクリック起動)。
+  // Chrome が未起動なら先に ensureCdpChrome で起こしてから開く。
+  ipcMain.handle('open-betting-url', async (_evt, url) => {
+    const target = String(url || '').trim();
+    if (!target) return { ok: false, error: 'no_url' };
+    try {
+      const env = loadDotEnv();
+      const port = _cdpPortFromUrl(env.BACOPY_CHROME_CDP_URL || process.env.BACOPY_CHROME_CDP_URL || 'http://127.0.0.1:9222');
+      if (!(await isCdpUp(port))) {
+        // hh88 を開きたいので、hh88 として Chrome を起こす(初期URLが hh88 になる)。
+        env.BACOPY_PLATFORM = 'hh88';
+        await ensureCdpChrome(env);
+        // 初期URLが hh88 ログインなら新タブ不要だが、確実性のため下で new タブも試みる。
+      }
+      const res = await openUrlInCdpChrome(port, target);
+      return res;
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e) };
+    }
+  });
 
   ipcMain.handle('start-bot', (_evt, config) => {
     console.log('[Main] start-bot requested mode=' + (config && config.mode) + ' live=' + !!(config && config.live));
