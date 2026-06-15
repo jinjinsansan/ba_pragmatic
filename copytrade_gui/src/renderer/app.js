@@ -1112,6 +1112,29 @@ $('#btnSettings')?.addEventListener('click', async () => {
   if ($('#inputDualUnit')) $('#inputDualUnit').value = s.dual_unit || 100;
   if ($('#inputSeqTurns')) $('#inputSeqTurns').value = String(s.seq_turns === 5 ? 5 : 7);
   if ($('#inputPlatform')) $('#inputPlatform').value = (s.platform === 'hh88') ? 'hh88' : 'stake';
+  // hh88 選択時のみ URL コピー行を表示し、コピーボタン/切替を配線(冪等)。
+  (function wireHh88Url() {
+    const sel = $('#inputPlatform');
+    const row = $('#hh88UrlRow');
+    if (!sel || !row) return;
+    const sync = () => { row.style.display = (sel.value === 'hh88') ? '' : 'none'; };
+    sync();
+    sel.onchange = sync;
+    const btn = $('#btnCopyHh88Url');
+    const inp = $('#inputHh88Url');
+    if (btn && inp) {
+      btn.onclick = () => {
+        const text = inp.value || '';
+        const done = () => { const o = btn.textContent; btn.textContent = 'コピーしました'; setTimeout(() => { btn.textContent = o; }, 1500); };
+        const fallback = () => { try { inp.focus(); inp.select(); document.execCommand('copy'); done(); } catch (_) {} };
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(fallback);
+          } else { fallback(); }
+        } catch (_) { fallback(); }
+      };
+    }
+  })();
   if ($('#inputDualLive')) $('#inputDualLive').checked = !!s.dual_live;
   if ($('#inputManualAssistAutoClick')) $('#inputManualAssistAutoClick').checked = !!s.manual_assist_auto_click;
   if ($('#inputDgaAutoBet')) $('#inputDgaAutoBet').checked = !!s.dga_auto_bet;
