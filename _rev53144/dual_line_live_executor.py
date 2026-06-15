@@ -2160,7 +2160,7 @@ class LiveBetExecutor:
             logger.info("[EXEC-SETUP] multi-lobby: loading lobby so bridge pre-installs before multi-table WS opens")
             try:
                 cur_url = str(getattr(lobby_page, "url", "") or "")
-                if cur_url.startswith("about:") or "stake.com" not in cur_url:
+                if cur_url.startswith("about:") or PLATFORM_HOST not in cur_url:
                     logger.info(f"[EXEC-SETUP] current page is not lobby ({cur_url[:80]}); goto lobby")
                     lobby_page.goto(lobby_url, wait_until="domcontentloaded", timeout=45000)
                 else:
@@ -2284,7 +2284,7 @@ class LiveBetExecutor:
             return True
         self._reset_multi_lobby_runtime(f"recover:{reason}")
         try:
-            if cur_url and "pragmatic-play-live-lobby-baccarat" in cur_url:
+            if cur_url and PLATFORM_LOBBY_MATCH in cur_url:
                 page.reload(wait_until="domcontentloaded", timeout=30000)
             else:
                 page.goto(PRAGMATIC_BACCARAT_LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
@@ -2952,6 +2952,13 @@ class LiveBetExecutor:
                     f"{max(0.0, max(5.0, fallback_cooldown) - (now - self._last_multi_fallback_join_at)):.1f}s"
                 )
                 return
+            # hh88: _join_table(BACCARAT_MULTIPLAY) は Stake のロビーへ goto する固定ナビ
+            # (`[Stage 1] goto stake pragmatic lobby`)なので hh88 では使わない。multibaccarat へは
+            # lobby2 の multi-play タブ click(_ensure_multi_area の JS)で到達する。タブが未検出でも
+            # Stake フォールバックはせず、次tickで再検出を待つ。
+            if should_fallback_join and IS_HH88:
+                logger.info("[MULTI-AREA] hh88: skip Stake _join_table fallback (retry tab-click next tick)")
+                should_fallback_join = False
             if should_fallback_join:
                 self._last_multi_fallback_join_at = now
                 try:
@@ -3121,7 +3128,7 @@ class LiveBetExecutor:
                     u = str(getattr(p, "url", "") or "")
                 except Exception:
                     continue
-                if "pragmatic-play-live-lobby-baccarat" in u:
+                if PLATFORM_LOBBY_MATCH in u:
                     reuse = p
                     break
         except Exception:
@@ -3962,8 +3969,8 @@ class LiveBetExecutor:
                 cur_url = ""
             wrong_page = (
                 cur_url
-                and "stake.com" in cur_url
-                and "pragmatic-play-live-lobby-baccarat" not in cur_url
+                and PLATFORM_HOST in cur_url
+                and PLATFORM_LOBBY_MATCH not in cur_url
             )
             if wrong_page and now - self._last_lobby_recover_at >= 8.0:
                 self._recover_pragmatic_lobby("wrong_page", force=True)
@@ -8103,6 +8110,15 @@ class LiveBetExecutor:
         self.send_bet(side=side, amount=amount, table_id=target, bet_id=bet_id, metadata=md)
         return bet_id
 
+    def has_win_for_game(self, game_id: str) -> bool:
+        """hh88: 指定 gId の {"win":{nwb}} フレームを受信済みか(受理の決定的証拠)。
+        _win_by_gid は pop しないので何度でも照会できる。"""
+        gid = str(game_id or "").strip()
+        if not gid:
+            return False
+        wb = getattr(self, "_win_by_gid", None)
+        return isinstance(wb, dict) and gid in wb
+
     def bet_server_validated(self, bet_id: str) -> bool:
         """幻決済ガード: lpbet_fast系で確証したBETに、サーバ受理の後追い証拠
         (GAME-BET-CONFIRM / 残高変動)が来ているかを決済直前に確認する。
@@ -8131,6 +8147,13 @@ class LiveBetExecutor:
             self._fast_confirm_pending.pop(bid, None)
             return True
         if tc:
+            self._fast_confirm_pending.pop(bid, None)
+            return True
+        # hh88: 自分の発注 gId の {"win":{nwb}} フレームが届いていれば、GAME-BET-CONFIRM が
+        # 無くても「サーバ受理」とみなす(win は決済時に届く個別損益=受理の決定的証拠)。
+        _gid = str(rec.get("game_id") or "")
+        if _gid and isinstance(getattr(self, "_win_by_gid", None), dict) and _gid in self._win_by_gid:
+            logger.info(f"[PHANTOM-GUARD] validated by win frame: game={_gid} nwb={self._win_by_gid[_gid].get('nwb')}")
             self._fast_confirm_pending.pop(bid, None)
             return True
         logger.warning(

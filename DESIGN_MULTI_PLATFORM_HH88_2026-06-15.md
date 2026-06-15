@@ -226,6 +226,37 @@ login           = 手動（会員アカウント）
 - **GUIは常に片側のみ**（Stake or hh88）。同時稼働不可（Pragmaticの異変検知回避）。SEQはどちらでも可だが**BETは片側のみ**。
 - → GUIのプラットフォーム選択は排他。BACOPY_PLATFORM で完全に分離。
 
+## 8.6 ★E2E実測の結論（2026-06-15 ローカル検証）— WS方式の方針転換
+
+ローカル(dev機 9223 Chrome・hh88ログイン)でエンジンexeを hh88 モードで実行して判明:
+- ✅ 動いた: プラットフォーム層(ページ選択 host/match一般化・`stake_pages=1 lobby_pages=1`)、
+  reload-if-on-host、**dga直結(62卓・hh88でも動作)**、Stake `_join_table` フォールバックの hh88 ゲート、win-confirm。
+- ❌ **ブロッカー: エンジンの `route_web_socket(pattern="**")`(全WS透過プロキシ)が hh88 の起動を壊す。**
+  - reload 後、Pragmatic iframe が **再launchされない**(CDPで iframe 消失・page のみ)。
+  - hh88 は起動に **pusher.com WS 等**を使い、`"**"` がそれも横取り→透過プロキシが pusher を壊す→
+    ゲートが開かず Pragmatic クライアントが起動しない。Stake は pusher 非依存なので無問題だった。
+  - host 指定パターンでは multibaccarat ソケットを拾えない(コード註記)ため `"**"` 必須 → **pusher を除外できない**。
+  - ∴ **route_web_socket 方式は hh88 と非互換**。
+
+### 方針転換: hh88 は **CDP注入WSブリッジ(Option B)** を使う（PoCで実証済み）
+- 私の PoC `_hh88_test_bet.py` は **route_web_socket を使わず、CDP `Runtime.evaluate` で
+  `WebSocket.prototype.send` をフック**して生ソケットを掴み、lpbet を送って **受理(win)** された。
+  この方式なら **pusher 等は一切触らない**(hh88 の起動を壊さない)。
+- 次セッションの実装(hh88 限定・Stake は route_web_socket のまま):
+  1. setup で route_web_socket を**張らない**(`IS_HH88` で分岐)。代わりに **add_init_script + CDP evaluate**
+     で `WebSocket.prototype.send` をフックし、(a) チャネルホスト送信ソケットを `window.__bacopyWS` に捕捉、
+     (b) 受信フレーム(betsopen/win/gameresult)をJS側バッファ→engineがCDPで吸い上げ or `console`経由で受信。
+  2. lpbet 送信は `window.__bacopyWS.send(xml)`(CDP evaluate) に置換(既存 `_ws_send` の hh88 経路)。
+  3. reload も**しない**(hook が既存ソケットを掴むので不要)。＝ hh88 は実質 **no-reload + CDP注入**。
+     → `BACOPY_PLATFORM_NO_RELOAD` を hh88 で ON に戻し、no-reload 時に CDP注入ブリッジを起こす。
+  4. betsopen/win は CDP Network(`webSocketFrameReceived`) でも取れる(PoCで実証)。engine の tick で吸い上げ。
+- ★つまり §3.3 の最初の懸念(B案)が正解だった。reload(A案)は hh88 の pusher 依存で route_web_socket と
+  両立しないため不可。**hh88 = no-reload + CDP注入WSブリッジ**で確定。
+
+### 次セッションの最小ゴール
+hh88 で: アタッチ→(reloadせず)CDP注入で生ソケット捕捉→betsopen吸い上げ→lpbet送信(`window.__bacopyWS`)→
+`win.nwb` で確証/決済。検証は `BACOPY_WS_BET_TEST_ONCE` 相当を CDP注入経路で。
+
 ## 9. 関連
 - Pragmatic WS BET の本体仕様: `DUAL_LINE_AUTO_WS_BET_COMPLETE_2026-06-06.md`
 - bc符号の個体差（Stake user06=10/11）: `USER06_BC_BETCODE_FIX_2026-06-15.md`

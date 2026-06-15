@@ -3113,6 +3113,22 @@ class DualLinePragmaticBot(cp.Collector):
                 _sv_ok = bool(_sv_check(bet_id))
             except Exception:
                 _sv_ok = True  # fail-open: ガード故障で実BETを落とさない
+            # hh88: 受理確証 {"win":{nwb}} は決済とほぼ同時に届くため、ドロップ判定前に
+            # 短時間だけ win 到着を待つ(レース回避)。win 照会は pop しないので安全。
+            if (not _sv_ok) and (os.getenv("BACOPY_PLATFORM", "").strip().lower() == "hh88"):
+                _win_check = getattr(self.bet_executor, "has_win_for_game", None)
+                _gid = str(pending.get("game_id") or "")
+                if _gid and callable(_win_check):
+                    for _ in range(8):  # 最大 ~4s
+                        try:
+                            if bool(_win_check(_gid)):
+                                _sv_ok = True
+                                logger.info(f"[PHANTOM-GUARD] hh88 win arrived during grace: game={_gid}")
+                                break
+                        except Exception:
+                            _sv_ok = True
+                            break
+                        time.sleep(0.5)
             if not _sv_ok:
                 _pg_table = str(pending.get("table_name") or getattr(buf, "table_name", "") or table_id)
                 _pg_amount = float(pending.get("amount") or 0.0)
@@ -6204,16 +6220,23 @@ class DualLinePragmaticBot(cp.Collector):
                 ctx = _camoufox_mgr.__enter__()
                 time.sleep(2)  # headless ブラウザ完全初期化待ち
 
+            # プラットフォーム設定 (stake|hh88)。ページ選択/ナビで使うので早めに確定する。
+            _plat = (os.getenv("BACOPY_PLATFORM", "stake") or "stake").strip().lower()
+            _no_reload = (os.getenv("BACOPY_PLATFORM_NO_RELOAD", "0") or "0").strip() not in ("0", "", "false", "no")
+            _host = (os.getenv("BACOPY_PLATFORM_HOST", "hh88vip5.com" if _plat == "hh88" else "stake.com") or "").strip().lower()
+            _lobby_match = (os.getenv("BACOPY_PLATFORM_LOBBY_MATCH", "game-iframe-v2" if _plat == "hh88" else "pragmatic-play-live-lobby-baccarat") or "").strip().lower()
+            _lobby_url = (os.getenv("BACOPY_PLATFORM_LOBBY_URL", "").strip() or cp.LOBBY_URL)
+
             # bet_page のみ作成（lobby monitoring は VPS が担当）
             if chrome_attach:
                 pages = list(getattr(ctx, "pages", []) or [])
                 stake_pages = [
                     p for p in pages
-                    if "stake.com" in str(getattr(p, "url", "") or "").lower()
+                    if _host in str(getattr(p, "url", "") or "").lower()
                 ]
                 lobby_pages = [
                     p for p in stake_pages
-                    if "pragmatic-play-live-lobby-baccarat" in str(getattr(p, "url", "") or "").lower()
+                    if _lobby_match in str(getattr(p, "url", "") or "").lower()
                 ]
                 bet_page = lobby_pages[0] if lobby_pages else (stake_pages[0] if stake_pages else (pages[0] if pages else ctx.new_page()))
                 logger.info(
@@ -6256,17 +6279,26 @@ class DualLinePragmaticBot(cp.Collector):
                 except Exception as e:
                     logger.warning(f"Cookie restore failed: {e}")
 
-            # プラットフォーム no-reload (hh88): 起動トークン都度発行のため goto/reload 不可。
-            # ユーザーが手動で開いた multibaccarat にアタッチし、ナビゲーションしない。
-            _no_reload = (os.getenv("BACOPY_PLATFORM_NO_RELOAD", "1" if (os.getenv("BACOPY_PLATFORM", "").strip().lower() == "hh88") else "0") or "0").strip() not in ("0", "", "false", "no")
+            # (_plat/_no_reload/_host/_lobby_match/_lobby_url は上のページ選択前で定義済み)
 
             # bet_page をロビーに配置（最初の preposition/switch の準備）
             if _no_reload:
                 logger.info("[BOT] no-reload platform: skip lobby goto (attach to manually-opened multibaccarat)")
             else:
-                logger.info(f"Navigating bet_page to {cp.LOBBY_URL}")
                 try:
-                    bet_page.goto(cp.LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
+                    _cur0 = str(getattr(bet_page, "url", "") or "").lower()
+                except Exception:
+                    _cur0 = ""
+                try:
+                    # hh88(非stake): 起動トークンが都度発行のため固定URLへ goto できない。
+                    # 既にプラットフォーム host に居れば reload(トークン再取得→Pragmatic再launch)する。
+                    # ★Stake は従来どおり goto(cp.LOBBY_URL)。挙動を変えない(後方互換)。
+                    if _plat != "stake" and _host and _host in _cur0:
+                        logger.info(f"[BOT] already on platform host ({_host}); reload to re-hook WS (platform={_plat})")
+                        bet_page.reload(wait_until="domcontentloaded", timeout=60000)
+                    else:
+                        logger.info(f"Navigating bet_page to {_lobby_url} (platform={_plat})")
+                        bet_page.goto(_lobby_url, wait_until="domcontentloaded", timeout=60000)
                     bet_page.wait_for_timeout(3000)
                 except Exception as e:
                     logger.warning(f"[BOT] lobby nav failed: {e}")
@@ -6286,7 +6318,7 @@ class DualLinePragmaticBot(cp.Collector):
                     cur = str(getattr(bet_page, "url", "") or "")
                 except Exception:
                     cur = ""
-                ok = "pragmatic-play-live-lobby-baccarat" in cur
+                ok = _lobby_match in cur
                 if ok:
                     return True
                 now = time.time()
@@ -6299,7 +6331,7 @@ class DualLinePragmaticBot(cp.Collector):
                 _pb_info = f"pending_bet=side={_pb.get('side')} table={_pb.get('table_id')} age={time.time()-float(_pb.get('queued_at',time.time())):.1f}s" if isinstance(_pb, dict) and _pb else "pending_bet=None"
                 logger.warning(f"[BOT] LOBBY-GUARD TRIGGERED: not on pragmatic lobby (url={cur[:120]}) -> re-navigate | phase={_phase} | {_pb_info}")
                 try:
-                    bet_page.goto(cp.LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
+                    bet_page.goto(_lobby_url, wait_until="domcontentloaded", timeout=60000)
                     bet_page.wait_for_timeout(2000)
                 except Exception as _e:
                     logger.warning(f"[BOT] lobby re-nav failed: {_e}")
@@ -6307,7 +6339,7 @@ class DualLinePragmaticBot(cp.Collector):
                     cur2 = str(getattr(bet_page, "url", "") or "")
                 except Exception:
                     cur2 = ""
-                ok2 = "pragmatic-play-live-lobby-baccarat" in cur2
+                ok2 = _lobby_match in cur2
                 if (not ok2) and (now - _last_lobby_warn_at >= 90.0):
                     _last_lobby_warn_at = now
                     _send_telegram(
