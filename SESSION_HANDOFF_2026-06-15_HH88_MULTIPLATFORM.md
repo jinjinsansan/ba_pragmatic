@@ -202,12 +202,18 @@ certutil -hashfile dist/bacopy_engine.exe MD5
    - `main.js ensureCdpChrome`: hh88 は hh88 ログインURLを開く(Stakeロビーでなく)。`startBot` が `cfg.platform` を Chrome起動 env へ。
    - **排他**(片側のみ)。Stakeは全経路で既定`stake`=無影響。**未テスト(Electron実起動での目視確認推奨)・未asarビルド**。
 3. ~~push(GUI分)~~ ✅完了(`4b575db`/`b3fcd01` push済)。~~GUI asar~~ ✅bafatherへデプロイ&目視確認済(下記)。
-4. ★**bafather のエンジン.exe を hh88対応版(MD5 `257cdb99…`)へ差替え**(同一マシン・同一GUIでカジノ切替する設計の最後のピース)。
-   - **「別個体/別フォルダ」は不要・誤った推奨だった**(2026-06-15訂正)。設計は「**同じGUI・同じbafatherで dropdown により Stake⇄hh88 を切替**」。
-   - 現状 bafather の engine は旧Stake版で hh88非対応 → dropdownをhh88にしても route_web_socket で壊れる。新engineは `IS_HH88` ゲートで Stake挙動不変+hh88追加なので**1つのexeで両対応**。
-   - 差替え先 = `C:\BACOPYRECEIVER_user01\resources\engine\bacopy_engine.exe`(GUI asar と同じ要領で swap)。
+4. ~~bafather のエンジン.exe を hh88対応版へ差替え~~ ✅**完了**(下記「エンジンデプロイ」)。
+   - **「別個体/別フォルダ」は不要・誤った推奨だった**(2026-06-15訂正)。設計は「**同じGUI・同じbafatherで dropdown により Stake⇄hh88 を切替**」。1つのexeで Stake+hh88 両対応(`IS_HH88`ゲート)。
    - 制約は「**同時BET不可**」のみ → STOP→dropdown切替→(hh88マルチエリアを開く)→START で運用。
+   - ★hh88切替の運用注意: bafatherの betting Chrome(9222)は Stake ロビーで起動済み。hh88で使うには 9222 Chrome を hh88 に手動遷移(またはChrome閉→hh88選択でSTARTし再launch)し、**multibaccarat を開いてからSTART**。
 5. HKD→USD 換算(課金/週次連携・Phase3)。
+
+### エンジンデプロイ済み(2026-06-15 続セッション)
+- **リーン再ビルド**: 初回ビルドは 224MB(numpy/pandas/scipy/numba/pyarrow が現環境に入っていて透過混入)。正規Stakeエンジンは 68,708,941B(MD5`BF69C5DC`)。
+  - `build/bacopy_engine.spec`(★git管理外) の `excludes` に **`['pandas','scipy','numba','pyarrow','matplotlib','IPython','tbb','llvmlite']`** を追加(**numpyは camoufox が必要なので残す**)→ **98,154,140B(MD5`E64278D5…`)** に縮小。
+  - スモークテスト合格: ローカル9223で起動→`ImportError無し`→`[EXEC-SETUP] setup complete`/`[HH88-BRIDGE] re-injected`到達(除外libは不要と実証)。E2E実証済み224MB版とソース同一。
+- bafather `C:\BACOPYRECEIVER_user01\resources\engine\bacopy_engine.exe` を 98MB版へ swap(`_baf_engine_swap.ps1` を scp+`-File`)。
+  - バックアップ=`bacopy_engine.exe.bak_20260615_191145`(旧68MB・ロールバック用)。swap時GUI/engine停止→**ユーザーがGUI再起動して Stake正常動作を確認する必要あり**(本番検証)。
 
 ### bafather GUI デプロイ済み(2026-06-15 続セッション)
 - GUI asar(electron-builder --dir・**254,683 bytes**・dropdown入り)を bafather `C:\BACOPYRECEIVER_user01\resources\app.asar` へ差替え。
