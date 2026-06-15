@@ -208,6 +208,12 @@ certutil -hashfile dist/bacopy_engine.exe MD5
    - ★hh88切替の運用注意: bafatherの betting Chrome(9222)は Stake ロビーで起動済み。hh88で使うには 9222 Chrome を hh88 に手動遷移(またはChrome閉→hh88選択でSTARTし再launch)し、**multibaccarat を開いてからSTART**。
 5. HKD→USD 換算(課金/週次連携・Phase3)。
 
+### GUI hh88 URL補助ボタン(2026-06-15 続セッション・bafatherデプロイ済)
+- hh88選択時に dropdown 下へ表示: **hh88 URL欄＋「コピー」＋「betting Chromeで開く」**。
+  - 「コピー」= URL をクリップボードへ(execCommand fallback)。「betting Chromeで開く」= main の `open-betting-url` IPC →
+    `openUrlInCdpChrome(port,url)` が betting Chrome(:9222)へ **PUT /json/new?<url>** で hh88 タブを新規に開く(Chrome 149で実地動作確認)。Chrome未起動なら hh88 として ensureCdpChrome 後に開く。
+  - ログイン＋multibaccaratを開く操作は手動のまま(自動化しない)。commit `9004cb2`(コピー)/`96c8f3b`(開くボタン)。
+
 ### エンジンデプロイ済み(2026-06-15 続セッション)
 - **リーン再ビルド**: 初回ビルドは 224MB(numpy/pandas/scipy/numba/pyarrow が現環境に入っていて透過混入)。正規Stakeエンジンは 68,708,941B(MD5`BF69C5DC`)。
   - `build/bacopy_engine.spec`(★git管理外) の `excludes` に **`['pandas','scipy','numba','pyarrow','matplotlib','IPython','tbb','llvmlite']`** を追加(**numpyは camoufox が必要なので残す**)→ **98,154,140B(MD5`E64278D5…`)** に縮小。
