@@ -342,6 +342,14 @@
           <!-- dual-line 専用: 資金管理モード -->
           <div id="dualLineMoneyGroup" style="display:none;">
             <div class="form-group">
+              <label>プラットフォーム</label>
+              <select id="inputPlatform">
+                <option value="stake">Stake（通常）</option>
+                <option value="hh88">hh88（HKD・マルチエリアを手動で開いてからSTART）</option>
+              </select>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">片側のみ稼働可（同時不可）。hh88はWS自動BET専用・通貨HKD。事前にhh88でライブバカラのマルチエリアを開いておくこと。</div>
+            </div>
+            <div class="form-group">
               <label>パターン</label>
               <select id="inputDualMode">
                 <option value="v3">6パターン</option>

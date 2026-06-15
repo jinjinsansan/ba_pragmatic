@@ -723,6 +723,7 @@ const DEFAULT_SETTINGS = {
   dual_money_mode: 'small1',
   dual_unit: 100,
   dual_mode: 'v3',
+  platform: 'stake',
   dual_live: false,
   dual_on_limit: 'stop',
   manual_assist_auto_click: false,
@@ -1110,6 +1111,7 @@ $('#btnSettings')?.addEventListener('click', async () => {
   _loadMoneyModeUI(s.dual_money_mode || 'small1');
   if ($('#inputDualUnit')) $('#inputDualUnit').value = s.dual_unit || 100;
   if ($('#inputSeqTurns')) $('#inputSeqTurns').value = String(s.seq_turns === 5 ? 5 : 7);
+  if ($('#inputPlatform')) $('#inputPlatform').value = (s.platform === 'hh88') ? 'hh88' : 'stake';
   if ($('#inputDualLive')) $('#inputDualLive').checked = !!s.dual_live;
   if ($('#inputManualAssistAutoClick')) $('#inputManualAssistAutoClick').checked = !!s.manual_assist_auto_click;
   if ($('#inputDgaAutoBet')) $('#inputDgaAutoBet').checked = !!s.dga_auto_bet;
@@ -1264,6 +1266,7 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     dual_unit: parseFloat($('#inputDualUnit')?.value || 100),
     seq_turns: parseInt($('#inputSeqTurns')?.value || '7', 10),
     dual_mode: $('#inputDualMode')?.value || 'v3',
+    platform: $('#inputPlatform')?.value || 'stake',
     dual_live: $('#inputDualLive')?.checked || false,
     dual_on_limit: 'stop',  // 利確はSEQ保持で停止(restart=リセットは使わない)
     manual_assist_auto_click: $('#inputManualAssistAutoClick')?.checked || false,

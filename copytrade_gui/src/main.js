@@ -569,9 +569,14 @@ async function ensureCdpChrome(envFile) {
       || path.join(app.getPath('userData'), 'cdp_chrome_profile')
     );
     try { fs.mkdirSync(profileDir, { recursive: true }); } catch (_) {}
+    // プラットフォーム別の初期URL。hh88 はカジノのログインページを開く(以後ユーザーが
+    // 手動で Pragmatic ライブバカラ→マルチエリアへ遷移する)。Stake は従来どおりロビー直行。
+    const _isHh88 = String(env.BACOPY_PLATFORM || process.env.BACOPY_PLATFORM || 'stake').trim().toLowerCase() === 'hh88';
     const lobby = String(
       env.BACOPY_LOBBY_URL || process.env.BACOPY_LOBBY_URL
-      || 'https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat'
+      || (_isHh88
+        ? 'https://www.hh88vip5.com/en_hk/login'
+        : 'https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat')
     );
     const args = [
       `--remote-debugging-port=${port}`,
@@ -585,7 +590,7 @@ async function ensureCdpChrome(envFile) {
     console.log('[cdp-chrome] launching ' + exe + ' port=' + port + ' profile=' + profileDir);
     const proc = spawn(exe, args, { detached: true, stdio: 'ignore', windowsHide: false });
     proc.unref();
-    try { sendToRenderer('agent-message', { type: 'log', message: '[起動] CDP Chrome を起動しました（初回は Stake にログインしてください）' }); } catch (_) {}
+    try { sendToRenderer('agent-message', { type: 'log', message: _isHh88 ? '[起動] CDP Chrome を起動しました（hh88 にログイン→ライブバカラのマルチエリアを開いてください）' : '[起動] CDP Chrome を起動しました（初回は Stake にログインしてください）' }); } catch (_) {}
     for (let i = 0; i < 15; i++) {
       await new Promise((r) => setTimeout(r, 1000));
       if (await isCdpUp(port)) { console.log('[cdp-chrome] CDP up on ' + port); return true; }
@@ -928,6 +933,22 @@ function buildSpawnSpec(config) {
     // パターンモード v3(6) / v4(10)。エンジンは BACOPY_DUAL_MODE を読む(既定v3)。
     const dualMode = String((config && config.dual_mode) || 'v3').toLowerCase();
     childEnv.BACOPY_DUAL_MODE = (dualMode === 'v4') ? 'v4' : 'v3';
+
+    // ── プラットフォーム切替 (Stake / hh88) ──────────────────────────────
+    // 排他: GUI は常に片側のみ(オーナー指示・Pragmatic の異変検知回避)。既定 stake で
+    // 従来挙動を一切変えない。hh88 は同一 Pragmatic バックエンドだが CDP注入WSブリッジ
+    // 方式(engine 側 IS_HH88)なので、click では着弾しない → WS transport を強制する。
+    const platform = String((config && config.platform) || childEnv.BACOPY_PLATFORM || 'stake').trim().toLowerCase();
+    childEnv.BACOPY_PLATFORM = (platform === 'hh88') ? 'hh88' : 'stake';
+    if (childEnv.BACOPY_PLATFORM === 'hh88') {
+      // hh88 は WS BET 専用(CDP注入ブリッジ)。assist/auto に関わらず ws を強制し、
+      // 実BET送信を有効化する。no-reload は engine 既定で hh88=ON(ここでは触らない)。
+      childEnv.BACOPY_MULTI_BET_TRANSPORT = 'ws';
+      childEnv.BACOPY_ALLOW_WS_BET_TRANSPORT = '1';
+      childEnv.BACOPY_ENABLE_WS_REAL_BET = '1';
+      childEnv.BACOPY_MANUAL_ASSIST_AUTO_CLICK = '1';
+      childEnv.BACOPY_MANUAL_NO_AUTOCLICK = '0';
+    }
     if (config && config.no_v2_filter) args.push('--no-v2-filter');
     if (config && config.money_mode) args.push('--money-mode', String(config.money_mode));
     // money_unit 未設定時は chip_base にフォールバック
@@ -1048,6 +1069,9 @@ async function startBot(config) {
   // (2026-06-13 user05/梶原さん)。ensureCdpChrome は :9222 が既に上なら即スキップ。
   try {
     const _env = loadDotEnv();
+    // UI のプラットフォーム選択(cfg.platform)を Chrome 起動 env に反映し、hh88 なら
+    // hh88 ログインページを開かせる(.env に BACOPY_PLATFORM がある配布形態も尊重)。
+    if (cfg && cfg.platform && !_env.BACOPY_PLATFORM) _env.BACOPY_PLATFORM = String(cfg.platform);
     const _port = _cdpPortFromUrl(_env.BACOPY_CHROME_CDP_URL || process.env.BACOPY_CHROME_CDP_URL || 'http://127.0.0.1:9222');
     if (!(await isCdpUp(_port))) {
       sendToRenderer('agent-message', { type: 'log', message: `[起動] CDP Chrome(:${_port}) を起動し接続を待っています…` });
