@@ -423,6 +423,7 @@ _HH88_WS_BRIDGE_INIT = r"""
   if (window.__bacopyHook) return;
   window.__bacopyHook = true;
   window.__bacopyRecv = window.__bacopyRecv || [];
+  window.__bacopySent = window.__bacopySent || [];
   var RECV_CAP = 600;
   var _attachRecv = function(ws) {
     try {
@@ -442,11 +443,19 @@ _HH88_WS_BRIDGE_INIT = r"""
   var _origSend = WebSocket.prototype.send;
   WebSocket.prototype.send = function(d) {
     try {
-      if (typeof d === 'string' && d.indexOf('channel="table-') >= 0) {
-        window.__bacopyWS = this;
-        var m = d.match(/uId="([^"]+)"/);
-        if (m) window.__bacopyUid = m[1];
-        _attachRecv(this);
+      if (typeof d === 'string') {
+        if (d.indexOf('channel="table-') >= 0) {
+          window.__bacopyWS = this;
+          var m = d.match(/uId="([^"]+)"/);
+          if (m) window.__bacopyUid = m[1];
+          _attachRecv(this);
+        }
+        // 診断: lpbet(発注)フレームを採取。手動BET時の hh88 クライアント生フレーム
+        // (正しい bc/amt/uId)とボット送信を engine 側で突き合わせるため。
+        if (d.indexOf('<lpbet') >= 0) {
+          window.__bacopySent.push(d);
+          if (window.__bacopySent.length > 40) window.__bacopySent.shift();
+        }
       }
     } catch (_) {}
     return _origSend.apply(this, arguments);
@@ -465,8 +474,11 @@ _HH88_WS_BRIDGE_INIT = r"""
   window.__bacopyDrain = function() {
     var a = window.__bacopyRecv || [];
     window.__bacopyRecv = [];
+    var s = window.__bacopySent || [];
+    window.__bacopySent = [];
     return {
       frames: a,
+      sent: s,
       ws: !!window.__bacopyWS,
       open: !!(window.__bacopyWS && window.__bacopyWS.readyState === 1),
       uid: window.__bacopyUid || null
@@ -4133,6 +4145,13 @@ class LiveBetExecutor:
                         self._user_id = uid
                         self._persist_user_id(uid)
                         logger.info(f"[HH88-BRIDGE] uId captured from hook: ...{uid[-8:]}")
+                # 診断: 採取した lpbet 送信フレーム(手動BET含む)を記録。
+                # 手動BET時の hh88 クライアント生フレーム(bc/amt/uId)をボットと突き合わせる。
+                for sx in (res.get("sent") or []):
+                    try:
+                        logger.info(f"[HH88-SENT-LPBET] {str(sx)[:240]}")
+                    except Exception:
+                        pass
                 # 受信フレームを既存パーサへ
                 for d in (res.get("frames") or []):
                     try:
@@ -8117,6 +8136,8 @@ class LiveBetExecutor:
         # payload は完全な <command channel="table-{tile}"> XML なので、卓振り分けは
         # ホスト側が channel で行う(PoC `_hh88_test_bet.py` で受理実証済み)。
         if IS_HH88:
+            # 診断: 実際にワイヤへ送る xml(amt/bc/channel)を必ず記録する。
+            logger.info(f"[HH88-FIRE-XML] {str(payload)[:240]}")
             for page in pages:
                 frames = [page]
                 try:
