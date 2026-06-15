@@ -38,6 +38,34 @@ PRAGMATIC_BACCARAT_LOBBY_URL = os.getenv(
     "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat",
 )
 
+# ── プラットフォーム切替 (2026-06-15) ────────────────────────────────────
+# BACOPY_PLATFORM=stake|hh88。完全排他(GUIは常に片側のみ・BETも片側のみ)。
+# 既定 stake = 従来挙動を一切変えない(後方互換)。hh88 は別カジノだが Pragmatic の
+# マルチバカラ・バックエンドは Stake と同一(client/dga/lpbet/bc=1/0/betsopen は共通)。
+# 違うのはカジノのラッパー層(ログイン/ロビー到達/通貨)だけなので、ここを設定で切替える。
+PLATFORM = (os.getenv("BACOPY_PLATFORM", "stake") or "stake").strip().lower()
+IS_HH88 = PLATFORM == "hh88"
+# ★2026-06-15 実測: hh88 の起動ページ(game-iframe-v2?name=PP, game_id=808)は読込ごとに
+# サーバAPIで新トークンを取得して Pragmatic を張り直す → **リロード可能**。リロード後は
+# Stakeと同じ Pragmatic lobby2 に着地し、multibaccarat へ遷移できる(同一クライアント)。
+# よって hh88 も **Stakeと同じリロード方式**で WS をフックできる(no-reload 不要)。
+# no-reload は将来トークン非再発行のカジノ向けフォールバックとして env で残す(既定OFF)。
+PLATFORM_LOBBY_URL = os.getenv("BACOPY_PLATFORM_LOBBY_URL", "").strip()  # hh88はここに起動ページURLを入れる
+# プラットフォーム別「ロビー判定文字列」(ページがロビー/起動ページに居るか)
+PLATFORM_LOBBY_MATCH = os.getenv(
+    "BACOPY_PLATFORM_LOBBY_MATCH",
+    "game-iframe-v2" if IS_HH88 else "pragmatic-play-live-lobby-baccarat",
+).strip()
+PLATFORM_HOST = os.getenv("BACOPY_PLATFORM_HOST", "hh88vip5.com" if IS_HH88 else "stake.com").strip()
+PLATFORM_NO_RELOAD = (os.getenv("BACOPY_PLATFORM_NO_RELOAD", "0") or "0").strip() not in ("0", "", "false", "no")
+# プラットフォームの起動ページURLが指定されていれば、ロビーURLをそれに差し替える
+# (Stakeは従来のStakeロビーURLのまま=後方互換)。hh88は game-iframe-v2 起動ページを入れる。
+if PLATFORM_LOBBY_URL:
+    PRAGMATIC_BACCARAT_LOBBY_URL = PLATFORM_LOBBY_URL
+# hh88 は自分の発注 gId の {"win":{gameId,nwb}} フレームを受理確証+決済に使う。
+# win は決済時(1ハンド後)に届くので、確証待ちタイムアウトを延ばす。
+WIN_SETTLE_WAIT_SEC = float(os.getenv("BACOPY_WIN_SETTLE_WAIT_SEC", "95" if IS_HH88 else "0") or 0)
+
 # ── 生CDP WebSocket ヘルパ（stdlibのみ） ──────────────────────────────
 # Pragmatic の lobby2 は cross-origin OOPIF。Playwright の page.on("websocket")
 # は OOPIF の dga WS を page に上げず、また hook 前から開いている WS を取り逃す
@@ -2244,6 +2272,16 @@ class LiveBetExecutor:
             f"[LIVE-RECOVER] goto pragmatic lobby reason={reason} "
             f"from={cur_url[:100] or '(unknown)'}"
         )
+        # hh88(no-reload): 起動トークンが都度発行されるため goto/reload で復旧できない。
+        # ナビゲーションせず multi-area の再確認だけ行う(ユーザーが手動で開いた状態を維持)。
+        if PLATFORM_NO_RELOAD:
+            logger.info(f"[LIVE-RECOVER] no-reload platform — skip goto, re-ensure multi-area (reason={reason})")
+            try:
+                self._inject_all(page)
+                self._ensure_multi_area(force=True)
+            except Exception:
+                pass
+            return True
         self._reset_multi_lobby_runtime(f"recover:{reason}")
         try:
             if cur_url and "pragmatic-play-live-lobby-baccarat" in cur_url:
@@ -3662,6 +3700,34 @@ class LiveBetExecutor:
                     f"bc={bet_obj.get('bc') or bet_obj.get('betcode') or '-'} "
                     f"amount={bet_obj.get('amount') or '-'}"
                 )
+                return
+
+            # ── win フレーム (Pragmatic): {"win":{"gameId","nwb","win","table"}} ──
+            # 自分の発注に対する個別決済(nwb=純残高変化)。hh88 では即時 {"bet":{}} confirm が
+            # 来ない場合があるため、自分の gId の win 到着を「サーバ受理の確証」として扱う
+            # (PHANTOM-GUARD に落とされないようにする)。nwb の符号で WIN/LOSE/TIE も分かる。
+            # win は全ベッターに届くが、gId が自分の送出ハンドと一致した時のみ採用する。
+            win_obj = obj.get("win")
+            if isinstance(win_obj, dict):
+                wgid = str(win_obj.get("gameId") or win_obj.get("game") or "")
+                try:
+                    nwb = float(win_obj.get("nwb"))
+                except Exception:
+                    nwb = None
+                if wgid:
+                    if not hasattr(self, "_win_by_gid"):
+                        self._win_by_gid = {}
+                    self._win_by_gid[wgid] = {"nwb": nwb, "table": str(win_obj.get("table") or ""), "at": time.time()}
+                    # 自分が送出したハンドか(直近の lpbet gId / pending bet game_id と一致)?
+                    own = (wgid == str(getattr(self, "_last_lpbet_gid", "") or "")) or (
+                        isinstance(getattr(self, "_pending_bet", None), dict)
+                        and wgid == str((self._pending_bet or {}).get("game_id") or "")
+                    )
+                    if own:
+                        # win を「サーバ受理の確証」として GAME-BET-CONFIRM 同様に記録する。
+                        self._last_game_bet_confirm = {"game": wgid, "nwb": nwb, "source": "win"}
+                        self._last_game_bet_confirm_at = time.time()
+                        logger.info(f"[WIN-CONFIRM] own bet settled via win: gId={wgid} nwb={nwb} (server-accepted)")
                 return
 
             # game id

@@ -6256,13 +6256,20 @@ class DualLinePragmaticBot(cp.Collector):
                 except Exception as e:
                     logger.warning(f"Cookie restore failed: {e}")
 
+            # プラットフォーム no-reload (hh88): 起動トークン都度発行のため goto/reload 不可。
+            # ユーザーが手動で開いた multibaccarat にアタッチし、ナビゲーションしない。
+            _no_reload = (os.getenv("BACOPY_PLATFORM_NO_RELOAD", "1" if (os.getenv("BACOPY_PLATFORM", "").strip().lower() == "hh88") else "0") or "0").strip() not in ("0", "", "false", "no")
+
             # bet_page をロビーに配置（最初の preposition/switch の準備）
-            logger.info(f"Navigating bet_page to {cp.LOBBY_URL}")
-            try:
-                bet_page.goto(cp.LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
-                bet_page.wait_for_timeout(3000)
-            except Exception as e:
-                logger.warning(f"[BOT] lobby nav failed: {e}")
+            if _no_reload:
+                logger.info("[BOT] no-reload platform: skip lobby goto (attach to manually-opened multibaccarat)")
+            else:
+                logger.info(f"Navigating bet_page to {cp.LOBBY_URL}")
+                try:
+                    bet_page.goto(cp.LOBBY_URL, wait_until="domcontentloaded", timeout=60000)
+                    bet_page.wait_for_timeout(3000)
+                except Exception as e:
+                    logger.warning(f"[BOT] lobby nav failed: {e}")
 
             _last_lobby_recover_at = 0.0
             _last_lobby_warn_at = 0.0
@@ -6271,6 +6278,10 @@ class DualLinePragmaticBot(cp.Collector):
                 nonlocal _last_lobby_recover_at, _last_lobby_warn_at, bet_page
                 if bet_page is None:
                     return False
+                # no-reload: ナビゲーションしない。現在ページをそのまま「OK」とみなす
+                # (multibaccarat に居るかは executor の multi-area 検出が担う)。
+                if _no_reload:
+                    return True
                 try:
                     cur = str(getattr(bet_page, "url", "") or "")
                 except Exception:
@@ -6374,6 +6385,11 @@ class DualLinePragmaticBot(cp.Collector):
                     err_str = str(_page_err).lower()
                     if "closed" in err_str or "target" in err_str:
                         logger.warning(f"[BOT] bet_page closed unexpectedly, reinitializing: {_page_err}")
+                        if _no_reload:
+                            # hh88: トークン都度発行のため新規ページへの goto で復旧不可。
+                            # 自動ナビせず、ユーザーが手動でマルチバカラを開き直すのを待つ。
+                            logger.error("[BOT] no-reload platform: cannot auto-recover closed page — please re-open multibaccarat manually. stopping loop.")
+                            break
                         try:
                             bet_page = ctx.new_page()
                             bet_page.on("websocket", self._on_ws)
