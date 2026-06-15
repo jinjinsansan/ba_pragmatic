@@ -201,9 +201,15 @@ certutil -hashfile dist/bacopy_engine.exe MD5
    - `main.js buildSpawnSpec`: `config.platform`→`childEnv.BACOPY_PLATFORM`・hh88は ws transport + WS実BET を強制(CDP注入はclick不可)。
    - `main.js ensureCdpChrome`: hh88 は hh88 ログインURLを開く(Stakeロビーでなく)。`startBot` が `cfg.platform` を Chrome起動 env へ。
    - **排他**(片側のみ)。Stakeは全経路で既定`stake`=無影響。**未テスト(Electron実起動での目視確認推奨)・未asarビルド**。
-3. push(GUI分 `4b575db`)・GUI asar再ビルド→hh88受け子インストーラ。
+3. ~~push(GUI分)~~ ✅完了(`4b575db`/`b3fcd01` push済)。~~GUI asar~~ ✅bafatherへデプロイ&目視確認済(下記)。
 4. HKD→USD 換算(課金/週次連携・Phase3)。
-5. bafather への hh88 投入は別途(Stake本番機なので別個体/別フォルダ推奨)。
+5. bafather への hh88 **エンジン**投入は別途(Stake本番機なので別個体/別フォルダ推奨。GUIのdropdownは入ったが engine は現状 Stake用のまま)。
+
+### bafather GUI デプロイ済み(2026-06-15 続セッション)
+- GUI asar(electron-builder --dir・**254,683 bytes**・dropdown入り)を bafather `C:\BACOPYRECEIVER_user01\resources\app.asar` へ差替え。
+  - 差替え時 GUI/engine とも停止中(gui=0/engine=0)=Stake無停止。バックアップ=`app.asar.bak_20260615_183513`(旧251,787)。
+  - 手順: ローカル `npx electron-builder --dir` → scp `dist/win-unpacked/resources/app.asar` を bafather `C:\bacopy\app.asar.new` → `_baf_swapasar_u01.ps1` を scp して **`-File` 実行**(★SSH越しインラインPSは`$`が食われる→必ず`-File`)。SSH=`ssh -i C:\Users\USER\.ssh\laplace_vps Administrator@162.43.83.54`。
+  - **ユーザー目視OK**: 設定モーダルに「プラットフォーム」dropdown(Stake/hh88)表示確認。bafatherは Stake のまま運用(dropdown既定stake)。
 2. 合格 → §7 でビルド(`_rev53144`)→ MD5 → commit。
 3. GUI: main.js にプラットフォーム選択UI(childEnv へ `BACOPY_PLATFORM` 等を配線)。**排他**(Stake/hh88 同時不可)を担保。
 4. HKD→USD 換算(課金/週次連携・Phase3)。
