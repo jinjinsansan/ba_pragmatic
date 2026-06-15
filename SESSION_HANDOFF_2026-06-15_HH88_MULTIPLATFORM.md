@@ -213,6 +213,9 @@ certutil -hashfile dist/bacopy_engine.exe MD5
   - 「コピー」= URL をクリップボードへ(execCommand fallback)。「betting Chromeで開く」= main の `open-betting-url` IPC →
     `openUrlInCdpChrome(port,url)` が betting Chrome(:9222)へ **PUT /json/new?<url>** で hh88 タブを新規に開く(Chrome 149で実地動作確認)。Chrome未起動なら hh88 として ensureCdpChrome 後に開く。
   - ログイン＋multibaccaratを開く操作は手動のまま(自動化しない)。commit `9004cb2`(コピー)/`96c8f3b`(開くボタン)。
+- **プラットフォーム選択を .env に永続化(commit `db81795`)**: betting Chrome は GUI 起動時(`ensureCdpChrome(startupEnv)`・プルダウン読込より前)に立ち上がるため従来は常にStakeを開いていた。
+  `save-settings` が `BACOPY_PLATFORM` を .env に書く→次回アイコン起動で `ensureCdpChrome` が正しいカジノURLを開く。
+  運用: プルダウンでhh88選択→**設定を保存**→次回起動からhh88が開く(当該セッションは既にChrome起動済みなので「betting Chromeで開く」ボタンを使う)。
 
 ### エンジンデプロイ済み(2026-06-15 続セッション)
 - **リーン再ビルド**: 初回ビルドは 224MB(numpy/pandas/scipy/numba/pyarrow が現環境に入っていて透過混入)。正規Stakeエンジンは 68,708,941B(MD5`BF69C5DC`)。
