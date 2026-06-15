@@ -1708,6 +1708,22 @@ def _build_lpbet_xml(*, table_id: str, game_id: str, user_id: str,
                      bc: str, amount: float) -> str:
     ck = str(int(time.time() * 1000))
     amt = str(int(amount)) if float(amount).is_integer() else str(amount)
+    # ── hh88: amt は HKD 直値。GUIのSEQ/フラットは$建てなので、$0.2 等をそのまま送ると
+    #   hh88 の最低ベット 2 HKD を割ってサーバに無言で弾かれる(確証が返らず PHANTOM-GUARD
+    #   が drop=「拒否」表示)。hh88 の時だけ HKD 妥当額へスケールし最低 2 HKD を保証する。
+    #   倍率10で small02($0.2)→ちょうど 2 HKD(最小チップ)。SEQ進行は勝敗依存なので不変。
+    #   Stake(既定)は IS_HH88=False で素通し=従来挙動を一切変えない。
+    if IS_HH88:
+        try:
+            _mult = float(os.getenv("BACOPY_HH88_BET_MULT", "10") or 10)
+            _minb = float(os.getenv("BACOPY_HH88_MIN_BET", "2") or 2)
+            _hk = max(_minb, float(amount) * _mult)
+            _hk = int(round(_hk))  # 整数 HKD(2HKD刻みの卓に安全)
+            if _hk < _minb:
+                _hk = int(_minb)
+            amt = str(_hk)
+        except Exception:
+            pass
     # game module 名: マルチエリア(マルチテーブル)では Pragmatic client が
     # gm="mtb_desktop" を送る(実機キャプチャ 2026-06-06 で確認)。単一卓の
     # "baccarat_desktop" を流用すると Stake がBETを受理せず残高が動かない
