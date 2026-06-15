@@ -57,7 +57,11 @@ PLATFORM_LOBBY_MATCH = os.getenv(
     "game-iframe-v2" if IS_HH88 else "pragmatic-play-live-lobby-baccarat",
 ).strip()
 PLATFORM_HOST = os.getenv("BACOPY_PLATFORM_HOST", "hh88vip5.com" if IS_HH88 else "stake.com").strip()
-PLATFORM_NO_RELOAD = (os.getenv("BACOPY_PLATFORM_NO_RELOAD", "0") or "0").strip() not in ("0", "", "false", "no")
+# ★2026-06-15 後段の実機E2Eで判明: hh88 は route_web_socket("**") を使うと起動WS(pusher等)が
+# 壊れ Pragmatic クライアントが再launchされない。よって hh88 は **no-reload + CDP注入WSブリッジ**
+# 方式(下記 _HH88_WS_BRIDGE_INIT)に切替える。既存ソケットをそのままフックするので reload しない。
+# 既定を hh88=ON(no-reload) にする。Stake は従来通り reload 方式(既定OFF)。
+PLATFORM_NO_RELOAD = (os.getenv("BACOPY_PLATFORM_NO_RELOAD", "1" if IS_HH88 else "0") or "0").strip() not in ("0", "", "false", "no")
 # プラットフォームの起動ページURLが指定されていれば、ロビーURLをそれに差し替える
 # (Stakeは従来のStakeロビーURLのまま=後方互換)。hh88は game-iframe-v2 起動ページを入れる。
 if PLATFORM_LOBBY_URL:
@@ -399,6 +403,75 @@ _WS_BRIDGE_INIT = r"""
       return {ok: sent > 0, workers: _bworkers.length, sent: sent};
     };
   }
+})();
+"""
+
+
+# ── hh88 用 CDP注入 WS ブリッジ JS ──────────────────────────────────────
+# hh88(第2カジノ)は route_web_socket("**") を使うと起動WS(pusher等)が壊れて Pragmatic
+# クライアントが再launchされない(2026-06-15 実機E2Eで判明)。そこで route_web_socket を
+# 一切使わず、PoC `_hh88_test_bet.py` で実証済みの方式 —— WebSocket.prototype.send をフックして
+# チャネルホストの生ソケットを window.__bacopyWS に捕捉 —— を使う。pusher 等には一切触れない。
+#   - 送信: window.__bacopyFire(xml) で捕捉したソケットに直接 lpbet を送る。
+#   - 受信: 捕捉ソケットに 'message' リスナを付け、受信フレームを window.__bacopyRecv に蓄積。
+#           engine の tick が window.__bacopyDrain() で吸い上げ _on_ws_message に流す。
+#   - uId: 送信フレームの uId="..." を window.__bacopyUid に控える。
+# add_init_script で新規ドキュメントに注入しつつ、no-reload のため既存フレームには
+# engine 側から page.evaluate で同じスクリプトを再注入する(冪等: __bacopyHook ガード)。
+_HH88_WS_BRIDGE_INIT = r"""
+(() => {
+  if (window.__bacopyHook) return;
+  window.__bacopyHook = true;
+  window.__bacopyRecv = window.__bacopyRecv || [];
+  var RECV_CAP = 600;
+  var _attachRecv = function(ws) {
+    try {
+      if (!ws || ws.__bacopyRecvAttached) return;
+      ws.__bacopyRecvAttached = true;
+      ws.addEventListener('message', function(ev) {
+        try {
+          var d = ev && ev.data;
+          if (typeof d === 'string' && d.length) {
+            window.__bacopyRecv.push(d);
+            if (window.__bacopyRecv.length > RECV_CAP) window.__bacopyRecv.shift();
+          }
+        } catch (_) {}
+      });
+    } catch (_) {}
+  };
+  var _origSend = WebSocket.prototype.send;
+  WebSocket.prototype.send = function(d) {
+    try {
+      if (typeof d === 'string' && d.indexOf('channel="table-') >= 0) {
+        window.__bacopyWS = this;
+        var m = d.match(/uId="([^"]+)"/);
+        if (m) window.__bacopyUid = m[1];
+        _attachRecv(this);
+      }
+    } catch (_) {}
+    return _origSend.apply(this, arguments);
+  };
+  // 捕捉したチャネルホストソケットに lpbet を直接送る。
+  window.__bacopyFire = function(xml) {
+    try {
+      var ws = window.__bacopyWS;
+      if (!ws) return { ok: false, reason: 'no_socket' };
+      if (ws.readyState !== 1) return { ok: false, reason: 'socket_not_open', readyState: ws.readyState };
+      ws.send(xml);
+      return { ok: true, uid: window.__bacopyUid || null };
+    } catch (e) { return { ok: false, reason: 'exception', detail: String(e) }; }
+  };
+  // engine の tick が呼ぶ: 蓄積した受信フレームを返してバッファをクリアする。
+  window.__bacopyDrain = function() {
+    var a = window.__bacopyRecv || [];
+    window.__bacopyRecv = [];
+    return {
+      frames: a,
+      ws: !!window.__bacopyWS,
+      open: !!(window.__bacopyWS && window.__bacopyWS.readyState === 1),
+      uid: window.__bacopyUid || null
+    };
+  };
 })();
 """
 
@@ -2115,9 +2188,20 @@ class LiveBetExecutor:
         except Exception as e:
             logger.warning(f"[EXEC-SETUP] add_init_script FAILED: {e}")
 
+        # hh88: CDP注入WSブリッジを全フレームに事前注入(WebSocket.prototype.send フック)。
+        # route_web_socket を使わないので pusher 等の起動WSを壊さない。
+        if IS_HH88:
+            try:
+                context.add_init_script(_HH88_WS_BRIDGE_INIT)
+                logger.info("[EXEC-SETUP] hh88 CDP WS bridge pre-installed via add_init_script OK")
+            except Exception as e:
+                logger.warning(f"[EXEC-SETUP] hh88 WS bridge add_init_script FAILED: {e}")
+
         # multi-lobby モード: Playwright route_web_socket で game WS を透過プロキシ化し
         # Python 側から直接 BET メッセージを送信できるようにする。
-        if self._multi_lobby_mode:
+        # ★hh88 は route_web_socket("**") が起動WS(pusher)を壊すため使わない
+        #   (代わりに上の _HH88_WS_BRIDGE_INIT で送受信する)。
+        if self._multi_lobby_mode and not IS_HH88:
             self._install_ws_proxy_route(context)
 
         # セッション切り替えモーダル（「他の場所でセッションが開始されました」）を
@@ -2152,6 +2236,17 @@ class LiveBetExecutor:
         context.on("page", _on_new_page)
 
         logger.info(f"[EXEC-SETUP] setup complete — hooks registered. multi_lobby={self._multi_lobby_mode} attached_pages={len(self._attached_page_ids)}")
+        if self._multi_lobby_mode and IS_HH88 and PLATFORM_NO_RELOAD:
+            # hh88 (no-reload): reload すると pusher が壊れて Pragmatic が再launchされない。
+            # ユーザーが手動で開いた multibaccarat の既存ソケットを、CDP注入フックで掴む。
+            # add_init_script は既存ドキュメントには効かないため、ここで全フレームへ再注入する
+            # (冪等)。以降は tick の _hh88_drain_recv が受信フレームを吸い上げる。
+            logger.info("[EXEC-SETUP] hh88 no-reload: re-injecting CDP WS bridge into existing frames")
+            self._hh88_reinject_bridge()
+            self._multi_area_ready = False
+            self._last_multi_area_ensure_at = 0.0
+            logger.info("[EXEC-SETUP] lobby monitoring ready; waiting for VPS whitelist decisions")
+            return
         if self._multi_lobby_mode:
             # add_init_script は登録済みだが、既に開いている WS には適用されない。
             # ロビーを再ロードすることで、Pragmatic iframe が bridge インストール後に
@@ -3954,9 +4049,93 @@ class LiveBetExecutor:
             res = {"ok": False, "reason": f"exception:{ex}"}
         logger.info(f"[WS-BET-TEST] _ws_send result={res}")
 
+    # ── hh88 CDP注入WSブリッジ ────────────────────────────────────────────
+    def _hh88_reinject_bridge(self) -> None:
+        """hh88(no-reload): 既存フレームへ _HH88_WS_BRIDGE_INIT を再注入する(冪等)。
+        add_init_script は既存ドキュメントには効かないため、ユーザーが手動で開いた
+        multibaccarat の現フレームにフックを後付けする。"""
+        pages = [self._lobby_page] if self._lobby_page else []
+        try:
+            for p in (self._context.pages or []):
+                if p not in pages:
+                    pages.append(p)
+        except Exception:
+            pass
+        injected = 0
+        for page in pages:
+            frames = [page]
+            try:
+                frames += list(page.frames)
+            except Exception:
+                pass
+            for fr in frames:
+                try:
+                    fr.evaluate(_HH88_WS_BRIDGE_INIT)
+                    injected += 1
+                except Exception:
+                    pass
+        logger.info(f"[HH88-BRIDGE] re-injected into {injected} frame(s)")
+
+    def _hh88_drain_recv(self) -> None:
+        """hh88: 捕捉したチャネルホストソケットの受信フレームを吸い上げ、_on_ws_message に流す。
+        併せて、ソケット捕捉(__bacopyWS)/uId を engine 状態へ反映し、WS送信ゲートを開く。"""
+        pages = [self._lobby_page] if self._lobby_page else []
+        try:
+            for p in (self._context.pages or []):
+                if p not in pages:
+                    pages.append(p)
+        except Exception:
+            pass
+        frames_with_hook = 0
+        for page in pages:
+            frames = [page]
+            try:
+                frames += list(page.frames)
+            except Exception:
+                pass
+            for fr in frames:
+                try:
+                    res = fr.evaluate(
+                        "() => window.__bacopyDrain ? window.__bacopyDrain() : null"
+                    )
+                except Exception:
+                    continue
+                if not isinstance(res, dict):
+                    continue
+                frames_with_hook += 1
+                # ソケット捕捉 → WS送信ゲートを開く + uId / 擬似 ws_url を設定
+                if res.get("ws"):
+                    if not self._is_multi_table_ws:
+                        self._is_multi_table_ws = True
+                        logger.info("[HH88-BRIDGE] channel-host socket captured → is_multi_table_ws=True")
+                    if not self._game_ws_url:
+                        # _on_ws_message が st['ws_url'] を埋めるためのプレースホルダ
+                        # (hh88 では実URLを観測しないが truthy であればよい)。
+                        self._game_ws_url = "hh88-cdp-bridge"
+                    uid = str(res.get("uid") or "").strip()
+                    if uid and not self._user_id:
+                        self._user_id = uid
+                        self._persist_user_id(uid)
+                        logger.info(f"[HH88-BRIDGE] uId captured from hook: ...{uid[-8:]}")
+                # 受信フレームを既存パーサへ
+                for d in (res.get("frames") or []):
+                    try:
+                        self._on_ws_message(str(d), "")
+                    except Exception:
+                        pass
+        if frames_with_hook == 0:
+            # フックがまだ無い(ユーザーが multibaccarat を開いた直後など) → 再注入を試みる
+            self._hh88_reinject_bridge()
+
     def tick(self) -> None:
         now = time.time()
         page = self._lobby_page
+        # hh88: CDP注入ブリッジの受信フレームを吸い上げ、betsopen/win を既存パーサへ。
+        if IS_HH88:
+            try:
+                self._hh88_drain_recv()
+            except Exception as ex:
+                logger.debug(f"[HH88-BRIDGE] drain failed: {ex}")
         try:
             self._maybe_fire_ws_test_bet(now)
         except Exception as ex:
@@ -7916,6 +8095,39 @@ class LiveBetExecutor:
                     pages.append(p)
         except Exception:
             pass
+
+        # ── hh88: CDP注入ブリッジ経由で送信(route_web_socket を使わない) ──
+        # 捕捉したチャネルホストソケットへ window.__bacopyFire(xml) で直接 lpbet を送る。
+        # payload は完全な <command channel="table-{tile}"> XML なので、卓振り分けは
+        # ホスト側が channel で行う(PoC `_hh88_test_bet.py` で受理実証済み)。
+        if IS_HH88:
+            for page in pages:
+                frames = [page]
+                try:
+                    frames += list(page.frames)
+                except Exception:
+                    pass
+                for fr in frames:
+                    try:
+                        res = fr.evaluate(
+                            "(xml) => window.__bacopyFire ? window.__bacopyFire(xml) : {ok:false, reason:'no_hook'}",
+                            payload,
+                        )
+                    except Exception:
+                        continue
+                    if isinstance(res, dict) and res.get("ok"):
+                        _note_direct_lpbet_sent("hh88_fire", table_id)
+                        logger.info(f"[WS-SEND] hh88 __bacopyFire OK channel={table_id} uid={res.get('uid')}")
+                        return {"ok": True, "mode": "hh88_fire", "channel": table_id}
+                    if isinstance(res, dict) and res.get("reason") not in (None, "no_hook"):
+                        logger.info(f"[WS-SEND] hh88 __bacopyFire not-sent: {res}")
+            # フックがまだ socket を掴んでいない → 再注入して次の送信機会へ
+            logger.warning("[WS-SEND] hh88 __bacopyFire: no captured socket yet; re-injecting bridge")
+            try:
+                self._hh88_reinject_bridge()
+            except Exception:
+                pass
+            return {"ok": False, "reason": "hh88_no_socket"}
 
         def _try_open_send(url: str) -> dict:
             """__bacopy_ws_open_send: 既存 or 並列 WS を開いて送信 (Worker WS 対策)。"""

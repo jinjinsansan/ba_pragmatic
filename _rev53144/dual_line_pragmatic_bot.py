@@ -6222,7 +6222,10 @@ class DualLinePragmaticBot(cp.Collector):
 
             # プラットフォーム設定 (stake|hh88)。ページ選択/ナビで使うので早めに確定する。
             _plat = (os.getenv("BACOPY_PLATFORM", "stake") or "stake").strip().lower()
-            _no_reload = (os.getenv("BACOPY_PLATFORM_NO_RELOAD", "0") or "0").strip() not in ("0", "", "false", "no")
+            # ★hh88 は reload すると起動WS(pusher)が壊れ Pragmatic が再launchされない
+            #   → no-reload を既定ON(executor の _HH88_WS_BRIDGE_INIT が既存ソケットを掴む)。
+            #   Stake は従来どおり既定OFF(reload 方式・後方互換)。
+            _no_reload = (os.getenv("BACOPY_PLATFORM_NO_RELOAD", "1" if _plat == "hh88" else "0") or "0").strip() not in ("0", "", "false", "no")
             _host = (os.getenv("BACOPY_PLATFORM_HOST", "hh88vip5.com" if _plat == "hh88" else "stake.com") or "").strip().lower()
             _lobby_match = (os.getenv("BACOPY_PLATFORM_LOBBY_MATCH", "game-iframe-v2" if _plat == "hh88" else "pragmatic-play-live-lobby-baccarat") or "").strip().lower()
             _lobby_url = (os.getenv("BACOPY_PLATFORM_LOBBY_URL", "").strip() or cp.LOBBY_URL)

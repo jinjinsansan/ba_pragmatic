@@ -5,10 +5,14 @@
 
 ## 0. 一行サマリ & 次にやること
 **hh88 は Stake と同一の Pragmatic マルチバカラ・バックエンド。実BET受理は実証済み。プラットフォーム層も実装済み。
-残る唯一のブロッカー = エンジンの `route_web_socket(pattern="**")` が hh88 の起動(pusher等)を壊すこと。
-→ 次の作業: hh88 だけ route_web_socket をやめ、CDP注入WSブリッジ(PoC `_hh88_test_bet.py` の方式)に置き換える。**
+~~残る唯一のブロッカー = エンジンの `route_web_socket(pattern="**")` が hh88 の起動(pusher等)を壊すこと。~~
+→ ✅【2026-06-15 続セッションで実装完了】hh88 だけ route_web_socket をやめ、CDP注入WSブリッジに置換した(§11)。
+→ 次の作業 = **ローカルE2E検証**(§6 の手順で engine を起動 → betsopen 取込 → 検証BET1発 → `win.nwb` で受理確認)
+  → 合格したら §7 でビルド → commit。GUIのプラットフォーム選択UI(main.js)は最後。**
 
 設計の全体像は **`DESIGN_MULTI_PLATFORM_HH88_2026-06-15.md`**（特に §8.5 / §8.6）。本書はその実装ガイド。
+
+> ✅ **実装ステータス(2026-06-15 続セッション)**: §2-3 の CDP注入WSブリッジを `_rev53144` に実装済み（未ビルド・未commit）。詳細は末尾 **§11**。残りは E2E 検証のみ。
 
 ---
 
@@ -152,3 +156,39 @@ certutil -hashfile dist/bacopy_engine.exe MD5
 - bafather.uk: 無料ユーザーのチャージ解放 / 請求書システム(admin発行→ダッシュボード→ハイブリッド決済) /
   請求・入金履歴UI＋Telegram通知 / 週次課金システム(純PnL・キャリー可視化) を実装・本番反映(`ba`リポ)。
 - 全受け子SSH点検: 全台健全。新クライアント(bc=10/11)は現状06のみ。
+
+---
+
+## 11. ★CDP注入WSブリッジ 実装完了（2026-06-15 続セッション・未ビルド/未commit）
+§2-3 の方針どおり、hh88 を route_web_socket から CDP注入WSブリッジへ置換。**全変更は `IS_HH88`/`_plat=="hh88"` でゲート → Stake は一切無変更（後方互換）**。
+
+### 変更ファイル（デプロイ元 `_rev53144/`）
+**`dual_line_live_executor.py`**
+1. `PLATFORM_NO_RELOAD` 既定を **hh88=ON**（reload で pusher を壊さない）。
+2. 新 JS 定数 **`_HH88_WS_BRIDGE_INIT`**（PoC `_hh88_test_bet.py` 方式）:
+   - `WebSocket.prototype.send` をフック → `channel="table-` を送るソケットを `window.__bacopyWS` に捕捉・`uId` を `window.__bacopyUid` に控える。
+   - 捕捉ソケットに `message` リスナ → 受信フレームを `window.__bacopyRecv`(上限600のリング) に蓄積。
+   - `window.__bacopyFire(xml)` = 直接送信 / `window.__bacopyDrain()` = 受信フレーム＋状態(ws/open/uid)を返してクリア。
+3. `setup()`: hh88 のとき `add_init_script(_HH88_WS_BRIDGE_INIT)`、**`_install_ws_proxy_route` を skip**、no-reload で既存フレームへ再注入(`_hh88_reinject_bridge`)。
+4. 新メソッド **`_hh88_reinject_bridge()`**(既存フレームへ冪等再注入) / **`_hh88_drain_recv()`**(tick毎: ドレイン→`_on_ws_message`へ流す＋socket捕捉で `_is_multi_table_ws=True`・`_game_ws_url` placeholder・`_user_id`=uId)。
+5. `tick()` 冒頭で hh88 のとき `_hh88_drain_recv()`。
+6. `_ws_send()`: hh88 は最優先で `window.__bacopyFire(payload)` 送信(proxy/worker 経路は使わない)。socket未捕捉なら再注入して次機会。
+
+**`dual_line_pragmatic_bot.py`**
+- `_no_reload` 既定を **hh88=ON**(executor と一致)。bot は既に no-reload を完全尊重(lobby goto skip・`_ensure_pragmatic_lobby`→True)。
+
+### 設計上のポイント / 注意（次セッションが E2E でハマらないために）
+- **受信経路**: hh88 の multibaccarat は cross-origin OOPIF で `page.on("websocket")` が拾えない → JS側 `__bacopyRecv` 蓄積を engine が tick でドレインする方式にした(CDP `Network.webSocketFrameReceived` 直購読は不採用)。
+- **送信ゲート**: `send_bet` の WS送信は `_is_multi_table_ws or proxy` を要求 → hh88 は proxy 無しなので、ドレインで socket 捕捉時に `_is_multi_table_ws=True` を立てる。betsopen の窓判定(`bets_open_game_id`/`last_bets_open_at`)は `_on_ws_message` が `__bacopyRecv` 由来フレームで埋める。
+- **no-reload 前提**: ユーザーが手動で hh88 マルチエリア(multibaccarat)を開いた状態で START すること。フックは既存ソケットの次の `channel="table-` 送信で捕捉(数秒)。
+- **uId**: フックの送信フレームから捕捉(`__bacopyUid`)。hh88 は uId 非検証なので fallback でも可。
+- **py_compile 両ファイル OK**。`git diff` = executor +216 / bot +5 行。
+
+### ビルド済み(2026-06-15 続セッション)
+- `dist/bacopy_engine.exe`(224,626,745 bytes) **MD5=`257cdb99d380d71df5724d1b3bdbf7cc`**。`_rev53144`をrootへ一時コピー→PyInstaller→git restore で生成(BUILD_RC=0・ログに `Building because dual_line_live_executor.py changed`=変更反映確認)。**未E2E・未commit・未デプロイ**。
+
+### 残タスク
+1. **ローカルE2E**(§6): CDP Chrome(9223)で hh88 multibaccarat を開く → §6 の env で engine 起動 → `[HH88-BRIDGE] channel-host socket captured` → betsopen 取込 → `BACOPY_WS_BET_TEST_ONCE=1` で1発 → `[WIN-CONFIRM] ... nwb=` 確認。
+2. 合格 → §7 でビルド(`_rev53144`)→ MD5 → commit。
+3. GUI: main.js にプラットフォーム選択UI(childEnv へ `BACOPY_PLATFORM` 等を配線)。**排他**(Stake/hh88 同時不可)を担保。
+4. HKD→USD 換算(課金/週次連携・Phase3)。
