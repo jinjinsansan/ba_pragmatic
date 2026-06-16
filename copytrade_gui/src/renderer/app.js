@@ -724,6 +724,7 @@ const DEFAULT_SETTINGS = {
   dual_unit: 100,
   dual_mode: 'v3',
   platform: 'stake',
+  seq_shape: 'attack',
   dual_live: false,
   dual_on_limit: 'stop',
   manual_assist_auto_click: false,
@@ -1111,6 +1112,7 @@ $('#btnSettings')?.addEventListener('click', async () => {
   _loadMoneyModeUI(s.dual_money_mode || 'small1');
   if ($('#inputDualUnit')) $('#inputDualUnit').value = s.dual_unit || 100;
   if ($('#inputSeqTurns')) $('#inputSeqTurns').value = String(s.seq_turns === 5 ? 5 : 7);
+  if ($('#inputSeqShape')) $('#inputSeqShape').value = (['balance','defense'].includes(s.seq_shape) ? s.seq_shape : 'attack');
   if ($('#inputPlatform')) $('#inputPlatform').value = (s.platform === 'hh88') ? 'hh88' : 'stake';
   // hh88 選択時のみ URL コピー行を表示し、コピーボタン/切替を配線(冪等)。
   (function wireHh88Url() {
@@ -1307,6 +1309,7 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     dual_money_mode: $('#inputDualMoneyMode')?.value || 'flat',
     dual_unit: parseFloat($('#inputDualUnit')?.value || 100),
     seq_turns: parseInt($('#inputSeqTurns')?.value || '7', 10),
+    seq_shape: $('#inputSeqShape')?.value || 'attack',
     dual_mode: $('#inputDualMode')?.value || 'v3',
     platform: $('#inputPlatform')?.value || 'stake',
     dual_live: $('#inputDualLive')?.checked || false,

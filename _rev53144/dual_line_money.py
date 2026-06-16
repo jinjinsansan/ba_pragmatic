@@ -80,6 +80,23 @@ SEQ_SMALL30 = [
     1090, 1260, 1440, 1640, 1870, 2150, 2450, 2800,
 ]
 
+# ── SEQ 型(shape) — 階段の“並び”を $1 基準で定義し開始額で比例展開する ──────
+# 攻撃型(attack) = 上記 SEQ_SMALL* をそのまま使う(従来=ゼロ回帰)。
+# バランス型(balance)=CAND_A / 守備型(defense)=CAND_B は $1 基準の整数配列で、
+# 開始額(各versionの先頭額=0.2/0.6/1/3/6/10/30)を掛けて版を生成する。
+# 整数×(0.2の倍数)=0.2の倍数 なので全段がチップ妥当額になる(丸め不要)。
+# 2026-06-16 のリスク分析(`SEQ_STAIRCASE_ANALYSIS_2026-06-16.md`)に基づく:
+#   守備型は必要元本ほぼ半減・破滅テール46%減(利益は約56%維持)。
+SEQ_SHAPE_BALANCE = [  # CAND_A: 序盤緩め・天井250x(利益77%維持)
+    1, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 27, 33, 40, 48, 58, 70, 84,
+    100, 115, 130, 145, 160, 175, 190, 205, 220, 235, 250,
+]
+SEQ_SHAPE_DEFENSE = [  # CAND_B: 序盤最緩・天井200x(生存最優先)
+    1, 1, 1, 2, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 26, 31, 37, 44, 52,
+    62, 74, 88, 104, 122, 140, 158, 176, 194, 200,
+]
+SMALL_SEQ_MODES = ("small02", "small06", "small1", "small3", "small6", "small10", "small30")
+
 BET_MODES = {
     "flat": "1 unit flat",
     "small02": "SMALL SEQ $0.20 start",
@@ -173,21 +190,25 @@ class BetManager:
 
     def _resolve_seq(self) -> list[float]:
         m = self.mode
-        if m == "small02":
-            return list(SEQ_SMALL02)
-        if m == "small06":
-            return list(SEQ_SMALL06)
-        if m == "small1":
-            return list(SEQ_SMALL1)
-        if m == "small3":
-            return list(SEQ_SMALL3)
-        if m == "small6":
-            return list(SEQ_SMALL6)
-        if m == "small10":
-            return list(SEQ_SMALL10)
-        if m == "small30":
-            return list(SEQ_SMALL30)
-        return [1.0]
+        # 攻撃型(=従来)の基準配列
+        attack = {
+            "small02": SEQ_SMALL02, "small06": SEQ_SMALL06, "small1": SEQ_SMALL1,
+            "small3": SEQ_SMALL3, "small6": SEQ_SMALL6, "small10": SEQ_SMALL10,
+            "small30": SEQ_SMALL30,
+        }.get(m)
+        if attack is None:
+            return [1.0]
+        attack = list(attack)
+        # ── 型(shape)切替: balance=CAND_A / defense=CAND_B を開始額で比例展開 ──
+        # 既定 attack は従来挙動のまま(ゼロ回帰)。env `BACOPY_SEQ_SHAPE` で切替。
+        shape = (os.getenv("BACOPY_SEQ_SHAPE", "") or "").strip().lower()
+        if m in SMALL_SEQ_MODES and shape in ("balance", "a", "bal", "cand_a"):
+            start = attack[0]
+            return [round(x * start, 4) for x in SEQ_SHAPE_BALANCE]
+        if m in SMALL_SEQ_MODES and shape in ("defense", "defence", "b", "def", "cand_b"):
+            start = attack[0]
+            return [round(x * start, 4) for x in SEQ_SHAPE_DEFENSE]
+        return attack
 
     # ── ベット計算 ──────────────────────────────────────────────
 

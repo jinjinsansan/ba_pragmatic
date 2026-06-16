@@ -956,6 +956,11 @@ function buildSpawnSpec(config) {
     const dualMode = String((config && config.dual_mode) || 'v3').toLowerCase();
     childEnv.BACOPY_DUAL_MODE = (dualMode === 'v4') ? 'v4' : 'v3';
 
+    // SEQ 型(階段の上げ方): attack(現行=既定) / balance(CAND_A) / defense(CAND_B)。
+    // エンジンは BACOPY_SEQ_SHAPE を読む。攻撃型は従来配列のまま(ゼロ回帰)。
+    const seqShape = String((config && config.seq_shape) || 'attack').toLowerCase();
+    childEnv.BACOPY_SEQ_SHAPE = (seqShape === 'balance' || seqShape === 'defense') ? seqShape : 'attack';
+
     // ── プラットフォーム切替 (Stake / hh88) ──────────────────────────────
     // 排他: GUI は常に片側のみ(オーナー指示・Pragmatic の異変検知回避)。既定 stake で
     // 従来挙動を一切変えない。hh88 は同一 Pragmatic バックエンドだが CDP注入WSブリッジ
