@@ -165,12 +165,21 @@ class BetManager:
         # セット長(7=標準 / 5=5ターン制)。全SMALL SEQで選択可。
         self.seq_set_size: int = 5 if int(seq_set_size or 7) == 5 else 7
         self._seq7_tracker: MaruBatsuTracker | None = None
-        if self.mode in ("small02", "small06", "small1", "small3", "small6", "small10", "small30"):
+        if self.mode in SMALL_SEQ_MODES:
             self._seq7_tracker = MaruBatsuTracker(
                 chip_base=1.0,
                 seq=list(self.current_seq),
                 set_size=self.seq_set_size,
             )
+            # 検証/運用用: どの型(階段)で動いているかをログで確認できるようにする。
+            _shape = (os.getenv("BACOPY_SEQ_SHAPE", "") or "attack").strip().lower() or "attack"
+            try:
+                logger.info(
+                    f"[SEQ-SHAPE] mode={self.mode} shape={_shape} set_size={self.seq_set_size} "
+                    f"start={self.current_seq[0]} top={self.current_seq[-1]} steps={len(self.current_seq)}"
+                )
+            except Exception:
+                pass
 
         # Martingale 状態
         self.loss_count: int = 0
