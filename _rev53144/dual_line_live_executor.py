@@ -4133,6 +4133,11 @@ class LiveBetExecutor:
                 frames_with_hook += 1
                 # ソケット捕捉 → WS送信ゲートを開く + uId / 擬似 ws_url を設定
                 if res.get("ws"):
+                    # ★この fr が multibaccarat クライアントのフレーム(socket+タイルが同居)。
+                    #   オーバーレイ/センタリング(`_find_pragmatic_frame`)は Playwright の
+                    #   page.frames 探索が hh88 の入れ子OOPIFで間欠的に失敗するため、ここで
+                    #   掴めている確実なフレーム参照をキャッシュしフォールバックに使う。
+                    self._hh88_game_frame = fr
                     if not self._is_multi_table_ws:
                         self._is_multi_table_ws = True
                         logger.info("[HH88-BRIDGE] channel-host socket captured → is_multi_table_ws=True")
@@ -5910,6 +5915,17 @@ class LiveBetExecutor:
             # In multi-lobby mode a lobby/shell Pragmatic frame is not actionable:
             # focusing it causes not_multi_baccarat_dom and consumes the short
             # signal window. Wait for the real /desktop/multibaccarat frame.
+            # ★hh88 フォールバック: page.frames の URL 探索が入れ子OOPIFで間欠失敗する
+            #   ため、drain が掴んだ確実な multibaccarat フレーム参照を使う(オーバーレイ
+            #   間欠の根治)。detached なら使わず通常の None フォールバックに戻る。
+            if multi_fallback is None and IS_HH88:
+                cached = getattr(self, "_hh88_game_frame", None)
+                if cached is not None:
+                    try:
+                        if not cached.is_detached():
+                            return cached
+                    except Exception:
+                        pass
             return multi_fallback
         return multi_fallback or fallback
 
