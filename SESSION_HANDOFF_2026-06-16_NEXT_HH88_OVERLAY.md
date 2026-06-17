@@ -130,3 +130,12 @@ commit `68bbf85`。実機検証: test-bet勝ち → `[HH88-PNL] nwb=+1.90 HKD` �
 
 ### 残: 配布のみ
 user02-10へ最終engine(`4563280…`)+asar を一括転送(オーナー指示で hh88 完了後)。既定=攻撃型/Stake なので安全。
+
+---
+
+## ★ 2026-06-17 追加: hh88 を $等価BET + $表示に変更(オーナー要望)
+**最終エンジン MD5 = `c656ca1509aa2a7407adc46bcb40e15b`**(旧`4563280`を更新)。GUI asar=263,375(pnl_only入り)。
+- **BET換算 ×10 → 実FX ×7.8**(`BACOPY_FX_HKD_USD`=7.8): $1 SEQ→8 HKD(=$1.03), $3→23 HKD(=$2.95)。Stakeと$価値ほぼ等価。small02($0.2→1.56→2 HKD床)は実質使えない(オーナー許容)。明示`BACOPY_HH88_BET_MULT`があれば倍率優先(後方互換)。
+- **PnL/表示を$建てに統一**: bot `_poll_billing_hh88` が win.nwb(HKD)を ÷FX で USD化 → daily_pnl=$・currency=USDT・`pnl_only=true`。GUIは pnl_only の時 daily_pnl を $ でDAILY TOTAL表示。bafather.uk/admin/users・ユーザーページは engine が USD でPOSTするので**自動で$表示(変更不要)**。
+- 数値検証OK: $1→8 HKD(=$1.03)/win$1→pnl$0.974。③のフロー自体は前回実機検証済み(数値定数のみ変更)。commit `e698ea0`。
+- 任意: 次にローカルhh88を開く機会に test-bet 1発で $表示の最終確認可(必須でない)。
