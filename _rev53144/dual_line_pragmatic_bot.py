@@ -3746,9 +3746,14 @@ class DualLinePragmaticBot(cp.Collector):
             try:
                 ms = self.money.status_dict()
                 auto = (not self.manual_assist) or bool(self.manual_assist_auto_click)
+                _platform = (os.getenv("BACOPY_PLATFORM", "stake") or "stake").strip().lower()
+                _seq_shape = (os.getenv("BACOPY_SEQ_SHAPE", "") or "attack").strip().lower() or "attack"
                 state["bot_status"] = {
                     "running": True,
                     "mode": "auto" if auto else "manual",
+                    "platform": _platform,                        # stake / hh88
+                    "dual_mode": getattr(self, "dual_mode", "v3"),  # v3=6パターン / v4=10パターン
+                    "seq_shape": _seq_shape,                       # attack / balance / defense
                     "follow": bool(self._follow_enabled),
                     "follow_active": bool(self._follow_active),
                     "follow_chain": int(self._follow_chain or 0),
