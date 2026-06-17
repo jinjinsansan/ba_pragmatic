@@ -350,8 +350,11 @@ let _engineDailyPnl = null;
 // = current_balance - daily_open.balance。DAILY TOTAL ヘッダーはこれを最優先表示し、
 // bafather.uk の各自デイリートータルと一致させる(engine の daily_total msg から算出)。
 let _engineDailyTotal = null;
-// 通貨(hh88=HKD)。HKD の時は残高差分でなく daily_pnl(win.nwb合計=実HKD)を表示する。
+// 通貨ラベル(参考)。
 let _engineCurrency = '';
+// 残高が取れないプラットフォーム(hh88)。true の時は残高差分でなく daily_pnl($, 換算済)を
+// DAILY TOTAL に表示する。Stake は false(従来=残高差分)。
+let _enginePnlOnly = false;
 
 let sessionTotal = 0;
 let _balanceConfirmed = false; // エンジンから実残高を受信したら true
@@ -602,10 +605,10 @@ function updateSessionDisplay() {
 
   const todayEl = $('#todayPnl');
   if (todayEl) {
-    // hh88(HKD): 残高差分が取れない(別通貨)ので daily_pnl(=win.nwb合計, 実HKD)を表示。
-    if (_engineCurrency === 'HKD' && typeof _engineDailyPnl === 'number' && isFinite(_engineDailyPnl)) {
+    // hh88(pnl_only): 残高差分が取れないので daily_pnl($, HKD→USD換算済)を $ で表示。
+    if (_enginePnlOnly && typeof _engineDailyPnl === 'number' && isFinite(_engineDailyPnl)) {
       const d = _engineDailyPnl;
-      todayEl.textContent = `${d >= 0 ? '+' : '-'}HK$${Math.abs(d).toFixed(2)}`;
+      todayEl.textContent = `${d >= 0 ? '+$' : '-$'}${Math.abs(d).toFixed(2)}`;
       todayEl.className = 'today-pnl ' + (d >= 0 ? 'positive' : 'negative');
     }
     // Stake: bafather.uk のリアルタイム監視(admin/users)と同じ残高差分
@@ -2437,6 +2440,7 @@ window.valhalla.onAgentMessage((msg) => {
       const d = Number(msg.daily_pnl);
       if (isFinite(d)) _engineDailyPnl = d;
       if (typeof msg.currency === 'string' && msg.currency) _engineCurrency = msg.currency;
+      if (typeof msg.pnl_only === 'boolean') _enginePnlOnly = msg.pnl_only;
       // bafather.uk 監視(admin/users)と同一式: current_balance - daily_open.balance。
       // ★balance が実数(null/欠落でない)の時のみ更新。Number(null)=0 で残高差分を
       //   0 にしてしまう事故(hh88 は balance=null)を防ぐため typeof で厳密判定。

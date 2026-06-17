@@ -1723,17 +1723,18 @@ def _build_lpbet_xml(*, table_id: str, game_id: str, user_id: str,
                      bc: str, amount: float) -> str:
     ck = str(int(time.time() * 1000))
     amt = str(int(amount)) if float(amount).is_integer() else str(amount)
-    # ── hh88: amt は HKD 直値。GUIのSEQ/フラットは$建てなので、$0.2 等をそのまま送ると
-    #   hh88 の最低ベット 2 HKD を割ってサーバに無言で弾かれる(確証が返らず PHANTOM-GUARD
-    #   が drop=「拒否」表示)。hh88 の時だけ HKD 妥当額へスケールし最低 2 HKD を保証する。
-    #   倍率10で small02($0.2)→ちょうど 2 HKD(最小チップ)。SEQ進行は勝敗依存なので不変。
-    #   Stake(既定)は IS_HH88=False で素通し=従来挙動を一切変えない。
+    # ── hh88: amt は HKD 直値。GUIのSEQ/フラットは$建てなので、$額を実FX(HKD/USD≈7.8)で
+    #   HKD へ換算して $等価で賭ける($1→~8 HKD)。これで $/Stake と価値が揃い、PnLも÷FXで
+    #   $表示できる。最低 2 HKD(チップ床)は保証(small02 等は床に当たり実質使えない=許容)。
+    #   BACOPY_HH88_BET_MULT を明示すればそれを倍率優先(旧×10運用の後方互換)。
+    #   SEQ進行は勝敗依存なので不変。Stake は IS_HH88=False で素通し(従来挙動不変)。
     if IS_HH88:
         try:
-            _mult = float(os.getenv("BACOPY_HH88_BET_MULT", "10") or 10)
+            _fx = float(os.getenv("BACOPY_FX_HKD_USD", "7.8") or 7.8)
+            _mult = float(os.getenv("BACOPY_HH88_BET_MULT", "") or _fx)
             _minb = float(os.getenv("BACOPY_HH88_MIN_BET", "2") or 2)
             _hk = max(_minb, float(amount) * _mult)
-            _hk = int(round(_hk))  # 整数 HKD(2HKD刻みの卓に安全)
+            _hk = int(round(_hk))  # 整数 HKD
             if _hk < _minb:
                 _hk = int(_minb)
             amt = str(_hk)
