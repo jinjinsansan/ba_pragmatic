@@ -5129,6 +5129,20 @@ class LiveBetExecutor:
             return
         self._last_lobby_recover_at = now
         self._session_recover_pending = False
+        # hh88(no-reload): 起動トークンが都度発行 + CDP注入WSブリッジは現ソケットに依存するため、
+        # ここで goto すると (a) Stake等の既定ロビーURLへ飛ぶ・(b) WSブリッジが切れて
+        # 「closed page」→ループ停止、を引き起こす(2026-06-17 bafather実機で発生)。
+        # よって no-reload では一切ナビゲートせず、現在のマルチバカラ面で再inject/再確認のみ。
+        # (セッションが本当に死んでいればユーザーが手動で開き直す。Stakeは従来通り goto 復旧。)
+        if PLATFORM_NO_RELOAD:
+            logger.info("[SESSION-RECOVER] no-reload platform — skip goto, re-ensure multi-area on current page")
+            try:
+                self._inject_all(page)
+                self._ensure_multi_area(force=True)
+                self._last_bets_open_at = time.time()  # 直後の feed-dead 再トリガー防止
+            except Exception as e:
+                logger.warning(f"[SESSION-RECOVER] no-reload re-ensure failed: {e}")
+            return
         try:
             logger.info("[SESSION-RECOVER] re-entering lobby to restore session")
             page.goto(PRAGMATIC_BACCARAT_LOBBY_URL, wait_until="domcontentloaded", timeout=45000)
