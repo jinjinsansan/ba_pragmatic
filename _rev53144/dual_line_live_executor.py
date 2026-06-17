@@ -3851,6 +3851,16 @@ class LiveBetExecutor:
                     if not hasattr(self, "_win_by_gid"):
                         self._win_by_gid = {}
                     self._win_by_gid[wgid] = {"nwb": nwb, "table": str(win_obj.get("table") or ""), "at": time.time()}
+                    # hh88: 自分が発注した gId の win.nwb(実HKD決済額)を PnL に積む。
+                    # 集合照合(全自BET)+gid重複除外で、卓またぎでも取りこぼさず二重計上もしない。
+                    if IS_HH88 and nwb is not None and wgid in getattr(self, "_own_bet_gids", set()):
+                        if not hasattr(self, "_hh88_nwb_counted"):
+                            self._hh88_nwb_counted = set()
+                            self._hh88_nwb_unposted = 0.0
+                        if wgid not in self._hh88_nwb_counted:
+                            self._hh88_nwb_counted.add(wgid)
+                            self._hh88_nwb_unposted = float(getattr(self, "_hh88_nwb_unposted", 0.0)) + float(nwb)
+                            logger.info(f"[HH88-PNL] own settle gId={wgid} nwb={nwb:+.2f} HKD (unposted={self._hh88_nwb_unposted:+.2f})")
                     # 自分が送出したハンドか(直近の lpbet gId / pending bet game_id と一致)?
                     own = (wgid == str(getattr(self, "_last_lpbet_gid", "") or "")) or (
                         isinstance(getattr(self, "_pending_bet", None), dict)
@@ -8130,6 +8140,18 @@ class LiveBetExecutor:
             ck = str(m_ck.group(1) if m_ck else "").strip()
             self._last_lpbet_gid = gid
             self._last_lpbet_at = time.time()
+            # hh88: 自分が発注した gId 集合を保持(win.nwb=実HKD決済額の照合用)。
+            # 卓をまたぐと `own`(直近1件照合)は取りこぼすため、全自BETを集合で記録する。
+            if gid:
+                if not hasattr(self, "_own_bet_gids"):
+                    self._own_bet_gids = set()
+                    self._own_bet_gids_order = []
+                if gid not in self._own_bet_gids:
+                    self._own_bet_gids.add(gid)
+                    self._own_bet_gids_order.append(gid)
+                    if len(self._own_bet_gids_order) > 500:
+                        _o = self._own_bet_gids_order.pop(0)
+                        self._own_bet_gids.discard(_o)
             # bot 自身の送信 ck を記録(直近20件)。_on_ws_sent で手動 lpbet と区別し、
             # 自分の uId 学習に bot 送信を混入させないため。
             if ck:
@@ -8389,6 +8411,13 @@ class LiveBetExecutor:
             return False
         wb = getattr(self, "_win_by_gid", None)
         return isinstance(wb, dict) and gid in wb
+
+    def pop_hh88_nwb_delta(self) -> float:
+        """hh88: 前回呼出し以降に確定した自BETの win.nwb(実HKD)合計を返してリセット。
+        bot の課金/表示ポーラーが daily_pnl(HKD)へ積むために使う。"""
+        d = float(getattr(self, "_hh88_nwb_unposted", 0.0) or 0.0)
+        self._hh88_nwb_unposted = 0.0
+        return d
 
     def bet_server_validated(self, bet_id: str) -> bool:
         """幻決済ガード: lpbet_fast系で確証したBETに、サーバ受理の後追い証拠

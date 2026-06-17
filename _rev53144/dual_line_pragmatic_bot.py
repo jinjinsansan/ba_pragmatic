@@ -3561,7 +3561,54 @@ class DualLinePragmaticBot(cp.Collector):
         except Exception as ex:
             logger.debug(f"[BILLING-BAL] capture failed: {ex}")
 
+    def _poll_billing_hh88(self) -> None:
+        """hh88: PnL を win.nwb(実HKD決済額)の合計で算出。Stake用ベット履歴DOM/残高は
+        hh88で読めない/別通貨なので使わない。daily_total を HKD で GUI へ送る。
+        executor が自BETの win.nwb を積み、pop_hh88_nwb_delta() で差分を渡す。"""
+        try:
+            today = self._billing_jst_date()
+            if self._billing_daily_date and today != self._billing_daily_date:
+                self._billing_prev_pnl = self._billing_daily_pnl
+                self._billing_prev_date = self._billing_daily_date
+                self._billing_daily_pnl = 0.0
+                self._billing_daily_date = today
+                logger.info(f"[BILLING] JST rollover (hh88) -> {today} prev_pnl={self._billing_prev_pnl:+.2f} HKD")
+            if not self._billing_daily_date:
+                self._billing_daily_date = today
+            _popf = getattr(self.bet_executor, "pop_hh88_nwb_delta", None)
+            _delta = float(_popf() or 0.0) if callable(_popf) else 0.0
+            if _delta != 0.0:
+                self._billing_daily_pnl += _delta
+                self._billing_count += 1
+                logger.info(
+                    f"[BILLING-HH88] nwb +={_delta:+.2f} HKD -> daily_pnl={self._billing_daily_pnl:+.2f} HKD "
+                    f"n={self._billing_count}"
+                )
+                self._save_billing_state()
+            self._billing_currency = "HKD"
+        except Exception as ex:
+            logger.debug(f"[BILLING-HH88] poll error: {ex}")
+        # GUI DAILY TOTAL: hh88 は別通貨残高を信頼できないので balance=None にし、
+        # GUI が daily_pnl(HKD)を表示にフォールバックできるようにする。
+        try:
+            send_msg({
+                "type": "daily_total",
+                "daily_pnl": round(float(self._billing_daily_pnl or 0.0), 2),
+                "daily_date": str(self._billing_daily_date or ""),
+                "balance": None,
+                "daily_open_balance": None,
+                "currency": "HKD",
+                "count": int(self._billing_count or 0),
+            })
+        except Exception:
+            pass
+
     def _poll_bet_history_billing(self) -> None:
+        # hh88 は PnL を win.nwb(実HKD決済額)で算出する専用経路へ(Stake用DOM/残高は
+        # hh88で読めない/別通貨)。Stake は以降の従来ロジックのまま(無変更)。
+        if (os.getenv("BACOPY_PLATFORM", "stake") or "stake").strip().lower() == "hh88":
+            self._poll_billing_hh88()
+            return
         try:
             self._capture_stake_balance()
             reader = getattr(self.bet_executor, "read_bet_history", None)

@@ -350,6 +350,8 @@ let _engineDailyPnl = null;
 // = current_balance - daily_open.balance。DAILY TOTAL ヘッダーはこれを最優先表示し、
 // bafather.uk の各自デイリートータルと一致させる(engine の daily_total msg から算出)。
 let _engineDailyTotal = null;
+// 通貨(hh88=HKD)。HKD の時は残高差分でなく daily_pnl(win.nwb合計=実HKD)を表示する。
+let _engineCurrency = '';
 
 let sessionTotal = 0;
 let _balanceConfirmed = false; // エンジンから実残高を受信したら true
@@ -600,10 +602,16 @@ function updateSessionDisplay() {
 
   const todayEl = $('#todayPnl');
   if (todayEl) {
-    // bafather.uk のリアルタイム監視(admin/users)と同じ残高差分
+    // hh88(HKD): 残高差分が取れない(別通貨)ので daily_pnl(=win.nwb合計, 実HKD)を表示。
+    if (_engineCurrency === 'HKD' && typeof _engineDailyPnl === 'number' && isFinite(_engineDailyPnl)) {
+      const d = _engineDailyPnl;
+      todayEl.textContent = `${d >= 0 ? '+' : '-'}HK$${Math.abs(d).toFixed(2)}`;
+      todayEl.className = 'today-pnl ' + (d >= 0 ? 'positive' : 'negative');
+    }
+    // Stake: bafather.uk のリアルタイム監視(admin/users)と同じ残高差分
     // (current_balance - daily_open.balance)を最優先表示。残高が取れない時は
     // bafather.uk と同様に "--"(daily_bet_pnl にはフォールバックしない=両者一致)。
-    if (typeof _engineDailyTotal === 'number' && isFinite(_engineDailyTotal)) {
+    else if (typeof _engineDailyTotal === 'number' && isFinite(_engineDailyTotal)) {
       const d = _engineDailyTotal;
       todayEl.textContent = `${d >= 0 ? '+$' : '-$'}${Math.abs(d).toFixed(2)}`;
       todayEl.className = 'today-pnl ' + (d >= 0 ? 'positive' : 'negative');
@@ -2428,12 +2436,12 @@ window.valhalla.onAgentMessage((msg) => {
       // エンジン(課金)が計算した日次値。
       const d = Number(msg.daily_pnl);
       if (isFinite(d)) _engineDailyPnl = d;
+      if (typeof msg.currency === 'string' && msg.currency) _engineCurrency = msg.currency;
       // bafather.uk 監視(admin/users)と同一式: current_balance - daily_open.balance。
-      // 両方そろった時のみ更新(ws無音で balance 欠落時は直前値を保持=ちらつき防止)。
-      const _bal = Number(msg.balance);
-      const _open = Number(msg.daily_open_balance);
-      if (isFinite(_bal) && isFinite(_open)) {
-        _engineDailyTotal = _bal - _open;
+      // ★balance が実数(null/欠落でない)の時のみ更新。Number(null)=0 で残高差分を
+      //   0 にしてしまう事故(hh88 は balance=null)を防ぐため typeof で厳密判定。
+      if (typeof msg.balance === 'number' && typeof msg.daily_open_balance === 'number') {
+        _engineDailyTotal = msg.balance - msg.daily_open_balance;
       }
       updateSessionDisplay();
       break;
