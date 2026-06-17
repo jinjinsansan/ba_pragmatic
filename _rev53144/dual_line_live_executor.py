@@ -4066,7 +4066,12 @@ class LiveBetExecutor:
         if not cand:
             return
         tile, gid, st = cand
-        uid = str(self._user_id or st.get("user_id") or "")
+        # ★検証BETも env ピン(BACOPY_USER_ID, ppc形式)を最優先で使う。共有チャネルホスト
+        #   から拾う self._user_id は他人uIdの混入があり拒否されるため(2026-06-17実測)。
+        _env_uid = (os.getenv("BACOPY_USER_ID", "") or "").strip()
+        _env_is_uuid = bool(re.match(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-', _env_uid))
+        uid = (_env_uid if (_env_uid and not _env_is_uuid)
+               else str(self._user_id or st.get("user_id") or ""))
         if not uid:
             logger.warning("[WS-BET-TEST] no user_id yet; will retry next tick")
             return
