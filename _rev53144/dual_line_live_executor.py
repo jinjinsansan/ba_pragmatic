@@ -45,6 +45,9 @@ PRAGMATIC_BACCARAT_LOBBY_URL = os.getenv(
 # 違うのはカジノのラッパー層(ログイン/ロビー到達/通貨)だけなので、ここを設定で切替える。
 PLATFORM = (os.getenv("BACOPY_PLATFORM", "stake") or "stake").strip().lower()
 IS_HH88 = PLATFORM == "hh88"
+# hh88 の冗長診断ログ([HH88-FIRE-XML]=毎BETのwire xml / [HH88-SENT-LPBET]=採取lpbet)は
+# 既定OFF。トラブル時のみ BACOPY_HH88_DEBUG=1 で有効化(bc/amt/uId の生フレーム差分採取)。
+_HH88_DEBUG = (os.getenv("BACOPY_HH88_DEBUG", "") or "").strip() not in ("", "0", "false", "no", "off")
 # ★2026-06-15 実測: hh88 の起動ページ(game-iframe-v2?name=PP, game_id=808)は読込ごとに
 # サーバAPIで新トークンを取得して Pragmatic を張り直す → **リロード可能**。リロード後は
 # Stakeと同じ Pragmatic lobby2 に着地し、multibaccarat へ遷移できる(同一クライアント)。
@@ -4152,11 +4155,12 @@ class LiveBetExecutor:
                         logger.info(f"[HH88-BRIDGE] uId captured from hook: ...{uid[-8:]}")
                 # 診断: 採取した lpbet 送信フレーム(手動BET含む)を記録。
                 # 手動BET時の hh88 クライアント生フレーム(bc/amt/uId)をボットと突き合わせる。
-                for sx in (res.get("sent") or []):
-                    try:
-                        logger.info(f"[HH88-SENT-LPBET] {str(sx)[:240]}")
-                    except Exception:
-                        pass
+                if _HH88_DEBUG:
+                    for sx in (res.get("sent") or []):
+                        try:
+                            logger.info(f"[HH88-SENT-LPBET] {str(sx)[:240]}")
+                        except Exception:
+                            pass
                 # 受信フレームを既存パーサへ
                 for d in (res.get("frames") or []):
                     try:
@@ -8152,8 +8156,9 @@ class LiveBetExecutor:
         # payload は完全な <command channel="table-{tile}"> XML なので、卓振り分けは
         # ホスト側が channel で行う(PoC `_hh88_test_bet.py` で受理実証済み)。
         if IS_HH88:
-            # 診断: 実際にワイヤへ送る xml(amt/bc/channel)を必ず記録する。
-            logger.info(f"[HH88-FIRE-XML] {str(payload)[:240]}")
+            # 診断: 実際にワイヤへ送る xml(amt/bc/channel)。既定OFF・BACOPY_HH88_DEBUG=1で有効。
+            if _HH88_DEBUG:
+                logger.info(f"[HH88-FIRE-XML] {str(payload)[:240]}")
             for page in pages:
                 frames = [page]
                 try:
@@ -8173,7 +8178,8 @@ class LiveBetExecutor:
                         logger.info(f"[WS-SEND] hh88 __bacopyFire OK channel={table_id} uid={res.get('uid')}")
                         return {"ok": True, "mode": "hh88_fire", "channel": table_id}
                     if isinstance(res, dict) and res.get("reason") not in (None, "no_hook"):
-                        logger.info(f"[WS-SEND] hh88 __bacopyFire not-sent: {res}")
+                        # socket未捕捉フレームのskipは正常動作(毎BET2行)→debug級に降格。
+                        logger.debug(f"[WS-SEND] hh88 __bacopyFire not-sent: {res}")
             # フックがまだ socket を掴んでいない → 再注入して次の送信機会へ
             logger.warning("[WS-SEND] hh88 __bacopyFire: no captured socket yet; re-injecting bridge")
             try:
