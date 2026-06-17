@@ -98,3 +98,35 @@ dist/bacopy_engine.exe dual-line --live --manual-assist --no-vps-poll --money-mo
 ## 7. オーナー指示(厳守)
 - GUIは常に **片側のプラットフォームのみ**(Stake or hh88)・**同時BET不可**(Pragmatic異変検知回避)。STOP→dropdown切替→START で運用。
 - bafather は **本番Stake機**。hh88変更は `IS_HH88`/`_plat=="hh88"` ゲートで Stake を壊さない。
+
+---
+
+## ★★ 2026-06-17 完了: ①②③ 全て実装・実機検証済み ★★
+**最終エンジン MD5 = `4563280329d59b06ff07e79a6711921e`**(全部入り: hh88ブリッジ+amtスケール+uIdピン+SEQ型+①②③+test-bet uId修正)。GUI asar=SEQ型+URL補助入り。**未配布(user02-10は最終バンドルを一括)**。
+
+### ① オーバーレイ/スクロール間欠 → 解決・検証済み
+真因=`_find_pragmatic_frame`がPlaywright `page.frames`依存で、hh88の入れ子OOPIFを間欠的に見失う。
+**修正=`_hh88_drain_recv`が掴む確実なmultibaccaratフレーム(socket捕捉=`ws:true`)を`self._hh88_game_frame`にキャッシュ→`_find_pragmatic_frame`のhh88フォールバックに使用**(CDP不要・低リスク)。commit `1a4c10b`。
+実機ローカル検証: socket捕捉後 `[ASSIST-HOLD] center ok=True ×17`(間欠解消・scroll+枠描画OK)。
+
+### ② 診断エンジン → クリーン版
+`[HH88-FIRE-XML]`/`[HH88-SENT-LPBET]` を `BACOPY_HH88_DEBUG=1` でのみ出力(既定OFF)。`not-sent: no_socket`をdebug級に降格。commit `72d6623`。
+
+### ③ HKD↔USD(PnL) → 解決・検証済み
+hh88は課金/表示がStake用DOM/残高(別通貨)で壊れていた → **PnLを `win.nwb`(実HKD決済額)で算出**に切替。
+- executor: 自BET gid集合(`_own_bet_gids`)で win.nwb を照合・累積 → `pop_hh88_nwb_delta()`。`[HH88-PNL]`。
+- bot: `_poll_billing_hh88()`(専用)が nwb を daily_pnl(HKD)へ。currency=HKD・balance=null。Stake経路は無変更。
+- GUI: balance=null で `_engineDailyTotal`を0にしない(typeof厳格)＋currency=HKDなら daily_pnl を `HK$` でDAILY TOTAL表示。
+commit `68bbf85`。実機検証: test-bet勝ち → `[HH88-PNL] nwb=+1.90 HKD` → `[BILLING-HH88] daily_pnl=+1.90 HKD` → `daily_total currency:HKD daily_pnl:1.9`。
+
+### ★uId 確定(配布最大リスク解消)
+手動BET採取で **hh88口座のuIdは固定=`ppc1735343648462`**(セッションで変わらない=account-permanent)と確定。動的捕捉(`…098471`/`…96873664`)は**共有チャネルホストの他人uId混入**。
+→ **環境ピン `BACOPY_HH88_UID=ppc1735343648462` は安定・正しい=配布で古くならない**。
+- test-bet も env ピンを使うよう修正(従来 self._user_id=他人uId で拒否)。commit `1011e30`。
+- bafather `.env` に既設定済み。
+
+### Stake化けの真相
+9223テスト用Chromeプロファイルに**Stakeタブが残存**し、エンジンがlobby_pageに選んだだけ(=テスト固有・本番bafatherの専用プロファイルでは起きない)。
+
+### 残: 配布のみ
+user02-10へ最終engine(`4563280…`)+asar を一括転送(オーナー指示で hh88 完了後)。既定=攻撃型/Stake なので安全。
