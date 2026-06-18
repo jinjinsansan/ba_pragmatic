@@ -24,7 +24,7 @@ ActionType = Literal["BET_P", "BET_B", "LOOK"]
 LIVE_SIGNAL_PATTERNS = frozenset({
     "telecho|telecho|B",
     "telecho|nikoichi|P",
-    "telecho|niconico|P",
+    # "telecho|niconico|P",  # EXCLUDED 2026-06-19 weak ~49% (in/out-sample一致・low-regret) — VPS反映済/次ビルドでGUIからも除外
     "niconico|niconico|B",
     "niconico|dragon|P",
     "sansan|telecho|P",
@@ -40,7 +40,7 @@ LIVE_SIGNAL_PATTERNS = frozenset({
 LIVE_SIGNAL_PATTERNS_V4 = frozenset({
     "sansan|telecho|P",
     "bline|telecho|B",
-    "telecho|niconico|P",
+    # "telecho|niconico|P",  # EXCLUDED 2026-06-19 weak ~49% (in/out-sample一致・low-regret) — VPS反映済/次ビルドでGUIからも除外
     "niconico|nikoichi|B",
     "telecho|niconico|B",
     "niconico|dragon|B",
