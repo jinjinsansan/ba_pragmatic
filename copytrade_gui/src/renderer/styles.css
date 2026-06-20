@@ -894,29 +894,59 @@ body:has(.manual-assist-panel:not(.hidden) .manual-assist-item.now) .now-ambienc
   50%     { filter: drop-shadow(0 0 5px rgba(0,255,156,0.5)); opacity: 1; }
 }
 
-/* ── 安全モード状態表示 ─────────────────────────────────────────────────
-   待機中(holding)= GUI 全体を黄色で太く縁取り + 下部に脈動する黄色バナー。
-   「賭けていない=不具合？」を打ち消し、安全モードによる意図的な待機だと
-   一目で分かるようにする。稼働中(active)は控えめな緑バナー。 */
-.safety-banner {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 99999;
-  padding: 9px 16px; text-align: center; font-size: 13px; line-height: 1.4;
-  font-weight: 500; letter-spacing: 0.2px;
-  border-top: 1px solid rgba(0,0,0,0.25);
+/* ── 安全モード ステータス (BETTING COCKPIT 準拠) ──────────────────────
+   下中央に浮かぶ glass ピル。稼働中(active)= 控えめな cyan/green。待機中
+   (holding)= amber(--tie)で脈動 + 画面全体を amber ネオンフレームで囲い、
+   「賭けていない=不具合？」を打ち消して意図的な待機だと明示する。 */
+#safetyBanner {
+  position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%);
+  z-index: 60; display: inline-flex; align-items: center; gap: 9px;
+  max-width: calc(100% - 24px); padding: 7px 13px;
+  font-family: var(--font-hud); font-size: 11px; line-height: 1;
+  border-radius: 999px; white-space: nowrap;
+  background: rgba(10,17,32,0.82); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border: 1px solid var(--border); box-shadow: 0 6px 24px rgba(0,0,0,0.45);
+  color: var(--text); animation: sb-in 0.28s ease-out;
 }
-.safety-banner.holding {
-  background: #f4c20d; color: #2a2300;
-  box-shadow: 0 -2px 16px rgba(244,194,13,0.65);
-  animation: safety-pulse 1.5s ease-in-out infinite;
+@keyframes sb-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+#safetyBanner .sb-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+#safetyBanner .sb-label { font-weight: 700; letter-spacing: 0.20em; color: var(--text-dim); }
+#safetyBanner .sb-state { font-weight: 700; letter-spacing: 0.06em; }
+#safetyBanner .sb-msg { color: var(--text-muted); letter-spacing: 0.01em; overflow: hidden; text-overflow: ellipsis; }
+#safetyBanner .sb-stats { display: inline-flex; gap: 6px; flex: none; }
+#safetyBanner .sb-stat {
+  font-weight: 700; letter-spacing: 0.03em; padding: 2px 7px; border-radius: 6px;
+  background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.06);
 }
-.safety-banner.active {
-  background: rgba(31,160,90,0.94); color: #f3fff6;
-  box-shadow: 0 -2px 12px rgba(31,160,90,0.45);
-}
-.safety-banner b { font-weight: 700; }
-@keyframes safety-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.74; } }
+#safetyBanner .sb-stat.tag6  { color: var(--accent); }
+#safetyBanner .sb-stat.tag10 { color: var(--win); }
 
-/* 待機中は本体全体を黄色い太枠で囲って不在betを強調(縁取りは内側inset)。 */
-body.safety-holding { box-shadow: inset 0 0 0 4px #f4c20d; }
-/* バナーに本文が隠れないよう下端に余白を確保。 */
-body.safety-on { padding-bottom: 40px; box-sizing: border-box; }
+/* 稼働中: cyan/green アクセント・控えめ */
+#safetyBanner.active { border-color: rgba(0,229,255,0.34); box-shadow: 0 6px 24px rgba(0,0,0,0.45), 0 0 18px rgba(0,229,255,0.12); }
+#safetyBanner.active .sb-dot { background: var(--win); box-shadow: 0 0 8px rgba(0,255,156,0.8); }
+#safetyBanner.active .sb-state { color: var(--win); text-shadow: 0 0 10px rgba(0,255,156,0.4); }
+
+/* 待機中: amber・脈動 */
+#safetyBanner.holding {
+  border-color: rgba(255,210,61,0.5); background: rgba(26,20,4,0.86);
+  box-shadow: 0 6px 26px rgba(0,0,0,0.5), 0 0 22px rgba(255,210,61,0.22);
+  animation: sb-in 0.28s ease-out, sb-breathe 2.4s ease-in-out 0.28s infinite;
+}
+#safetyBanner.holding .sb-dot { background: var(--tie); box-shadow: 0 0 9px rgba(255,210,61,0.9); }
+#safetyBanner.holding .sb-state { color: var(--tie); text-shadow: 0 0 10px rgba(255,210,61,0.5); }
+#safetyBanner.holding .sb-label { color: rgba(255,210,61,0.7); }
+@keyframes sb-breathe {
+  0%,100% { box-shadow: 0 6px 26px rgba(0,0,0,0.5), 0 0 16px rgba(255,210,61,0.16); }
+  50%     { box-shadow: 0 6px 26px rgba(0,0,0,0.5), 0 0 30px rgba(255,210,61,0.34); }
+}
+
+/* 待機中は画面全体を amber ネオンフレームで囲う(脈動・cockpit準拠・本文に被らない) */
+body.safety-holding::before {
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 55;
+  border: 1.5px solid rgba(255,210,61,0.30);
+  animation: sb-frame 2.4s ease-in-out infinite;
+}
+@keyframes sb-frame {
+  0%,100% { box-shadow: inset 0 0 16px rgba(255,210,61,0.10); border-color: rgba(255,210,61,0.22); }
+  50%     { box-shadow: inset 0 0 30px rgba(255,210,61,0.22); border-color: rgba(255,210,61,0.42); }
+}

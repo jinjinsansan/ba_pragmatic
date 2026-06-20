@@ -2288,10 +2288,7 @@ function renderDailyPnl() {
 function applySafetyStatus(msg) {
   const enabled = !!(msg && msg.enabled);
   const holding = !!(msg && msg.holding);
-  const body = document.body;
-  body.classList.toggle('safety-on', enabled);
-  body.classList.toggle('safety-holding', enabled && holding);
-  body.classList.toggle('safety-active', enabled && !holding);
+  document.body.classList.toggle('safety-holding', enabled && holding);
 
   let banner = document.getElementById('safetyBanner');
   if (!enabled) { if (banner) banner.remove(); return; }
@@ -2300,17 +2297,27 @@ function applySafetyStatus(msg) {
     banner.id = 'safetyBanner';
     document.body.appendChild(banner);
   }
-  const fmt = (d) => (d && d.n ? `${Number(d.wr || 0).toFixed(1)}%(${d.w}/${d.n})` : '—');
-  const v3 = fmt(msg && msg.v3), v4 = fmt(msg && msg.v4);
+  banner.className = holding ? 'holding' : 'active';
+  const wr = (d) => (d && d.n ? Number(d.wr || 0).toFixed(1) : '—');
+  const v3 = wr(msg && msg.v3), v4 = wr(msg && msg.v4);
+  let state, message;
   if (holding) {
-    banner.className = 'safety-banner holding';
-    const reason = (msg && msg.fresh === false) ? '勝率データ取得待ち' : '当日勝率が50%未満';
-    banner.innerHTML = `🟡 <b>安全モード: 待機中</b> — ${reason}のためBETを停止中です（不具合ではありません）　6P ${v3} ／ 10P ${v4}`;
+    state = '待機';
+    message = (msg && msg.fresh === false) ? '勝率データ取得待ち' : '当日勝率 50%未満 — BET停止中';
   } else {
-    banner.className = 'safety-banner active';
+    state = '稼働';
     const sys = ((msg && msg.allowed) || []).map((s) => (s === 'v3' ? '6P' : '10P')).join('・') || '—';
-    banner.innerHTML = `🟢 <b>安全モード: 稼働中</b> — ${sys} を狙っています（当日勝率50%以上）　6P ${v3} ／ 10P ${v4}`;
+    message = `${sys} を狙っています`;
   }
+  banner.innerHTML =
+    '<span class="sb-dot"></span>' +
+    '<span class="sb-label">SAFE MODE</span>' +
+    `<span class="sb-state">${state}</span>` +
+    `<span class="sb-msg">${message}</span>` +
+    '<span class="sb-stats">' +
+      `<span class="sb-stat tag6">6P ${v3}%</span>` +
+      `<span class="sb-stat tag10">10P ${v4}%</span>` +
+    '</span>';
 }
 
 window.valhalla.onAgentMessage((msg) => {
