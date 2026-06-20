@@ -73,6 +73,22 @@ function usage() {
 const PORT_MIN = 2222;
 const PORT_MAX = 2299;
 
+// ── 受け子別 bet-code (bc) オーバーライド ──────────────────────────────
+// Pragmatic の lpbet フレームが運ぶ "bc"(賭け先コード)は、Stake が配信する
+// クライアントのビルドが決める値で **個体依存**(うちのコードではない)。大半の
+// クライアントは Banker=1 / Player=0 (エンジン既定) だが、一部のアカウントは
+// 別符号を使うクライアントを配信される(user06 = Banker 10 / Player 11)。
+// 誤符号で送るとサーバが **沈黙拒否**(stake_delta 無し)→ PHANTOM-GUARD が
+// ドロップ → ボットが「数時間BETせずロビーに戻る」だけに見える。
+// この件は 2026-06-15 に手動 .env で修正→ 2026-06-20 に再発(再インストールで
+// .env が消えた)。ここに焼き込めば再ビルド/再インストールでも維持される。
+// 新規ユーザー追加手順: 手動で Banker と Player を 1 回ずつ置かせ、
+// engine_cli_capture.log の [WS-SENT-RAW] の bc 値を実測してここに追記。
+// キーは executorId (email の @ 前部分。例 user06@... → 'user06')。
+const BC_OVERRIDES = {
+  user06: { banker: '10', player: '11' },
+};
+
 function portFromEmail(email) {
   // SHA-256(email.lowercased) の先頭 4 byte を PORT_MIN..PORT_MAX にマップ.
   // 決定的 (同 email なら常に同ポート) なので再ビルド時も変わらない.
@@ -219,6 +235,12 @@ function main() {
     // ローカル独自signalは抑止。複数受け子のfan-out衝突を避けるため受け子からは
     // decisionのack/result(status書換)を送らない(VPSがライフサイクル所有)。
     BACOPY_VPS_DRIVEN_NOW: '1',
+    // 受け子別 bet-code(bc) オーバーライド。該当しない受け子は何も書かず
+    // エンジン既定(Banker=1/Player=0)で従来通り。詳細は BC_OVERRIDES 定義参照。
+    ...(BC_OVERRIDES[executorId] ? {
+      BACOPY_BC_BANKER: BC_OVERRIDES[executorId].banker,
+      BACOPY_BC_PLAYER: BC_OVERRIDES[executorId].player,
+    } : {}),
   };
   let out = existing;
   for (const [k, v] of Object.entries(merge)) {
