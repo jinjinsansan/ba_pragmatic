@@ -893,3 +893,30 @@ body:has(.manual-assist-panel:not(.hidden) .manual-assist-item.now) .now-ambienc
   0%,100% { filter: drop-shadow(0 0 1px rgba(0,255,156,0.18)); opacity: 0.92; }
   50%     { filter: drop-shadow(0 0 5px rgba(0,255,156,0.5)); opacity: 1; }
 }
+
+/* ── 安全モード状態表示 ─────────────────────────────────────────────────
+   待機中(holding)= GUI 全体を黄色で太く縁取り + 下部に脈動する黄色バナー。
+   「賭けていない=不具合？」を打ち消し、安全モードによる意図的な待機だと
+   一目で分かるようにする。稼働中(active)は控えめな緑バナー。 */
+.safety-banner {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 99999;
+  padding: 9px 16px; text-align: center; font-size: 13px; line-height: 1.4;
+  font-weight: 500; letter-spacing: 0.2px;
+  border-top: 1px solid rgba(0,0,0,0.25);
+}
+.safety-banner.holding {
+  background: #f4c20d; color: #2a2300;
+  box-shadow: 0 -2px 16px rgba(244,194,13,0.65);
+  animation: safety-pulse 1.5s ease-in-out infinite;
+}
+.safety-banner.active {
+  background: rgba(31,160,90,0.94); color: #f3fff6;
+  box-shadow: 0 -2px 12px rgba(31,160,90,0.45);
+}
+.safety-banner b { font-weight: 700; }
+@keyframes safety-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.74; } }
+
+/* 待機中は本体全体を黄色い太枠で囲って不在betを強調(縁取りは内側inset)。 */
+body.safety-holding { box-shadow: inset 0 0 0 4px #f4c20d; }
+/* バナーに本文が隠れないよう下端に余白を確保。 */
+body.safety-on { padding-bottom: 40px; box-sizing: border-box; }

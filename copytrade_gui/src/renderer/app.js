@@ -482,6 +482,7 @@ async function startBotFlow({ auto = false } = {}) {
     money_unit: settings.dual_unit || 100,
     seq_turns: settings.seq_turns === 5 ? 5 : 7,
     dual_mode: settings.dual_mode || 'v3',
+    safety_mode: !!settings.safety_mode,
     on_limit: settings.dual_on_limit || 'stop',
     manual_assist_auto_click: !!settings.manual_assist_auto_click,
     // オート追従: 勝った時だけ同卓追従(大路 telecho=逆張り / dragon=順張り)。
@@ -734,6 +735,7 @@ const DEFAULT_SETTINGS = {
   dual_money_mode: 'small1',
   dual_unit: 100,
   dual_mode: 'v3',
+  safety_mode: false,
   platform: 'stake',
   seq_shape: 'attack',
   kelly_bankroll: 1000,
@@ -808,6 +810,16 @@ setTimeout(() => {
   $('#inputMoneyType')?.addEventListener('change', () => { _applyMoneyTypeVisibility(); _commitMoneyMode(); });
   $('#inputSeqVariant')?.addEventListener('change', _commitMoneyMode);
   $('#inputFlatVariant')?.addEventListener('change', _commitMoneyMode);
+  // 安全モード: 変更で即エンジンへ反映(再起動不要)＋設定を永続化。
+  $('#inputSafetyMode')?.addEventListener('change', function() {
+    const enabled = this.value === 'on';
+    try { window.valhalla?.setSafetyMode?.(enabled); } catch (_) {}
+    try {
+      const st = JSON.parse(localStorage.getItem('bacopy_settings') || '{}');
+      st.safety_mode = enabled;
+      localStorage.setItem('bacopy_settings', JSON.stringify(st));
+    } catch (_) {}
+  });
 }, 100);
 
 // MONEY MODE 二段ゲート: 「SEQ」選択時はスモールSEQ(0.2/1/3/6)、非SEQ時は
@@ -1133,6 +1145,7 @@ $('#btnSettings')?.addEventListener('click', async () => {
   if ($('#inputSeqShape')) $('#inputSeqShape').value = (['balance','defense'].includes(s.seq_shape) ? s.seq_shape : 'attack');
   if ($('#inputKellyBankroll') && s.kelly_bankroll) $('#inputKellyBankroll').value = s.kelly_bankroll;
   if ($('#inputPlatform')) $('#inputPlatform').value = (s.platform === 'hh88') ? 'hh88' : 'stake';
+  if ($('#inputSafetyMode')) $('#inputSafetyMode').value = s.safety_mode ? 'on' : 'off';
   // hh88 選択時のみ URL コピー行を表示し、コピーボタン/切替を配線(冪等)。
   (function wireHh88Url() {
     const sel = $('#inputPlatform');
@@ -1331,6 +1344,7 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     seq_shape: $('#inputSeqShape')?.value || 'attack',
     kelly_bankroll: parseFloat($('#inputKellyBankroll')?.value || 1000),
     dual_mode: $('#inputDualMode')?.value || 'v3',
+    safety_mode: $('#inputSafetyMode')?.value === 'on',
     platform: $('#inputPlatform')?.value || 'stake',
     dual_live: $('#inputDualLive')?.checked || false,
     dual_on_limit: 'stop',  // 利確はSEQ保持で停止(restart=リセットは使わない)
@@ -2267,6 +2281,38 @@ function renderDailyPnl() {
   row.innerHTML = html;
 }
 
+// ── 安全モードの状態表示 ───────────────────────────────────────────────
+// engine の safety_status を受けて「安全モードで待機中(=不具合ではない)」を
+// 一目で分かるよう全体を黄色で縁取り+下部バナー表示する。稼働中(賭けられる
+// 系統あり)は緑バナー。OFF/未稼働は表示を消す。
+function applySafetyStatus(msg) {
+  const enabled = !!(msg && msg.enabled);
+  const holding = !!(msg && msg.holding);
+  const body = document.body;
+  body.classList.toggle('safety-on', enabled);
+  body.classList.toggle('safety-holding', enabled && holding);
+  body.classList.toggle('safety-active', enabled && !holding);
+
+  let banner = document.getElementById('safetyBanner');
+  if (!enabled) { if (banner) banner.remove(); return; }
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'safetyBanner';
+    document.body.appendChild(banner);
+  }
+  const fmt = (d) => (d && d.n ? `${Number(d.wr || 0).toFixed(1)}%(${d.w}/${d.n})` : '—');
+  const v3 = fmt(msg && msg.v3), v4 = fmt(msg && msg.v4);
+  if (holding) {
+    banner.className = 'safety-banner holding';
+    const reason = (msg && msg.fresh === false) ? '勝率データ取得待ち' : '当日勝率が50%未満';
+    banner.innerHTML = `🟡 <b>安全モード: 待機中</b> — ${reason}のためBETを停止中です（不具合ではありません）　6P ${v3} ／ 10P ${v4}`;
+  } else {
+    banner.className = 'safety-banner active';
+    const sys = ((msg && msg.allowed) || []).map((s) => (s === 'v3' ? '6P' : '10P')).join('・') || '—';
+    banner.innerHTML = `🟢 <b>安全モード: 稼働中</b> — ${sys} を狙っています（当日勝率50%以上）　6P ${v3} ／ 10P ${v4}`;
+  }
+}
+
 window.valhalla.onAgentMessage((msg) => {
   try {
     const t = (msg && msg.type) || 'unknown';
@@ -2488,6 +2534,11 @@ window.valhalla.onAgentMessage((msg) => {
       break;
     }
 
+    case 'safety_status': {
+      applySafetyStatus(msg);
+      break;
+    }
+
     case 'manual_assist_mode': {
       const enabled = !!msg.enabled;
       manualAssistEnabled = enabled;
@@ -2585,6 +2636,7 @@ window.valhalla.onAgentMessage((msg) => {
       setAction('Stopped');
       setPhase('stopped', '');
       addLog('Bot stopped.');
+      applySafetyStatus({ enabled: false });  // 停止時は安全モード表示を消す
       break;
 
     case 'started':

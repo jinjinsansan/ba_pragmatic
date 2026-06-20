@@ -956,6 +956,10 @@ function buildSpawnSpec(config) {
     const dualMode = String((config && config.dual_mode) || 'v3').toLowerCase();
     childEnv.BACOPY_DUAL_MODE = (dualMode === 'v4') ? 'v4' : 'v3';
 
+    // 安全モード初期値: ON のとき当日累計勝率>=50%の系統だけ BET(エンジンが両系統を
+    // 受けてゲート)。起動後は GUI プルダウン→stdin で即時 ON/OFF 切替可。既定 OFF。
+    childEnv.BACOPY_SAFETY_MODE = (config && config.safety_mode) ? '1' : '0';
+
     // SEQ 型(階段の上げ方): attack(現行=既定) / balance(CAND_A) / defense(CAND_B)。
     // エンジンは BACOPY_SEQ_SHAPE を読む。攻撃型は従来配列のまま(ゼロ回帰)。
     const seqShape = String((config && config.seq_shape) || 'attack').toLowerCase();
@@ -1933,6 +1937,21 @@ app.whenReady().then(() => {
         return { ok: false, error: 'engine_not_running' };
       }
       const msg = { ...(payload || {}), type: 'manual_assist_command' };
+      botProcess.stdin.write(JSON.stringify(msg) + '\n', 'utf-8');
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+  });
+
+  // 安全モード(当日勝率ゲート)の即時 ON/OFF をエンジンへ stdin で送る(再起動不要)。
+  // 起動時の初期値は buildSpawnSpec の BACOPY_SAFETY_MODE で渡す。
+  ipcMain.handle('set-safety-mode', (_evt, enabled) => {
+    try {
+      if (!botProcess || !botProcess.stdin || botProcess.killed) {
+        return { ok: false, error: 'engine_not_running' };
+      }
+      const msg = { type: 'safety_mode', enabled: !!enabled };
       botProcess.stdin.write(JSON.stringify(msg) + '\n', 'utf-8');
       return { ok: true };
     } catch (e) {

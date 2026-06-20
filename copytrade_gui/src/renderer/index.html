@@ -387,6 +387,14 @@
               </select>
             </div>
             <div class="form-group">
+              <label>安全モード</label>
+              <select id="inputSafetyMode">
+                <option value="off">OFF（常時BET）</option>
+                <option value="on">ON（当日勝率50%超のみBET）</option>
+              </select>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">ONの間は<b>当日累計勝率が50%以上</b>の系統(6P/10P)だけ自動BET。両方50%超なら<b>6Pを優先</b>。どちらも50%未満／データ無しはBETせず待機（ロビー維持・セッションは生存）。NOW毎に再判定し、50%を跨いだ瞬間に再開／停止。早朝など少数データ時はOFF推奨。</div>
+            </div>
+            <div class="form-group">
               <label>MONEY MODE</label>
               <select id="inputMoneyType">
                 <option value="seq">SEQ（スモールSEQ）</option>
