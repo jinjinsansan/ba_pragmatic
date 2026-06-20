@@ -235,17 +235,18 @@ function main() {
     // ローカル独自signalは抑止。複数受け子のfan-out衝突を避けるため受け子からは
     // decisionのack/result(status書換)を送らない(VPSがライフサイクル所有)。
     BACOPY_VPS_DRIVEN_NOW: '1',
-    // 受け子別 bet-code(bc) オーバーライド。該当しない受け子は何も書かず
-    // エンジン既定(Banker=1/Player=0)で従来通り。詳細は BC_OVERRIDES 定義参照。
-    ...(BC_OVERRIDES[executorId] ? {
-      BACOPY_BC_BANKER: BC_OVERRIDES[executorId].banker,
-      BACOPY_BC_PLAYER: BC_OVERRIDES[executorId].player,
-    } : {}),
+    // 受け子別 bet-code(bc) オーバーライド。該当ユーザーのみ値を入れ、非該当は
+    // 空文字 → 下の削除ロジックで .env から除去(=エンジン既定 Banker=1/Player=0)。
+    // ★build_staging/.env は連続ビルドで使い回されるため、空でも「明示削除」しないと
+    //   直前ユーザー(例 user06=10/11)の bc 行が次ユーザーに残留する(2026-06-20 実害)。
+    BACOPY_BC_BANKER: (BC_OVERRIDES[executorId] && BC_OVERRIDES[executorId].banker) || '',
+    BACOPY_BC_PLAYER: (BC_OVERRIDES[executorId] && BC_OVERRIDES[executorId].player) || '',
   };
   let out = existing;
   for (const [k, v] of Object.entries(merge)) {
-    if (k === 'BACOPY_BAFATHER_EMAIL' && !v) {
-      out = out.replace(/^BACOPY_BAFATHER_EMAIL=.*\r?\n?/m, '');
+    // 値が空のキーは .env に残さず削除(前ユーザーの値の残留を防ぐ)。
+    if ((k === 'BACOPY_BAFATHER_EMAIL' || k === 'BACOPY_BC_BANKER' || k === 'BACOPY_BC_PLAYER') && !v) {
+      out = out.replace(new RegExp('^' + k + '=.*\\r?\\n?', 'm'), '');
       continue;
     }
     const re = new RegExp(`^${k}=.*$`, 'm');
