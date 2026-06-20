@@ -134,6 +134,27 @@
 
     <!-- Hourly win-rate panel: time-of-day heat strip, click to expand -->
     <div class="section glass hourly-panel" id="hourlyPanel">
+      <!-- FX-style win-rate chart: range movement of pattern win rate over 1H/4H/D/W -->
+      <div class="wrchart" id="wrChart">
+        <div class="wrchart-head">
+          <span class="section-header wrchart-title">勝率チャート</span>
+          <span class="wrchart-tf" id="wrChartTf">
+            <button type="button" class="wr-tf-btn active" data-tf="1H">1H</button>
+            <button type="button" class="wr-tf-btn" data-tf="4H">4H</button>
+            <button type="button" class="wr-tf-btn" data-tf="D">日</button>
+            <button type="button" class="wr-tf-btn" data-tf="W">週</button>
+          </span>
+          <span class="wrchart-status" id="wrChartStatus">履歴蓄積中…</span>
+        </div>
+        <div class="wrchart-row">
+          <span class="wrchart-label tag6">6P</span>
+          <canvas class="wrchart-canvas" id="wrCanvas6" height="86"></canvas>
+        </div>
+        <div class="wrchart-row">
+          <span class="wrchart-label tag10">10P</span>
+          <canvas class="wrchart-canvas" id="wrCanvas10" height="86"></canvas>
+        </div>
+      </div>
       <div class="hourly-head" id="hourlyHead" title="時間帯別勝率(当日JST・10分毎更新)。クリックで展開">
         <span class="section-header hourly-title">TIME RATE</span>
         <span class="hourly-strip-group">
@@ -369,6 +390,7 @@
               <label>MONEY MODE</label>
               <select id="inputMoneyType">
                 <option value="seq">SEQ（スモールSEQ）</option>
+                <option value="kelly">比例（ケリー基準）</option>
                 <option value="other">フラット / マーチンゲール / ダランベール</option>
               </select>
             </div>
@@ -378,6 +400,7 @@
                 <option value="small02">スモールSEQ 0.2$</option>
                 <option value="small06">スモールSEQ 0.6$</option>
                 <option value="small1">スモールSEQ 1$</option>
+                <option value="small2">スモールSEQ 2$</option>
                 <option value="small3">スモールSEQ 3$</option>
                 <option value="small6">スモールSEQ 6$</option>
                 <option value="small10">スモールSEQ 10$</option>
@@ -391,7 +414,12 @@
                 <option value="balance">バランス型（天井250x・必要元本/破滅リスク減・利益77%）</option>
                 <option value="defense">守備型（天井200x・最も飛びにくい・利益56%）</option>
               </select>
-              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">守備型ほど序盤を寝かせ天井を下げ、必要元本と全損リスクを下げる（利益は減る）。開始額に比例して適用。</div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">守備型ほど序盤を寝かせ天井を下げ、必要元本と全損リスクを下げる（利益は減る）。開始額に比例して適用。<br><b>比例(ケリー)では</b> 攻撃=フルKelly / バランス=ハーフ / 守備=クォーター。守備推奨（複利・破滅せず・エッジ誤差に頑健）。</div>
+            </div>
+            <div class="form-group" id="kellyBankrollGroup" style="display:none;">
+              <label>元本（残高の基準 $／ライブ残高が取れれば自動上書き）</label>
+              <input type="number" id="inputKellyBankroll" value="1000" min="10" step="10">
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">比例(ケリー)＝BET=残高×f。残高に比例するので<b>ゼロにならない＝破滅しない</b>・勝てば複利で増える。エッジ確実な6パターンで使うこと（v4では効かない）。攻撃型はDDが大きい（資産が一時7割減も）ので、まず守備型推奨。</div>
             </div>
             <div class="form-group" id="seqTurnsGroup">
               <label>ターン制（セット長）</label>
@@ -426,10 +454,12 @@
               <option value="small02">small02</option>
               <option value="small06">small06</option>
               <option value="small1">small1</option>
+              <option value="small2">small2</option>
               <option value="small3">small3</option>
               <option value="small6">small6</option>
               <option value="small10">small10</option>
               <option value="small30">small30</option>
+              <option value="kelly">kelly</option>
               <option value="martingale">martingale</option>
               <option value="dalembert">dalembert</option>
               <option value="bet123">bet123</option>

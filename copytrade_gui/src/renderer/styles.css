@@ -858,3 +858,38 @@ body:has(.manual-assist-panel:not(.hidden) .manual-assist-item.now) .now-ambienc
 .hourly-cum { margin-top: 7px; font-family: var(--font-hud); font-size: 11px; color: var(--text-muted); }
 .hourly-foot { margin-top: 8px; font-family: var(--font-hud); font-size: 11px; color: var(--lose); }
 .hourly-foot:empty { display: none; }
+
+/* ── Win-rate FX-style chart (top of TIME RATE) ──────────────────────
+   勝率の推移を 1H/4H/D/W でライン+レンジ帯表示。50%基準線で損益分岐を示す。 */
+.wrchart { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.wrchart-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.wrchart-title { margin: 0; }
+.wrchart-tf { display: inline-flex; gap: 4px; }
+.wr-tf-btn {
+  font-family: var(--font-hud); font-size: 10px; letter-spacing: 1px;
+  padding: 2px 8px; border-radius: 4px; cursor: pointer;
+  background: rgba(111,138,166,0.10); color: var(--text-muted);
+  border: 1px solid rgba(111,138,166,0.22); transition: all .15s ease;
+}
+.wr-tf-btn:hover { color: var(--text); background: rgba(0,229,255,0.10); }
+.wr-tf-btn.active {
+  color: var(--bg); background: var(--accent, #00e5ff);
+  border-color: var(--accent, #00e5ff); box-shadow: 0 0 8px rgba(0,229,255,0.4);
+}
+.wrchart-status { margin-left: auto; font-family: var(--font-hud); font-size: 10px; color: var(--text-dim); }
+.wrchart-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.wrchart-label { font-family: var(--font-hud); font-size: 10px; font-weight: 700; letter-spacing: 1px; width: 26px; }
+.wrchart-label.tag6 { color: var(--accent); text-shadow: 0 0 8px rgba(0,229,255,0.5); }
+.wrchart-label.tag10 { color: var(--win); text-shadow: 0 0 8px rgba(0,255,156,0.5); }
+.wrchart-canvas { flex: 1; min-width: 0; display: block; }
+/* うっすら点滅: 描画された線/帯(非透明ピクセル)だけが neon で呼吸する(GUIの発光基調に合わせる) */
+#wrCanvas6  { animation: wr-breathe-c 3.2s ease-in-out infinite; }
+#wrCanvas10 { animation: wr-breathe-g 3.2s ease-in-out infinite; }
+@keyframes wr-breathe-c {
+  0%,100% { filter: drop-shadow(0 0 1px rgba(0,229,255,0.20)); opacity: 0.92; }
+  50%     { filter: drop-shadow(0 0 5px rgba(0,229,255,0.55)); opacity: 1; }
+}
+@keyframes wr-breathe-g {
+  0%,100% { filter: drop-shadow(0 0 1px rgba(0,255,156,0.18)); opacity: 0.92; }
+  50%     { filter: drop-shadow(0 0 5px rgba(0,255,156,0.5)); opacity: 1; }
+}

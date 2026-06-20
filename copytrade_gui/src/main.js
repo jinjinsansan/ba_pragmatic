@@ -961,6 +961,13 @@ function buildSpawnSpec(config) {
     const seqShape = String((config && config.seq_shape) || 'attack').toLowerCase();
     childEnv.BACOPY_SEQ_SHAPE = (seqShape === 'balance' || seqShape === 'defense') ? seqShape : 'attack';
 
+    // Kelly(比例)モード: 残高基準(フォールバック元本)。ライブ残高が取れれば engine が上書き。
+    // 型(攻撃/バランス/守備)は BACOPY_SEQ_SHAPE を流用(上で設定済み)。
+    if (config && config.kelly_bankroll) {
+      const kb = parseFloat(config.kelly_bankroll);
+      if (kb > 0) childEnv.BACOPY_KELLY_BANKROLL = String(kb);
+    }
+
     // ── プラットフォーム切替 (Stake / hh88) ──────────────────────────────
     // 排他: GUI は常に片側のみ(オーナー指示・Pragmatic の異変検知回避)。既定 stake で
     // 従来挙動を一切変えない。hh88 は同一 Pragmatic バックエンドだが CDP注入WSブリッジ
@@ -1789,6 +1796,41 @@ function startHourlyStatsPoller() {
   hourlyStatsTimer = setInterval(poll, 60 * 1000);
 }
 
+// ── 勝率履歴(FX風チャート用): master /api/winrate-history を5分毎に取得して
+//    renderer へ転送する。時間バケット(pattern別 date/hour/n/w)の永続蓄積を
+//    VPS cronが貯めており、GUI側で 1H/4H/D/W にリサンプルして描画する。
+//    ペイロードが hourly-stats より大きい(過去数週間分)ため低頻度ポーリング。
+let winrateHistoryTimer = null;
+function startWinrateHistoryPoller() {
+  if (winrateHistoryTimer) return;
+  const poll = () => {
+    try {
+      const envFile = loadDotEnv();
+      const base = String(envFile.BACOPY_API_URL || process.env.BACOPY_API_URL || 'https://master.bafather.uk').replace(/\/$/, '');
+      const key = String(envFile.BACOPY_API_KEY || process.env.BACOPY_API_KEY || '').trim();
+      if (!key) return;
+      const u = new URL(base + '/api/winrate-history');
+      const mod = u.protocol === 'http:' ? require('http') : require('https');
+      // Accept-Encoding: identity で proxy 圧縮を抑止(大きめのJSONをそのまま受ける)。
+      const req = mod.get(u, { headers: { Authorization: `Bearer ${key}`, 'Accept-Encoding': 'identity' }, timeout: 15000 }, (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => {
+          try { sendToRenderer('winrate-history', JSON.parse(body)); } catch (_) {}
+        });
+      });
+      req.on('timeout', () => req.destroy());
+      req.on('error', () => {});
+    } catch (_) {}
+  };
+  // 起動直後は renderer 準備とのレースを避けるため早期リトライを数回挟み、
+  // 以後は 60s 間隔(hourly と同等の信頼性)で更新する。
+  poll();
+  setTimeout(poll, 3000);
+  setTimeout(poll, 12000);
+  winrateHistoryTimer = setInterval(poll, 60 * 1000);
+}
+
 function createWindow() {
   console.log('[Main] createWindow');
   mainWindow = new BrowserWindow({
@@ -1833,6 +1875,7 @@ app.whenReady().then(() => {
   createWindow();
 
   startHourlyStatsPoller();
+  startWinrateHistoryPoller();
 
   schedulePeriodicRestart();
   _telegramNotifyFromMain('🟢 bacopy GUI started');

@@ -3551,6 +3551,11 @@ class DualLinePragmaticBot(cp.Collector):
             self._billing_currency = cur
             self._billing_current_balance = bal
             self._billing_last_balance_at = time.time()
+            # Kelly(比例)モード: ライブ残高を money に渡す(bet = f × 残高)。
+            try:
+                self.money.set_bankroll(bal)
+            except Exception:
+                pass
             today = self._billing_jst_date()
             if self._billing_balance_open_date != today or self._billing_balance_open is None:
                 self._billing_balance_open_date = today

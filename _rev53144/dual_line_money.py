@@ -51,6 +51,12 @@ SEQ_SMALL1 = [
     48, 55, 63, 73, 85, 100, 120, 140, 167, 200, 233, 267, 300, 333,
 ]
 
+# SMALL1 のちょうど2倍($2 start・天井666x)。全段が偶数=チップ妥当額。
+SEQ_SMALL2 = [
+    2, 4, 8, 12, 16, 20, 26, 32, 38, 46, 56, 64, 74, 86,
+    96, 110, 126, 146, 170, 200, 240, 280, 334, 400, 466, 534, 600, 666,
+]
+
 # SMALL02 のちょうど3倍(全段がチップ最小単位 $0.2 の倍数)
 SEQ_SMALL06 = [
     0.6, 1.2, 1.8, 2.4, 3.6, 4.8, 6.0,
@@ -95,13 +101,14 @@ SEQ_SHAPE_DEFENSE = [  # CAND_B: 序盤最緩・天井200x(生存最優先)
     1, 1, 1, 2, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 26, 31, 37, 44, 52,
     62, 74, 88, 104, 122, 140, 158, 176, 194, 200,
 ]
-SMALL_SEQ_MODES = ("small02", "small06", "small1", "small3", "small6", "small10", "small30")
+SMALL_SEQ_MODES = ("small02", "small06", "small1", "small2", "small3", "small6", "small10", "small30")
 
 BET_MODES = {
     "flat": "1 unit flat",
     "small02": "SMALL SEQ $0.20 start",
     "small06": "SMALL SEQ $0.60 start",
     "small1": "SMALL SEQ $1 start",
+    "small2": "SMALL SEQ $2 start",
     "small3": "SMALL SEQ $3 start",
     "small6": "SMALL SEQ $6 start",
     "small10": "SMALL SEQ $10 start",
@@ -109,10 +116,22 @@ BET_MODES = {
     "martingale": "pure Martingale",
     "dalembert": "D'Alembert (+/-1 unit)",
     "bet123": "1-2-3 method (1/2/3 units cycle)",
+    "kelly": "Kelly proportional (bet = f x bankroll)",
 }
 ALLOWED_MODES = set(BET_MODES.keys())
 
 BANKER_COMMISSION = 0.95
+
+# ── Kelly(比例)モード ─────────────────────────────────────────────────
+# bet = type係数 × (edge/payout) × 現在残高。残高に比例するのでゼロにならない
+# (破滅しない)・複利で伸びる。SEQの真逆=負けで増やさず、エッジと残高に比例。
+# 型(BACOPY_SEQ_SHAPE流用): 攻撃=フルKelly / バランス=ハーフ / 守備=クォーター。
+# edge=1手あたりのEV(既定=v3実測+0.61%)。payout=0.97(60%Banker*0.95+40%Player)。
+# 2026-06-20 徹底バックテスト(`_seq_pause_test/kelly_research.py`)で確定:
+#   守備=~2x/年・DD中央27%・エッジ誤差に頑健。攻撃=フルはDD78%・エッジ過信で全損注意。
+KELLY_PAYOUT = 0.97
+KELLY_CHIP = 0.2
+KELLY_SHAPE_MULT = {"attack": 1.0, "balance": 0.5, "defense": 0.25}
 
 
 # ── BetManager ────────────────────────────────────────────────────────
@@ -191,6 +210,27 @@ class BetManager:
         self.b123_step: int = 0
         self.b123_prev_won: Optional[bool] = None  # 1回目の勝敗(2回目の分岐判定用)
 
+        # Kelly(比例) 状態
+        self.kelly_edge: float = float(os.getenv("BACOPY_KELLY_EDGE", "0.0061") or 0.0061)
+        # 型は seq_shape を流用 (attack/balance/defense)
+        self.kelly_shape: str = (os.getenv("BACOPY_SEQ_SHAPE", "") or "defense").strip().lower()
+        if self.kelly_shape not in KELLY_SHAPE_MULT:
+            self.kelly_shape = "defense"
+        # フォールバック元本(ライブ残高未取得時): GUIが BACOPY_KELLY_BANKROLL で渡す
+        self.kelly_bankroll_init: float = float(os.getenv("BACOPY_KELLY_BANKROLL", "1000") or 1000)
+        self._kelly_live_bankroll: float = 0.0  # bot が set_bankroll() で更新
+        # 安全上限: 残高の何割を超えてBETしないか(edge過大設定の暴走防止)
+        self.kelly_max_frac: float = float(os.getenv("BACOPY_KELLY_MAX_FRAC", "0.05") or 0.05)
+        if self.mode == "kelly":
+            try:
+                logger.info(
+                    f"[KELLY] shape={self.kelly_shape} mult={KELLY_SHAPE_MULT[self.kelly_shape]} "
+                    f"edge={self.kelly_edge*100:.3f}% f={KELLY_SHAPE_MULT[self.kelly_shape]*self.kelly_edge/KELLY_PAYOUT*100:.3f}%/残高 "
+                    f"bankroll_init=${self.kelly_bankroll_init:.0f} max_frac={self.kelly_max_frac}"
+                )
+            except Exception:
+                pass
+
         # 前回のベット額（結果反映まで保持）
         self._last_bet_amount: float = 0.0
 
@@ -202,8 +242,8 @@ class BetManager:
         # 攻撃型(=従来)の基準配列
         attack = {
             "small02": SEQ_SMALL02, "small06": SEQ_SMALL06, "small1": SEQ_SMALL1,
-            "small3": SEQ_SMALL3, "small6": SEQ_SMALL6, "small10": SEQ_SMALL10,
-            "small30": SEQ_SMALL30,
+            "small2": SEQ_SMALL2, "small3": SEQ_SMALL3, "small6": SEQ_SMALL6,
+            "small10": SEQ_SMALL10, "small30": SEQ_SMALL30,
         }.get(m)
         if attack is None:
             return [1.0]
@@ -258,6 +298,30 @@ class BetManager:
                     return 0.0
                 amount = min(amount, remaining_loss)
             return max(amount, 0.0)
+        elif self.mode == "kelly":
+            # Kelly(比例): bet = 型係数 × (edge/payout) × 現在残高。
+            # 残高 = ライブ残高(bot が set_bankroll)優先, 無ければ 設定元本+session_pnl。
+            bank = self._kelly_live_bankroll if self._kelly_live_bankroll > 0 else (
+                self.kelly_bankroll_init + self.session_pnl
+            )
+            if bank <= 0:
+                return 0.0
+            mult = KELLY_SHAPE_MULT.get(self.kelly_shape, 0.25)
+            f = mult * (self.kelly_edge / KELLY_PAYOUT)
+            amount = f * bank
+            amount = min(amount, self.kelly_max_frac * bank)  # 安全上限
+            # チップ最小単位($0.2)に丸める
+            amount = round(amount / KELLY_CHIP) * KELLY_CHIP
+            if amount < KELLY_CHIP:
+                amount = KELLY_CHIP
+            if amount > bank:
+                amount = bank
+            if self.loss_cut > 0:
+                remaining_loss = self.loss_cut + self.session_pnl
+                if remaining_loss <= 0:
+                    return 0.0
+                amount = min(amount, remaining_loss)
+            return max(amount, 0.0)
         else:
             seq = self.current_seq
             if self._seq7_tracker is not None:
@@ -266,6 +330,15 @@ class BetManager:
             else:
                 level = min(self.seq_level, len(seq) - 1)
             return seq[level]
+
+    def set_bankroll(self, balance) -> None:
+        """Kelly用: bot が読んだライブ残高を渡す。0以下/不正は無視(フォールバック維持)。"""
+        try:
+            b = float(balance)
+            if b > 0:
+                self._kelly_live_bankroll = b
+        except Exception:
+            pass
 
     def next_bet(self, side: str = "P") -> float:
         """次のベット額を計算し _last_bet_amount を更新する。"""
@@ -301,7 +374,7 @@ class BetManager:
                 self._seq7_tracker.add_result("player")
                 self.seq_level = self._seq7_tracker.current_unit_idx
             # 従来SEQ: 勝ったら先頭に戻る
-            elif self.mode not in ("flat", "martingale", "dalembert", "bet123"):
+            elif self.mode not in ("flat", "martingale", "dalembert", "bet123", "kelly"):
                 self.seq_level = 0
             # Martingale: リセット / D'Alembert: 1段下げる(下限0)
             if self.mode == "dalembert":
@@ -316,7 +389,7 @@ class BetManager:
                 self._seq7_tracker.add_result("banker")
                 self.seq_level = self._seq7_tracker.current_unit_idx
             # 従来SEQ: レベル進行
-            elif self.mode not in ("flat", "martingale", "dalembert", "bet123"):
+            elif self.mode not in ("flat", "martingale", "dalembert", "bet123", "kelly"):
                 self.seq_level = min(self.seq_level + 1, len(self.current_seq) - 1)
             # Martingale / D'Alembert: 1段上げる
             if self.mode in ("martingale", "dalembert"):
@@ -407,6 +480,10 @@ class BetManager:
             "limit_reached": self.limit_reached,
             "limit_reason": self.limit_reason,
             "next_bet": round(self._compute_next_bet(), 2),
+            "kelly_shape": self.kelly_shape if self.mode == "kelly" else None,
+            "kelly_bankroll": (round(self._kelly_live_bankroll, 2) if self._kelly_live_bankroll > 0
+                               else round(self.kelly_bankroll_init + self.session_pnl, 2)) if self.mode == "kelly" else None,
+            "kelly_edge": self.kelly_edge if self.mode == "kelly" else None,
         }
 
     # ── 状態保存 ────────────────────────────────────────────────
