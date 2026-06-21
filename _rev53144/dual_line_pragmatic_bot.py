@@ -6402,7 +6402,7 @@ class DualLinePragmaticBot(cp.Collector):
                 logger.info(f"[BROWSER] chrome_attach enabled cdp={cdp_url}")
                 # 起動時バナー: context死からの自己復旧(full CDP reconnect)が入った engine か
                 # 一目で分かるようにする。これが出ていれば 2026-06-21 の修正が効いている。
-                logger.info("[BOT] ★CONTEXT-DEATH AUTO-RECOVERY: ENABLED (full CDP reconnect on bet_page/context death — 2026-06-21 fix)")
+                logger.info("[BOT] ★CONTEXT-DEATH AUTO-RECOVERY: ENABLED v2 (full CDP reconnect + retry/backoff up to 8x — 2026-06-21). recovery proof = '[BOT] full CDP reconnect OK on attempt N'")
                 _playwright_mgr = sync_playwright().start()
                 _chrome_browser = _playwright_mgr.chromium.connect_over_cdp(cdp_url)
                 contexts = list(getattr(_chrome_browser, "contexts", []) or [])
