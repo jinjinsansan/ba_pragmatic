@@ -2860,88 +2860,25 @@ initAuth();
   });
 })();
 
-// ── 勝率FX風チャート(TIME RATE上部) ───────────────────────────────────
-// master /api/winrate-history の時間バケット(pattern別 ymd/h/n/w)を 1H/4H/D/W に
-// リサンプルし、ライン(勝率)+レンジ帯(下位足の高安 or 信頼区間)で描画する。
-// 勝率は ~50% を中心に変動するため 50% 基準線を引き、レンジの上下動を可視化する。
+// ── 勝率レンジチャート(TIME RATE上部) ─────────────────────────────────
+// master /api/winrate-trend の「チャンネルと完全一致する累計勝率」の時系列を描画する。
+//   パターンtab : v3=self.wins / v4=self._v4  (= 6P/10P チャンネルの累計% と byte一致)
+//   追従込みtab : (NOW+follow) の累計  (= 結果チャンネルの 追従込み% / follow_sim 由来)
+// 各系列の floor(下限)/ceil(上限) を帯+破線で可視化し、その帯の中を累計%ラインが動く。
+// 小サンプルの初期振れ(n<500)は除外済みなので、帯はチャンネルで体感する狭帯域に一致する。
 // 純粋な表示機能(エンジン/賭け経路に非依存)。
 (() => {
   const chart = document.getElementById('wrChart');
-  if (!chart || !window.valhalla || !window.valhalla.onWinrateHistory) return;
+  if (!chart || !window.valhalla || !window.valhalla.onWinrateTrend) return;
   const cv6 = document.getElementById('wrCanvas6');
   const cv10 = document.getElementById('wrCanvas10');
   const statusEl = document.getElementById('wrChartStatus');
-  const tfWrap = document.getElementById('wrChartTf');
+  const tabWrap = document.getElementById('wrChartTf');
 
-  let lastData = null;           // 直近受信ペイロード
-  let tf = '1H';                 // 現在の足
-  // 足ごとの表示本数(右端=最新)。日足は「昨日/一昨日」を1本ずつ見やすくするため少なめ。
-  const MAXPTS = { '1H': 30, '4H': 30, 'D': 18, 'W': 16 };
+  let lastData = null;
+  let tab = 'pattern'; // 'pattern' | 'follow'
 
-  // ymd("2026-06-19") + h(14) → エポックms(ローカル時刻基準でグルーピング)
-  function bucketTime(b) {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(b.ymd || ''));
-    if (!m) return null;
-    return new Date(+m[1], +m[2] - 1, +m[3], +b.h || 0, 0, 0, 0).getTime();
-  }
-  const pad2 = (n) => String(n).padStart(2, '0');
-
-  // Wilson score 区間(信頼帯)。n が小さいほど広い。z=1.0(約68%)で控えめに。
-  function wilson(w, n) {
-    if (!n) return [null, null];
-    const z = 1.0, p = w / n;
-    const d = 1 + z * z / n;
-    const c = p + z * z / (2 * n);
-    const hw = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n));
-    return [(c - hw) / d, (c + hw) / d];
-  }
-
-  // 時間バケット配列 → 足にリサンプル。各点 {label, wr, lo, hi, n} を返す(時系列昇順)。
-  function resample(buckets, tframe) {
-    const rows = (buckets || [])
-      .map((b) => ({ t: bucketTime(b), h: +b.h || 0, ymd: b.ymd, n: +b.n || 0, w: +b.w || 0 }))
-      .filter((b) => b.t !== null && b.n > 0)
-      .sort((a, b) => a.t - b.t);
-    if (!rows.length) return [];
-
-    const groups = new Map(); // key → {items:[wr...], n, w, t, label}
-    const keyOf = (b) => {
-      const d = new Date(b.t);
-      if (tframe === '1H') return b.t;
-      if (tframe === '4H') return Math.floor(b.t / (4 * 3600 * 1000));
-      if (tframe === 'D') return b.ymd;
-      // W: その日の週(月曜起点)
-      const day = (d.getDay() + 6) % 7; // 月=0
-      const mon = new Date(d); mon.setDate(d.getDate() - day); mon.setHours(0, 0, 0, 0);
-      return mon.getTime();
-    };
-    const labelOf = (b) => {
-      const d = new Date(b.t);
-      if (tframe === '1H') return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}`;
-      if (tframe === '4H') { const s = Math.floor(d.getHours() / 4) * 4; return `${pad2(d.getDate())} ${pad2(s)}h`; }
-      if (tframe === 'D') return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`;
-      const day = (d.getDay() + 6) % 7; const mon = new Date(d); mon.setDate(d.getDate() - day);
-      return `${pad2(mon.getMonth() + 1)}/${pad2(mon.getDate())}~`;
-    };
-    for (const b of rows) {
-      const k = keyOf(b);
-      let g = groups.get(k);
-      if (!g) { g = { items: [], n: 0, w: 0, t: b.t, label: labelOf(b) }; groups.set(k, g); }
-      g.items.push(b.w / b.n); g.n += b.n; g.w += b.w; g.t = Math.max(g.t, b.t);
-    }
-    const out = [];
-    for (const g of groups.values()) {
-      const wr = g.w / g.n;
-      let lo, hi;
-      if (g.items.length >= 2) { lo = Math.min(...g.items); hi = Math.max(...g.items); }
-      else { const ci = wilson(g.w, g.n); lo = ci[0]; hi = ci[1]; }
-      out.push({ t: g.t, label: g.label, wr, lo, hi, n: g.n });
-    }
-    out.sort((a, b) => a.t - b.t);
-    return out.slice(-MAXPTS[tframe]);
-  }
-
-  const CHART_H = 100; // 描画高さ(px)固定。cv.height を読み返すと再描画毎に増殖するため定数化。
+  const CHART_H = 100;
   function fitCanvas(cv) {
     const dpr = window.devicePixelRatio || 1;
     const w = Math.max(120, Math.floor(cv.clientWidth || cv.parentElement.clientWidth - 30));
@@ -2954,155 +2891,118 @@ initAuth();
     return { ctx, w, h };
   }
 
-  function drawOne(cv, pts, accent, detail) {
+  // series = {points:[{ts,wr,n}], floor, ceil, cur}  ※ wr は % (例 50.49)
+  function drawRange(cv, series, accent) {
     const { ctx, w, h } = fitCanvas(cv);
     ctx.clearRect(0, 0, w, h);
-    const padL = 30, padR = 8, padT = 8, padB = 14;
+    const padL = 36, padR = 52, padT = 10, padB = 14;
     const x0 = padL, x1 = w - padR, y0 = padT, y1 = h - padB;
-    // y スケール: データの高安にタイトにフィットしてレンジの上下動(ジグザグ)を最大限見せる。
-    // 50% を強制で含めない(含めると 40%台のデータが上方に潰れてジグザグが消える)。
-    // 50% 基準線はレンジ内に入ったときだけ描く。
-    let lo = Infinity, hi = -Infinity;
-    for (const p of pts) {
-      lo = Math.min(lo, p.wr, p.lo != null ? p.lo : p.wr);
-      hi = Math.max(hi, p.wr, p.hi != null ? p.hi : p.wr);
-    }
-    if (!isFinite(lo)) { lo = 0.4; hi = 0.6; }
-    lo = Math.max(0, lo - 0.015); hi = Math.min(1, hi + 0.015);
-    const MINSPAN = 0.05; // 振れが小さい時でも最低限の縦幅を確保
-    if (hi - lo < MINSPAN) { const m = (hi + lo) / 2; lo = Math.max(0, m - MINSPAN / 2); hi = Math.min(1, m + MINSPAN / 2); }
-    const yOf = (v) => y1 - (v - lo) / (hi - lo) * (y1 - y0);
-    const xOf = (i) => pts.length <= 1 ? (x0 + x1) / 2 : x0 + i / (pts.length - 1) * (x1 - x0);
+    const pts = (series && series.points) || [];
 
-    // グリッド(y目盛 ymin/50/ymax)とラベル。GUIテーマに合わせモノスペース+シアン基調。
-    ctx.font = '9px ui-monospace, Consolas, monospace';
-    ctx.textBaseline = 'middle';
-    const ticks = [lo, 0.5, hi];
-    for (const tv of ticks) {
-      if (tv < lo || tv > hi) continue;
-      const is50 = Math.abs(tv - 0.5) < 1e-6;
-      const y = yOf(tv);
-      ctx.strokeStyle = is50 ? 'rgba(214,232,244,0.32)' : 'rgba(0,229,255,0.07)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      if (is50) ctx.setLineDash([4, 3]); else ctx.setLineDash([]);
-      ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = is50 ? 'rgba(214,232,244,0.6)' : 'rgba(111,138,166,0.7)';
-      ctx.textAlign = 'right';
-      ctx.fillText(Math.round(tv * 100) + '%', x0 - 4, y);
-    }
-    if (!pts.length) {
+    if (pts.length < 2 || !series || series.floor == null) {
       ctx.fillStyle = 'rgba(111,138,166,0.6)';
       ctx.font = '10px ui-monospace, Consolas, monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('履歴蓄積中…', (x0 + x1) / 2, (y0 + y1) / 2);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(tab === 'follow' ? '追従データ蓄積中…' : '蓄積中…', (x0 + x1) / 2, (y0 + y1) / 2);
       return;
     }
 
-    // レンジ帯(lo→hi をなぞって塗る)
-    ctx.beginPath();
-    pts.forEach((p, i) => { const x = xOf(i), y = yOf(p.hi != null ? p.hi : p.wr); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-    for (let i = pts.length - 1; i >= 0; i--) { const p = pts[i], x = xOf(i), y = yOf(p.lo != null ? p.lo : p.wr); ctx.lineTo(x, y); }
-    ctx.closePath();
-    ctx.fillStyle = accent.band;
-    ctx.fill();
+    const floor = series.floor, ceil = series.ceil;
+    // y スケール: 下限/上限の外側に余白。帯が狭くても最低縦幅を確保して動きを見せる。
+    let lo = floor, hi = ceil;
+    const pad = Math.max(0.25, (hi - lo) * 0.28);
+    lo -= pad; hi += pad;
+    const MINSPAN = 1.2;
+    if (hi - lo < MINSPAN) { const m = (hi + lo) / 2; lo = m - MINSPAN / 2; hi = m + MINSPAN / 2; }
+    const yOf = (v) => y1 - (v - lo) / (hi - lo) * (y1 - y0);
+    const xOf = (i) => pts.length <= 1 ? (x0 + x1) / 2 : x0 + i / (pts.length - 1) * (x1 - x0);
 
-    // 勝率ライン
+    // レンジ帯(下限→上限)
+    const yF = yOf(floor), yC = yOf(ceil);
+    ctx.fillStyle = accent.band;
+    ctx.fillRect(x0, yC, x1 - x0, yF - yC);
+
+    // 上限/下限 破線
+    ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.strokeStyle = accent.bound;
+    [yC, yF].forEach((y) => { ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); });
+    ctx.setLineDash([]);
+
+    // 50% 基準線(帯内に入る時のみ)
+    const has50 = (50 >= lo && 50 <= hi);
+    if (has50) {
+      const y = yOf(50);
+      ctx.strokeStyle = 'rgba(214,232,244,0.30)'; ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.setLineDash([]);
+    }
+
+    // 左軸ラベル(上限/下限/50 の数値)
+    ctx.font = '9px ui-monospace, Consolas, monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(214,232,244,0.85)'; ctx.fillText(ceil.toFixed(2), x0 - 3, yC);
+    ctx.fillStyle = 'rgba(214,232,244,0.85)'; ctx.fillText(floor.toFixed(2), x0 - 3, yF);
+    if (has50) { ctx.fillStyle = 'rgba(214,232,244,0.5)'; ctx.fillText('50', x0 - 3, yOf(50)); }
+
+    // 累計%ライン
     ctx.beginPath();
     pts.forEach((p, i) => { const x = xOf(i), y = yOf(p.wr); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-    ctx.strokeStyle = accent.line;
-    ctx.lineWidth = 1.6;
-    ctx.stroke();
+    ctx.strokeStyle = accent.line; ctx.lineWidth = 1.6; ctx.stroke();
 
-    // 点(最新は強調)
-    pts.forEach((p, i) => {
-      const x = xOf(i), y = yOf(p.wr), last = i === pts.length - 1;
-      ctx.beginPath();
-      ctx.arc(x, y, last ? 3.2 : (detail ? 2.4 : 1.8), 0, Math.PI * 2);
-      ctx.fillStyle = last ? accent.line : accent.dot;
-      ctx.fill();
-    });
-
-    // 日足/週足は「昨日/一昨日」を1本ずつ読めるよう、各点に勝率%を表示する。
-    if (detail && pts.length) {
-      ctx.font = '8px ui-monospace, Consolas, monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
-      const step = (x1 - x0) / Math.max(1, pts.length - 1);
-      const everyVal = step < 26 ? 2 : 1; // 詰まり過ぎる時は1本飛ばし
-      pts.forEach((p, i) => {
-        if (i === pts.length - 1) return; // 最新は右端の吹き出しで出す
-        if (i % everyVal !== 0) return;
-        ctx.fillStyle = 'rgba(214,232,244,0.55)';
-        ctx.fillText(Math.round(p.wr * 100), xOf(i), yOf(p.hi != null ? Math.max(p.hi, p.wr) : p.wr) - 4);
-      });
-    }
-
-    // x軸ラベル: 1H/4Hは3点(最初/中間/最後)、日足/週足は各点の日付を表示。
-    ctx.fillStyle = 'rgba(111,138,166,0.7)';
-    ctx.font = '8px ui-monospace, Consolas, monospace';
-    ctx.textBaseline = 'alphabetic';
-    if (detail) {
-      const step = (x1 - x0) / Math.max(1, pts.length - 1);
-      const everyLbl = Math.max(1, Math.ceil(30 / Math.max(1, step)));
-      pts.forEach((p, i) => {
-        if (i % everyLbl !== 0 && i !== pts.length - 1) return;
-        ctx.textAlign = i === 0 ? 'left' : (i === pts.length - 1 ? 'right' : 'center');
-        ctx.fillText(p.label, Math.max(x0, Math.min(x1, xOf(i))), h - 3);
-      });
-    } else {
-      const idxs = pts.length <= 2 ? [0, pts.length - 1] : [0, Math.floor((pts.length - 1) / 2), pts.length - 1];
-      idxs.forEach((i, k) => {
-        ctx.textAlign = k === 0 ? 'left' : (k === idxs.length - 1 ? 'right' : 'center');
-        ctx.fillText(pts[i].label, Math.max(x0, Math.min(x1, xOf(i))), h - 3);
-      });
-    }
-
-    // 最新値の吹き出し(右端)
+    // 最新点
     const lastp = pts[pts.length - 1];
-    ctx.fillStyle = accent.line;
-    ctx.font = 'bold 10px ui-monospace, Consolas, monospace';
-    ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
-    ctx.fillText(Math.round(lastp.wr * 100) + '%', x1, yOf(lastp.wr) - 4);
+    const lx = xOf(pts.length - 1), ly = yOf(lastp.wr);
+    ctx.beginPath(); ctx.arc(lx, ly, 3, 0, Math.PI * 2); ctx.fillStyle = accent.line; ctx.fill();
+
+    // 右側: 上限/下限ラベル + 現在値(チャンネルと一致する数値)
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.font = '8px ui-monospace, Consolas, monospace'; ctx.fillStyle = accent.bound;
+    ctx.fillText('上限', x1 + 4, yC); ctx.fillText('下限', x1 + 4, yF);
+    ctx.font = 'bold 11px ui-monospace, Consolas, monospace'; ctx.fillStyle = accent.line;
+    ctx.fillText(lastp.wr.toFixed(2) + '%', x1 + 4, ly);
+
+    // x軸: 最初/中間/最新の時刻
+    ctx.fillStyle = 'rgba(111,138,166,0.7)'; ctx.font = '8px ui-monospace, Consolas, monospace'; ctx.textBaseline = 'alphabetic';
+    const fmt = (ts) => { const m = /(\d{2})-(\d{2})T(\d{2}):/.exec(String(ts || '')); return m ? `${m[1]}/${m[2]} ${m[3]}h` : ''; };
+    const idxs = [0, Math.floor((pts.length - 1) / 2), pts.length - 1];
+    idxs.forEach((i, k) => {
+      ctx.textAlign = k === 0 ? 'left' : (k === 2 ? 'right' : 'center');
+      ctx.fillText(fmt(pts[i].ts), Math.max(x0, Math.min(x1, xOf(i))), h - 3);
+    });
   }
 
-  // GUIテーマ配色: 6P=電気シアン(--accent) / 10P=ネオン緑(--win)
-  const ACC6 = { line: '#00e5ff', band: 'rgba(0,229,255,0.12)', dot: 'rgba(0,229,255,0.5)' };
-  const ACC10 = { line: '#00ff9c', band: 'rgba(0,255,156,0.12)', dot: 'rgba(0,255,156,0.5)' };
+  // 6P=電気シアン / 10P=ネオン緑
+  const ACC6 = { line: '#00e5ff', band: 'rgba(0,229,255,0.10)', bound: 'rgba(0,229,255,0.55)' };
+  const ACC10 = { line: '#00ff9c', band: 'rgba(0,255,156,0.10)', bound: 'rgba(0,255,156,0.55)' };
 
   function redraw() {
-    const detail = (tf === 'D' || tf === 'W'); // 各点に日付/勝率を表示する足
-    if (!lastData) { drawOne(cv6, [], ACC6, detail); drawOne(cv10, [], ACC10, detail); return; }
-    const p6 = resample((lastData.v3 || {}).buckets || [], tf);
-    const p10 = resample((lastData.v4 || {}).buckets || [], tf);
-    drawOne(cv6, p6, ACC6, detail);
-    drawOne(cv10, p10, ACC10, detail);
-    const tot = ((lastData.v3 || {}).buckets || []).length + ((lastData.v4 || {}).buckets || []).length;
-    statusEl.textContent = tot
-      ? `更新 ${(lastData.updated_at || '').slice(5, 16)}`
-      : '履歴蓄積中…';
+    const grp = lastData && lastData[tab];
+    drawRange(cv6, grp && grp.v3, ACC6);
+    drawRange(cv10, grp && grp.v4, ACC10);
+    if (statusEl) {
+      statusEl.textContent = (lastData && lastData.updated_at)
+        ? `更新 ${(lastData.updated_at || '').slice(5, 16)}`
+        : '蓄積中…';
+    }
   }
 
-  // 足切替ボタン
-  tfWrap.querySelectorAll('.wr-tf-btn').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      tf = btn.getAttribute('data-tf');
-      tfWrap.querySelectorAll('.wr-tf-btn').forEach((b) => b.classList.toggle('active', b === btn));
-      redraw();
+  // タブ切替(パターン / 追従込み)
+  if (tabWrap) {
+    tabWrap.querySelectorAll('.wr-tf-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        tab = btn.getAttribute('data-tab') || 'pattern';
+        tabWrap.querySelectorAll('.wr-tf-btn').forEach((b) => b.classList.toggle('active', b === btn));
+        redraw();
+      });
     });
-  });
+  }
 
   let rt = null;
   window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(redraw, 150); });
 
-  window.valhalla.onWinrateHistory((data) => {
+  window.valhalla.onWinrateTrend((data) => {
     if (!data || !data.ok) return;
     lastData = data;
     redraw();
   });
 
-  // 初回(データ到着前)に枠だけ描画
   setTimeout(redraw, 200);
 })();

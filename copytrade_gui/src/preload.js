@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('valhalla', {
   onAgentLog: (cb) => ipcRenderer.on('agent-log', (_, text) => cb(text)),
   onHourlyStats: (cb) => ipcRenderer.on('hourly-stats', (_, data) => cb(data)),
   onWinrateHistory: (cb) => ipcRenderer.on('winrate-history', (_, data) => cb(data)),
+  onWinrateTrend: (cb) => ipcRenderer.on('winrate-trend', (_, data) => cb(data)),
 
   // Window controls
   windowMinimize: () => ipcRenderer.invoke('window-minimize'),

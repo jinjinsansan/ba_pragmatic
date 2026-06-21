@@ -1835,6 +1835,37 @@ function startWinrateHistoryPoller() {
   winrateHistoryTimer = setInterval(poll, 60 * 1000);
 }
 
+// ── 勝率レンジ(累計勝率): master /api/winrate-trend を 60s 毎に取得して renderer へ。
+//    チャンネル(6P/10P/追従込み)と byte一致する累計勝率の時系列+下限/上限。
+//    VPS cron(winrate_trend.py)が貯める。表示専用(エンジン/賭け経路に非依存)。
+let winrateTrendTimer = null;
+function startWinrateTrendPoller() {
+  if (winrateTrendTimer) return;
+  const poll = () => {
+    try {
+      const envFile = loadDotEnv();
+      const base = String(envFile.BACOPY_API_URL || process.env.BACOPY_API_URL || 'https://master.bafather.uk').replace(/\/$/, '');
+      const key = String(envFile.BACOPY_API_KEY || process.env.BACOPY_API_KEY || '').trim();
+      if (!key) return;
+      const u = new URL(base + '/api/winrate-trend');
+      const mod = u.protocol === 'http:' ? require('http') : require('https');
+      const req = mod.get(u, { headers: { Authorization: `Bearer ${key}`, 'Accept-Encoding': 'identity' }, timeout: 15000 }, (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => {
+          try { sendToRenderer('winrate-trend', JSON.parse(body)); } catch (_) {}
+        });
+      });
+      req.on('timeout', () => req.destroy());
+      req.on('error', () => {});
+    } catch (_) {}
+  };
+  poll();
+  setTimeout(poll, 3000);
+  setTimeout(poll, 12000);
+  winrateTrendTimer = setInterval(poll, 60 * 1000);
+}
+
 function createWindow() {
   console.log('[Main] createWindow');
   mainWindow = new BrowserWindow({
@@ -1880,6 +1911,7 @@ app.whenReady().then(() => {
 
   startHourlyStatsPoller();
   startWinrateHistoryPoller();
+  startWinrateTrendPoller();
 
   schedulePeriodicRestart();
   _telegramNotifyFromMain('🟢 bacopy GUI started');
