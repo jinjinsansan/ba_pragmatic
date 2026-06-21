@@ -384,6 +384,9 @@
                 <option value="v4">10パターン</option>
               </select>
             </div>
+            <!-- 安全モードは廃止(2026-06-21・使用しなくなったためコメントアウト)。
+                 復活させる場合はこのブロックのコメントを外すだけでよい。エンジン側の
+                 安全モード配線は無害(既定OFF)のため残置。
             <div class="form-group">
               <label>安全モード</label>
               <select id="inputSafetyMode">
@@ -392,13 +395,18 @@
               </select>
               <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">ONの間は<b>当日累計勝率が50%以上</b>の系統(6P/10P)だけ自動BET。両方50%超なら<b>6Pを優先</b>。どちらも50%未満／データ無しはBETせず待機（ロビー維持・セッションは生存）。NOW毎に再判定し、50%を跨いだ瞬間に再開／停止。早朝など少数データ時はOFF推奨。</div>
             </div>
+            -->
             <div class="form-group">
               <label>MONEY MODE</label>
               <select id="inputMoneyType">
                 <option value="seq">SEQ（スモールSEQ）</option>
                 <option value="kelly">比例（ケリー基準）</option>
+                <option value="b123set">1-2-3×セット（7ハンドで1-2-3・破滅しない）</option>
+                <option value="dalset">ダランベール×セット（7ハンドで±1ユニット）</option>
                 <option value="other">フラット / マーチンゲール / ダランベール</option>
               </select>
+              <div id="b123setNote" style="display:none; font-size:11px; color:var(--text-muted); margin-top:3px;">1-2-3打法の上げ方/戻り方を<b>Nハンド(=ターン制)=1セット</b>単位で適用。セット内は固定額。<b>負け越し→1→2→3</b>(step3で更に負け越し→1へ一巡)・<b>勝ち越し→1へ戻す</b>。最大3単位＝<b>絶対に破滅しない</b>。</div>
+              <div id="dalsetNote" style="display:none; font-size:11px; color:var(--text-muted); margin-top:3px;">ダランベール(±1ユニット)を<b>Nハンド(=ターン制)=1セット</b>単位で適用。セット内は固定額。<b>負け越し→+1ユニット</b>・<b>勝ち越し→-1ユニット</b>(下限1)。1-2-3より回収力が高いが<b>上限なし</b>＝連敗で青天井に増えるので<b style="color:#ff8888;">loss_cut（損切り）併用を強く推奨</b>。</div>
             </div>
             <div class="form-group" id="seqVariantGroup">
               <label>SEQ タイプ</label>
@@ -469,6 +477,8 @@
               <option value="martingale">martingale</option>
               <option value="dalembert">dalembert</option>
               <option value="bet123">bet123</option>
+              <option value="bet123set">bet123set</option>
+              <option value="dalembertset">dalembertset</option>
             </select>
             <!-- LIVE Mode は撤去: 受け子は常に実BET。ドライランは管理者用 .env
                  (BACOPY_DUAL_DRYRUN=1) のみ。チェック忘れで賭けない事故を防ぐ。

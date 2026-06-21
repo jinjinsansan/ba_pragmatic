@@ -116,6 +116,8 @@ BET_MODES = {
     "martingale": "pure Martingale",
     "dalembert": "D'Alembert (+/-1 unit)",
     "bet123": "1-2-3 method (1/2/3 units cycle)",
+    "bet123set": "1-2-3 per N-hand set (set-level 1/2/3, faithful 1-2-3 cycle)",
+    "dalembertset": "D'Alembert per N-hand set (+1 unit on losing set, -1 on winning set)",
     "kelly": "Kelly proportional (bet = f x bankroll)",
 }
 ALLOWED_MODES = set(BET_MODES.keys())
@@ -210,6 +212,19 @@ class BetManager:
         self.b123_step: int = 0
         self.b123_prev_won: Optional[bool] = None  # 1回目の勝敗(2回目の分岐判定用)
 
+        # 1-2-3×セット打法 状態: 1-2-3打法の「上げ方・1への戻り方」を1手でなく
+        # Nハンド(=seq_set_size, 5 or 7)=1セット単位で適用する。セット内は固定額(step単位)。
+        # セット負け越し→step+1(1→2→3, 3で更に負け越したらstep1へ=1-2-3を一巡=破滅しない)。
+        # セット勝ち越し→step1へ戻す。最大3単位なので絶対に破滅しない。
+        self.b123set_step: int = 1  # 1/2/3 (= bet倍率)
+        self.b123set_marks: list[str] = []  # 現セット内の "O"(勝)/"X"(敗)
+
+        # ダランベール×セット打法 状態: ダランベール(+1/-1ユニット)を1手でなく
+        # Nハンド(=seq_set_size)=1セット単位で適用する。セット内は固定額(level単位)。
+        # セット負け越し→level+1 / セット勝ち越し→level-1(下限1)。上限なし(loss_cut併用前提)。
+        self.dalembertset_level: int = 1  # 1,2,3,... (= bet倍率)
+        self.dalembertset_marks: list[str] = []  # 現セット内の "O"/"X"
+
         # Kelly(比例) 状態
         self.kelly_edge: float = float(os.getenv("BACOPY_KELLY_EDGE", "0.0061") or 0.0061)
         # 型は seq_shape を流用 (attack/balance/defense)
@@ -298,6 +313,26 @@ class BetManager:
                     return 0.0
                 amount = min(amount, remaining_loss)
             return max(amount, 0.0)
+        elif self.mode == "bet123set":
+            # 1-2-3×セット打法: セット内は固定額(step単位)。stepは apply_result が
+            # セット確定(Nハンド)ごとに 1-2-3打法の規則で更新する。最大3単位=破滅しない。
+            amount = self.unit * self.b123set_step
+            if self.loss_cut > 0:
+                remaining_loss = self.loss_cut + self.session_pnl
+                if remaining_loss <= 0:
+                    return 0.0
+                amount = min(amount, remaining_loss)
+            return max(amount, 0.0)
+        elif self.mode == "dalembertset":
+            # ダランベール×セット打法: セット内は固定額(level単位)。levelは apply_result が
+            # セット確定ごとに ±1 する(負け越し+1/勝ち越し-1, 下限1)。上限なし=loss_cut推奨。
+            amount = self.unit * self.dalembertset_level
+            if self.loss_cut > 0:
+                remaining_loss = self.loss_cut + self.session_pnl
+                if remaining_loss <= 0:
+                    return 0.0
+                amount = min(amount, remaining_loss)
+            return max(amount, 0.0)
         elif self.mode == "kelly":
             # Kelly(比例): bet = 型係数 × (edge/payout) × 現在残高。
             # 残高 = ライブ残高(bot が set_bankroll)優先, 無ければ 設定元本+session_pnl。
@@ -374,7 +409,7 @@ class BetManager:
                 self._seq7_tracker.add_result("player")
                 self.seq_level = self._seq7_tracker.current_unit_idx
             # 従来SEQ: 勝ったら先頭に戻る
-            elif self.mode not in ("flat", "martingale", "dalembert", "bet123", "kelly"):
+            elif self.mode not in ("flat", "martingale", "dalembert", "bet123", "bet123set", "dalembertset", "kelly"):
                 self.seq_level = 0
             # Martingale: リセット / D'Alembert: 1段下げる(下限0)
             if self.mode == "dalembert":
@@ -389,7 +424,7 @@ class BetManager:
                 self._seq7_tracker.add_result("banker")
                 self.seq_level = self._seq7_tracker.current_unit_idx
             # 従来SEQ: レベル進行
-            elif self.mode not in ("flat", "martingale", "dalembert", "bet123", "kelly"):
+            elif self.mode not in ("flat", "martingale", "dalembert", "bet123", "bet123set", "dalembertset", "kelly"):
                 self.seq_level = min(self.seq_level + 1, len(self.current_seq) - 1)
             # Martingale / D'Alembert: 1段上げる
             if self.mode in ("martingale", "dalembert"):
@@ -405,6 +440,36 @@ class BetManager:
             else:
                 self.b123_step = 0
             self.seq_level = self.b123_step  # 表示用ミラー
+
+        # 1-2-3×セット打法: 現セットに勝敗を積み、Nハンド揃ったらセット純結果で step 更新。
+        #   負け越し → step+1 (1→2→3, step3で更に負け越し→step1=1-2-3を一巡)
+        #   勝ち越し → step1 へリセット
+        # (TIE は won is None で上で return 済み=セットにカウントしない=7ハンド=7決着)
+        if self.mode == "bet123set":
+            self.b123set_marks.append("O" if won else "X")
+            if len(self.b123set_marks) >= self.seq_set_size:
+                wins = self.b123set_marks.count("O")
+                losses = len(self.b123set_marks) - wins
+                if wins - losses < 0:  # セット負け越し
+                    self.b123set_step = self.b123set_step + 1 if self.b123set_step < 3 else 1
+                else:                  # セット勝ち越し
+                    self.b123set_step = 1
+                self.b123set_marks = []
+            self.seq_level = self.b123set_step - 1  # 表示用ミラー(0基準)
+
+        # ダランベール×セット打法: 現セットに勝敗を積み、Nハンドでセット純結果で level ±1。
+        #   負け越し → level+1 / 勝ち越し → level-1 (下限1)。上限なし(loss_cut推奨)。
+        if self.mode == "dalembertset":
+            self.dalembertset_marks.append("O" if won else "X")
+            if len(self.dalembertset_marks) >= self.seq_set_size:
+                wins = self.dalembertset_marks.count("O")
+                losses = len(self.dalembertset_marks) - wins
+                if wins - losses < 0:  # セット負け越し
+                    self.dalembertset_level += 1
+                else:                  # セット勝ち越し
+                    self.dalembertset_level = max(1, self.dalembertset_level - 1)
+                self.dalembertset_marks = []
+            self.seq_level = self.dalembertset_level - 1  # 表示用ミラー(0基準)
 
         # 利確 / 損切判定
         self._check_limits()
@@ -477,6 +542,12 @@ class BetManager:
             "seq7_current_turns": seq7_current_turns,
             "loss_count": self.loss_count,
             "martingale_max_bet": self.martingale_max_bet,
+            "b123set_step": self.b123set_step if self.mode == "bet123set" else None,
+            "b123set_marks": list(self.b123set_marks) if self.mode == "bet123set" else None,
+            "b123set_set_size": self.seq_set_size if self.mode == "bet123set" else None,
+            "dalembertset_level": self.dalembertset_level if self.mode == "dalembertset" else None,
+            "dalembertset_marks": list(self.dalembertset_marks) if self.mode == "dalembertset" else None,
+            "dalembertset_set_size": self.seq_set_size if self.mode == "dalembertset" else None,
             "limit_reached": self.limit_reached,
             "limit_reason": self.limit_reason,
             "next_bet": round(self._compute_next_bet(), 2),
@@ -512,6 +583,10 @@ class BetManager:
                         "loss_count": self.loss_count,
                         "b123_step": self.b123_step,
                         "b123_prev_won": self.b123_prev_won,
+                        "b123set_step": self.b123set_step,
+                        "b123set_marks": list(self.b123set_marks),
+                        "dalembertset_level": self.dalembertset_level,
+                        "dalembertset_marks": list(self.dalembertset_marks),
                         "limit_reached": self.limit_reached,
                         "limit_reason": self.limit_reason,
                     },
@@ -561,6 +636,12 @@ class BetManager:
             self.b123_step = max(0, min(2, int(s.get("b123_step", 0))))
             _bpw = s.get("b123_prev_won", None)
             self.b123_prev_won = _bpw if isinstance(_bpw, bool) else None
+            self.b123set_step = max(1, min(3, int(s.get("b123set_step", 1) or 1)))
+            _bm = s.get("b123set_marks", []) or []
+            self.b123set_marks = [m for m in _bm if m in ("O", "X")] if isinstance(_bm, list) else []
+            self.dalembertset_level = max(1, int(s.get("dalembertset_level", 1) or 1))
+            _dm = s.get("dalembertset_marks", []) or []
+            self.dalembertset_marks = [m for m in _dm if m in ("O", "X")] if isinstance(_dm, list) else []
             self.limit_reached = bool(s.get("limit_reached", False))
             self.limit_reason = str(s.get("limit_reason", ""))
             # 設定は復元しない（GUI の値が正）

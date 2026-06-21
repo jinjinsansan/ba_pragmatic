@@ -810,7 +810,9 @@ setTimeout(() => {
   $('#inputMoneyType')?.addEventListener('change', () => { _applyMoneyTypeVisibility(); _commitMoneyMode(); });
   $('#inputSeqVariant')?.addEventListener('change', _commitMoneyMode);
   $('#inputFlatVariant')?.addEventListener('change', _commitMoneyMode);
-  // 安全モード: 変更で即エンジンへ反映(再起動不要)＋設定を永続化。
+  // 安全モードは廃止(2026-06-21)。UIをコメントアウト済み(#inputSafetyMode 不在)。
+  // 下のリスナーは要素が無ければ ?. で no-op だが、明示的に無効化しておく。
+  /* 安全モード(廃止):
   $('#inputSafetyMode')?.addEventListener('change', function() {
     const enabled = this.value === 'on';
     try { window.valhalla?.setSafetyMode?.(enabled); } catch (_) {}
@@ -820,6 +822,7 @@ setTimeout(() => {
       localStorage.setItem('bacopy_settings', JSON.stringify(st));
     } catch (_) {}
   });
+  */
 }, 100);
 
 // MONEY MODE 二段ゲート: 「SEQ」選択時はスモールSEQ(0.2/1/3/6)、非SEQ時は
@@ -828,19 +831,27 @@ setTimeout(() => {
 function _applyMoneyTypeVisibility() {
   const t = $('#inputMoneyType')?.value || 'seq';
   const seq = t === 'seq', kelly = t === 'kelly', other = t === 'other';
+  const b123set = t === 'b123set', dalset = t === 'dalset';
+  const setmode = b123set || dalset;  // ×セット系(ターン制+ユニットを共有)
   if ($('#seqVariantGroup')) $('#seqVariantGroup').style.display = seq ? '' : 'none';
-  if ($('#seqTurnsGroup')) $('#seqTurnsGroup').style.display = seq ? '' : 'none';
+  // ターン制(セット長 5/7)は SEQ と ×セット系 で使う
+  if ($('#seqTurnsGroup')) $('#seqTurnsGroup').style.display = (seq || setmode) ? '' : 'none';
   // 型(攻撃/バランス/守備)は SEQ と Kelly の両方で使う
   if ($('#seqShapeGroup')) $('#seqShapeGroup').style.display = (seq || kelly) ? '' : 'none';
   if ($('#kellyBankrollGroup')) $('#kellyBankrollGroup').style.display = kelly ? '' : 'none';
   if ($('#flatVariantGroup')) $('#flatVariantGroup').style.display = other ? '' : 'none';
-  if ($('#dualUnitGroup')) $('#dualUnitGroup').style.display = other ? '' : 'none';
+  // ユニット額入力は フラット系 と ×セット系 で使う
+  if ($('#dualUnitGroup')) $('#dualUnitGroup').style.display = (other || setmode) ? '' : 'none';
+  if ($('#b123setNote')) $('#b123setNote').style.display = b123set ? '' : 'none';
+  if ($('#dalsetNote')) $('#dalsetNote').style.display = dalset ? '' : 'none';
 }
 function _commitMoneyMode() {
   const t = $('#inputMoneyType')?.value || 'seq';
   let val;
   if (t === 'seq') val = ($('#inputSeqVariant')?.value || 'small1');
   else if (t === 'kelly') val = 'kelly';
+  else if (t === 'b123set') val = 'bet123set';
+  else if (t === 'dalset') val = 'dalembertset';
   else val = ($('#inputFlatVariant')?.value || 'flat');
   if ($('#inputDualMoneyMode')) $('#inputDualMoneyMode').value = val;
 }
@@ -848,9 +859,12 @@ function _loadMoneyModeUI(mode) {
   const m = String(mode || 'small1');
   const isSeq = m.indexOf('small') === 0;  // small02/small1/small3/small6
   const isKelly = m === 'kelly';
-  if ($('#inputMoneyType')) $('#inputMoneyType').value = isKelly ? 'kelly' : (isSeq ? 'seq' : 'other');
+  const isB123set = m === 'bet123set';
+  const isDalset = m === 'dalembertset';
+  if ($('#inputMoneyType')) $('#inputMoneyType').value = isKelly ? 'kelly'
+    : (isSeq ? 'seq' : (isB123set ? 'b123set' : (isDalset ? 'dalset' : 'other')));
   if (isSeq) { if ($('#inputSeqVariant')) $('#inputSeqVariant').value = m; }
-  else if (!isKelly) { if ($('#inputFlatVariant')) $('#inputFlatVariant').value = m; }
+  else if (!isKelly && !isB123set && !isDalset) { if ($('#inputFlatVariant')) $('#inputFlatVariant').value = m; }
   if ($('#inputDualMoneyMode')) $('#inputDualMoneyMode').value = m;
   _applyMoneyTypeVisibility();
 }
@@ -1724,12 +1738,114 @@ function renderKellyPanel(ms) {
   }
 }
 
+// 1-2-3×セット打法: Nハンド(=セット長)=1セットで賭け額固定(step単位)。セット
+// 負け越し→step+1(1→2→3, step3で更に負け越し→1へ一巡)・勝ち越し→1へ戻す。最大3単位。
+// 現セットの〇✕進行 + 1→2→3ラダー(現stepを強調)を表示する。
+function renderBet123SetPanel(ms) {
+  if (!isDevMode()) return;
+  const unit = Number(ms.unit) || 1;
+  const step = Math.max(1, Math.min(3, Number(ms.b123set_step) || 1));
+  const marks = Array.isArray(ms.b123set_marks) ? ms.b123set_marks : [];
+  const setSize = Number(ms.b123set_set_size) || 7;
+  const nextBet = Number(ms.next_bet) || 0;
+  const pnl = Number(ms.session_pnl) || 0;
+  const wins = marks.filter((m) => m === 'O').length;
+  const losses = marks.length - wins;
+  _setSigPanel('123×SET', ['STEP', 'NEXT $', 'SET', 'PNL $'], `${setSize}手=1セットで1-2-3（負→上げ / 勝→1）`);
+  const sc = $('#sigCycle'); if (sc) sc.textContent = String(step) + '/3';
+  const sr = $('#sigRatio'); if (sr) sr.textContent = _fmtAmt(nextBet);
+  const sd = $('#sigDrift'); if (sd) sd.textContent = `${marks.length}/${setSize} (${wins}勝${losses}敗)`;
+  const srd = $('#sigRound');
+  if (srd) { srd.textContent = _fmtAmt(pnl); srd.style.color = pnl >= 0 ? '#00ff88' : '#ff3366'; }
+  const el = $('#sigStream');
+  if (el) {
+    el.innerHTML = '';
+    // 現セットの〇✕進行(残りは _)
+    const mw = document.createElement('span');
+    mw.style.marginRight = '14px';
+    for (let i = 0; i < setSize; i += 1) {
+      const mk = marks[i];
+      const s = document.createElement('span');
+      s.textContent = mk === 'O' ? '〇' : (mk === 'X' ? '✕' : '_');
+      s.style.margin = '0 1px';
+      s.style.color = mk === 'O' ? '#00ff88' : (mk === 'X' ? '#ff3366' : '#445566');
+      mw.appendChild(s);
+    }
+    el.appendChild(mw);
+    // 1→2→3 ラダー(現stepを強調)
+    for (let k = 1; k <= 3; k += 1) {
+      const s = document.createElement('span');
+      s.textContent = _fmtAmt(unit * k);
+      s.style.display = 'inline-block';
+      s.style.margin = '0 3px';
+      if (k === step) { s.style.color = '#ffcc00'; s.style.fontWeight = '700'; s.style.textDecoration = 'underline'; }
+      else { s.style.color = '#7a8aa0'; }
+      el.appendChild(s);
+    }
+  }
+}
+
+// ダランベール×セット打法: Nハンド=1セットで賭け額固定(level単位)。セット負け越し→
+// level+1 / 勝ち越し→level-1(下限1, 上限なし)。現セット〇✕進行 + level近傍ラダーを表示。
+function renderDalembertSetPanel(ms) {
+  if (!isDevMode()) return;
+  const unit = Number(ms.unit) || 1;
+  const level = Math.max(1, Number(ms.dalembertset_level) || 1);
+  const marks = Array.isArray(ms.dalembertset_marks) ? ms.dalembertset_marks : [];
+  const setSize = Number(ms.dalembertset_set_size) || 7;
+  const nextBet = Number(ms.next_bet) || 0;
+  const pnl = Number(ms.session_pnl) || 0;
+  const wins = marks.filter((m) => m === 'O').length;
+  const losses = marks.length - wins;
+  _setSigPanel("DALEMBERT×SET", ['LEVEL', 'NEXT $', 'SET', 'PNL $'], `${setSize}手=1セットで ±1ユニット（負→+1 / 勝→-1）`);
+  const sc = $('#sigCycle'); if (sc) sc.textContent = String(level);
+  const sr = $('#sigRatio'); if (sr) sr.textContent = _fmtAmt(nextBet);
+  const sd = $('#sigDrift'); if (sd) sd.textContent = `${marks.length}/${setSize} (${wins}勝${losses}敗)`;
+  const srd = $('#sigRound');
+  if (srd) { srd.textContent = _fmtAmt(pnl); srd.style.color = pnl >= 0 ? '#00ff88' : '#ff3366'; }
+  const el = $('#sigStream');
+  if (el) {
+    el.innerHTML = '';
+    // 現セットの〇✕進行
+    const mw = document.createElement('span');
+    mw.style.marginRight = '14px';
+    for (let i = 0; i < setSize; i += 1) {
+      const mk = marks[i];
+      const s = document.createElement('span');
+      s.textContent = mk === 'O' ? '〇' : (mk === 'X' ? '✕' : '_');
+      s.style.margin = '0 1px';
+      s.style.color = mk === 'O' ? '#00ff88' : (mk === 'X' ? '#ff3366' : '#445566');
+      mw.appendChild(s);
+    }
+    el.appendChild(mw);
+    // level 近傍ラダー(現levelを強調・上限なしなので現在地中心に表示)
+    const lo = Math.max(1, level - 2);
+    for (let k = lo; k <= lo + 5; k += 1) {
+      const s = document.createElement('span');
+      s.textContent = _fmtAmt(unit * k);
+      s.style.display = 'inline-block';
+      s.style.margin = '0 3px';
+      if (k === level) { s.style.color = '#ffcc00'; s.style.fontWeight = '700'; s.style.textDecoration = 'underline'; }
+      else { s.style.color = '#7a8aa0'; }
+      el.appendChild(s);
+    }
+  }
+}
+
 function applyMoneyStatusToSignalPanel(ms) {
   if (!ms || typeof ms !== 'object') return;
   updateNextBetCard(ms);
   const mode = String(ms.mode || '').toLowerCase();
   if (mode === 'kelly') {
     renderKellyPanel(ms);
+    return;
+  }
+  if (mode === 'bet123set') {
+    renderBet123SetPanel(ms);
+    return;
+  }
+  if (mode === 'dalembertset') {
+    renderDalembertSetPanel(ms);
     return;
   }
   if (mode === 'martingale' || mode === 'dalembert' || mode === 'bet123') {
