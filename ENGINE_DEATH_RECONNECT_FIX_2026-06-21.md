@@ -21,6 +21,13 @@
 - 効果：**context死してもエンジンが自己復帰**＝「死んで放置→ユーザー再起動でも数分で再死」を解消。ログ `[BOT] full CDP reconnect OK, resuming loop`。
 - **起動バナー**(`a0cc298`)：`[BOT] ★CONTEXT-DEATH AUTO-RECOVERY: ENABLED (...2026-06-21 fix)` を起動直後に出力 → context死を待たずに「修正版engineが動いている」と一目で確認可。
 
+## 3b. ★初版の不備→retry強化 v2 (commit `5e9d459`+`db6b9bc`)
+初版(D95684B0)を user05/07 で実機検証→ **`connect_over_cdp` が1回だけで失敗** していた：
+`[BOT] full CDP reconnect failed, stopping: BrowserType.connect_over_cdp: connect...`。原因＝**クラッシュ直後は :9222 が瞬間的にCDP接続を受けない**(Chrome再起動中)ため、1発勝負だと connect が失敗→結局停止→GUIが再起動→数分で再クラッシュの**ループ**(user05/07「2時間賭けない」の正体)。
+- 修正＝**reconnectをバックオフ付きで最大8回リトライ**(~2,4,6,8,10,10,10,10 ≒最大60s)＝ :9222 復帰まで待って再接続。
+- 起動バナー v2＝`★CONTEXT-DEATH AUTO-RECOVERY: ENABLED v2 (full CDP reconnect + retry/backoff up to 8x — 2026-06-21)`。**実復帰の証拠**＝`[BOT] full CDP reconnect OK on attempt N`(N=数字。バナー文言の"N"とgrep混同注意)。
+- engine MD5 `922C73DBA4A5973B44CD405B18C516CF`(68,729,253)。bafather swap+v2バナー出力確認済(2026-06-21 19:13)。
+
 ## 4. デプロイ
 - ✅ **bafather(user01) パイロット合格**(2026-06-21 15:30)：engine MD5 `D95684B0C2B206012832B9258B877B35`(68,726,238)swap済・**起動バナー実出力を確認**・安全モード配線も健在。backup `bacopy_engine.exe.bak_20260621_152822`(旧292A6D85)。
 - ✅ **user02-10 NSISインストーラ 全9本リビルド+検証済**(runbook §2-4→§3-A `_build_user0210.ps1`)：同梱engine=D95684B0(reconnect+safety+Kelly+small2+winrate)・bc=user06のみ10/11(残留バグ修正済`27f32ce`・user10にbc無しで確認)・asar=現src(安全モードUI/勝率チャート)。`dist/BACOPYRECEIVER_userNN_Setup.exe`×9。
