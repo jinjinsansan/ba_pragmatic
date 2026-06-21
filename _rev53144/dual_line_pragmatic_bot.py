@@ -6643,6 +6643,39 @@ class DualLinePragmaticBot(cp.Collector):
                             bet_page.wait_for_timeout(2000)
                             logger.info("[BOT] bet_page reinit OK, resuming loop")
                         except Exception as _reinit_err:
+                            # ── context ごと死亡時の自己復旧 (2026-06-21) ──────────────
+                            # 旧: ctx.new_page() 失敗で即 stopping → エンジン終了 → ユーザー
+                            # 再起動でも数分で再死(負荷でページclose→context死)。:9222 Chrome
+                            # 自体は生きているので、起動時と同じ connect_over_cdp で完全再接続を
+                            # 試み、エンジンを自己復帰させる(諦める前の最後の手段)。
+                            if chrome_attach:
+                                logger.warning(
+                                    f"[BOT] reinit failed (context dead: {_reinit_err}); "
+                                    f"attempting full CDP reconnect to {cdp_url}"
+                                )
+                                try:
+                                    try:
+                                        _chrome_browser.close()
+                                    except Exception:
+                                        pass
+                                    _chrome_browser = _playwright_mgr.chromium.connect_over_cdp(cdp_url)
+                                    _rc = list(getattr(_chrome_browser, "contexts", []) or [])
+                                    ctx = _rc[0] if _rc else _chrome_browser.new_context()
+                                    _rp = list(getattr(ctx, "pages", []) or [])
+                                    _rsp = [p for p in _rp if _host in str(getattr(p, "url", "") or "").lower()]
+                                    _rlp = [p for p in _rsp if _lobby_match in str(getattr(p, "url", "") or "").lower()]
+                                    bet_page = _rlp[0] if _rlp else (_rsp[0] if _rsp else (_rp[0] if _rp else ctx.new_page()))
+                                    bet_page.on("websocket", self._on_ws)
+                                    self.bet_executor.setup(ctx, bet_page, bet_page)
+                                    logger.info(
+                                        "[BOT] full CDP reconnect OK "
+                                        f"(url={str(getattr(bet_page, 'url', '') or '')[:120]}), resuming loop"
+                                    )
+                                    _table_enter_at.clear()
+                                    continue
+                                except Exception as _recon_err:
+                                    logger.error(f"[BOT] full CDP reconnect failed, stopping: {_recon_err}")
+                                    break
                             logger.error(f"[BOT] reinit failed (context dead), stopping: {_reinit_err}")
                             # context が完全に死んでいる → break → finally で cleanup
                             break
