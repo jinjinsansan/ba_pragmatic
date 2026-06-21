@@ -461,6 +461,11 @@
               <input type="number" id="inputDualProfitTarget" value="0" min="0" step="5">
               <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">達したら自動停止。SEQはリセットせず保持・利確額を表示したまま停止。再開(再起動)で続行(新セッション)。</div>
             </div>
+            <div class="form-group">
+              <label>損切り (セッション損失上限 $ ／ 0=無効・全モード共通)</label>
+              <input type="number" id="inputDualLossCut" value="0" min="0" step="10">
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">セッション損失がこの額に達したら<b>自動停止</b>（飛ばない保険・<b>どの資金管理モードでも有効</b>）。0=無効。目安＝<b>ユニット×300</b>（例 $1なら$300・元本の約30%）。普段の谷では発動せず、稀な最悪の並びだけを止める。</div>
+            </div>
             <!-- 確定 money mode 値(非表示)。上の SEQ/進行 コントロールが駆動。
                  旧UIのIDを維持して app.js の読み書きを壊さない。 -->
             <select id="inputDualMoneyMode" style="display:none;">

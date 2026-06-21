@@ -1219,6 +1219,7 @@ $('#btnSettings')?.addEventListener('click', async () => {
   _ensureDualLineOption();
   $('#inputProfitTarget').value = s.profit_target;
   if ($('#inputDualProfitTarget')) $('#inputDualProfitTarget').value = Number(s.profit_target) || 0;
+  if ($('#inputDualLossCut')) $('#inputDualLossCut').value = Number(s.loss_cut) || 0;
   if ($('#inputProfitSessionLimit')) $('#inputProfitSessionLimit').value = s.profit_session_limit ?? 0;
   $('#inputLossCut').value = s.loss_cut;
   $('#inputDryRun').checked = !!s.dry_run;
@@ -1334,10 +1335,12 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     // bet_mode が金額を決めるため chip_base は固定 (UIも非表示)
     chip_base: isDualLine ? parseFloat($('#inputDualUnit')?.value || 100) : 1,
     // 利確(セッションPnL目標): dual-line は専用入力 #inputDualProfitTarget を使う。
-    // 到達で自動停止(SEQ保持・表示維持)。0=無効。損切りは未使用(0)。
+    // 到達で自動停止(SEQ保持・表示維持)。0=無効。
     profit_target: isDualLine ? (parseFloat($('#inputDualProfitTarget')?.value) || 0) : 0,
     profit_session_limit: 0,
-    loss_cut: 0,
+    // 損切り(全モード共通): dual-line は専用入力 #inputDualLossCut。到達で自動停止(飛ばない保険)。
+    // エンジンの BetManager は全 money mode で loss_cut を適用(_check_limits)。0=無効。
+    loss_cut: isDualLine ? (parseFloat($('#inputDualLossCut')?.value) || 0) : 0,
     dry_run: $('#inputDryRun').checked,
     bet_mode: selectedBetMode,
     executor_id: $('#inputExecutorId').value.trim(),
