@@ -8,7 +8,7 @@ Set-Location 'E:\dev\Cusor\bacopy\copytrade_gui'
 $log = 'E:\dev\Cusor\bacopy\_build_user0210.log'
 function W($m){ "$((Get-Date).ToString('HH:mm:ss')) $m" | Out-File -FilePath $log -Append -Encoding utf8 }
 "" | Out-File -FilePath $log -Encoding utf8
-W "BUILD START (2026-06-22 #3: + common LOSS-CUT GUI field (all money modes); also bet123set/dalembertset, winrate RANGE chart, safety-mode removed)"
+W "BUILD START (2026-06-22 #4: auto Chrome refresh (periodic killCdpChrome + 2.5h) to cut NOW-drop from Chrome bloat; also loss_cut, bet123set/dalembertset, winrate chart)"
 $eng = Get-Item 'build_staging\engine\bacopy_engine.exe'
 W ("engine size=" + $eng.Length + " (expect 68730505 = 26bda93b = reconnect + bet123set + dalembertset; engine unchanged, loss_cut already supported)")
 

@@ -254,7 +254,8 @@ function _periodicRestartHours() {
   const v = parseFloat(
     (process.env.BACOPY_PERIODIC_RESTART_HOURS || '').trim() ||
     (loadDotEnv().BACOPY_PERIODIC_RESTART_HOURS || '').trim() ||
-    '6'
+    '2.5'  // 2026-06-22: 6h→2.5h。Chrome膨張(2GB+でセンタリング遅延=NOW取りこぼし)を
+           // 溜める前に、賭けChromeごとリフレッシュする(下の firing で killCdpChrome)。
   );
   return Number.isFinite(v) && v > 0 ? v : 0;
 }
@@ -289,12 +290,12 @@ function schedulePeriodicRestart() {
   periodicRestartTimer = setInterval(() => {
     if (!botProcess || _botSpawning) return;
 
-    console.log('[periodic-restart] firing (preventive restart)');
-    _telegramNotifyFromMain('🔄 bacopy periodic restart (' + h + 'h maintenance)');
+    console.log('[periodic-restart] firing (preventive restart + Chrome refresh)');
+    _telegramNotifyFromMain('🔄 bacopy periodic restart (' + h + 'h: Chrome refresh + engine)');
     try {
       // 定期再起動は必ず resume=true で再spawnし SEQ を温存する。
       // (resume=false だと main が状態ファイルを削除し engine に --reset を渡すため、
-      //  6時間ごとに毎回 SEQ が消えてしまう。これが「勝手にリセット」の原因だった。)
+      //  毎回 SEQ が消えてしまう。これが「勝手にリセット」の原因だった。)
       const cfg = Object.assign({}, lastStartConfig, { resume: true });
       const generation = ++_botGeneration;
       userInitiatedStop = false;
@@ -304,12 +305,23 @@ function schedulePeriodicRestart() {
       try { botProcess.kill(); } catch (_) {}
       botProcess = null;
 
+      // ★Chrome膨張クリア: 賭け用Chrome(:9222)も kill する。再spawn時に _doStartBot が
+      //   ensureCdpChrome で新鮮なChromeを起動し直す(膨張ゼロ=センタリング高速=取りこぼし減)。
+      //   chrome_attach モードのみ(camoufoxは:9222を使わない)。個人Chromeは残す。
+      try {
+        const _env = loadDotEnv();
+        const bm = String(_env.BACOPY_BROWSER || _env.BACOPY_DUAL_LINE_BROWSER || process.env.BACOPY_BROWSER || '').trim().toLowerCase();
+        if (bm === 'chrome_attach' || bm === 'chrome-cdp' || bm === 'cdp') {
+          const port = _cdpPortFromUrl(_env.BACOPY_CHROME_CDP_URL || process.env.BACOPY_CHROME_CDP_URL || 'http://127.0.0.1:9222');
+          killCdpChrome(port);
+        }
+      } catch (_) {}
 
       setTimeout(() => {
         if (!botProcess && cfg && !_botSpawning) {
           try { _doStartBot && _doStartBot(cfg, generation); } catch (e) { console.warn('[periodic-restart] respawn err:', e && e.message); }
         }
-      }, 5000);
+      }, 6000);
     } catch (e) {
       console.warn('[periodic-restart] error:', e && e.message);
     }
@@ -625,6 +637,27 @@ async function ensureCdpChrome(envFile) {
   } finally {
     _cdpChromeLaunching = false;
   }
+}
+
+// 賭け用Chrome(:9222・専用profileで起動した個体)だけを kill する。コマンドラインの
+// --remote-debugging-port=<port> で識別するので、ユーザーの個人Chromeは残る。
+// 定期リフレッシュで膨張(2GB+でセンタリング遅延→NOW取りこぼし)をクリアする用途。
+function killCdpChrome(port) {
+  if (process.platform !== 'win32') return 0;
+  try {
+    // ★シングルクォートのみで書く(ダブルクォート禁止)。`powershell -Command "..."` の
+    //   外側ダブルクォートと入れ子になると壊れ、クエリが空振りして1個もkillできない
+    //   (2026-06-22に実機で発覚)。賭けChromeの「メイン+全子プロセス」を、専用profile名
+    //   または debug-port で一致させて確実にkillする(個人Chromeは別profileなので無傷)。
+    const ps =
+      `Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'chrome.exe' -and ` +
+      `($_.CommandLine -like '*cdp_chrome_profile*' -or $_.CommandLine -like '*remote-debugging-port=${port}*') } | ` +
+      `ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }; ` +
+      `(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'chrome.exe' -and $_.CommandLine -like '*remote-debugging-port=${port}*' } | Measure-Object).Count`;
+    const out = execSync(`powershell -NoProfile -Command "${ps}"`, { encoding: 'utf8', timeout: 20000 }).trim();
+    console.log('[cdp-chrome] refresh: killed betting Chrome (port ' + port + '); remaining port-procs=' + out);
+    return 1;
+  } catch (e) { console.warn('[cdp-chrome] kill failed:', e && e.message); return 0; }
 }
 
 // ── CDP Chrome watchdog (auto-recover :9222 death) ──────────────────────────
