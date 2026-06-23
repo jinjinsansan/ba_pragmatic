@@ -745,23 +745,28 @@ class DualLinePragmaticBot(cp.Collector):
                     self.caught_now_losses += 1
             nA = self.caught_wins + self.caught_losses
             nN = self.caught_now_wins + self.caught_now_losses
-            logger.info(
-                f"[CAUGHT-NOW] resolved table={table_id} pred={sc} outcome={oc} -> {_r} follow={foll}  "
-                f"込み={self.caught_wins}W/{self.caught_losses}L "
-                f"なし={self.caught_now_wins}W/{self.caught_now_losses}L (signals={self.total_signals})"
-            )
-            send_msg({
-                "type": "caught_stats",
-                "caught_wins": self.caught_wins,
-                "caught_losses": self.caught_losses,
-                "caught_ties": self.caught_ties,
-                "caught_win_rate": round((self.caught_wins / nA * 100) if nA else 0.0, 1),
-                "caught_now_wins": self.caught_now_wins,
-                "caught_now_losses": self.caught_now_losses,
-                "caught_now_ties": self.caught_now_ties,
-                "caught_now_win_rate": round((self.caught_now_wins / nN * 100) if nN else 0.0, 1),
-                "total_signals": self.total_signals,
-            })
+            # カウンタは常時更新済み。I/O(ログ+GUI送信)は >=2s にスロットルして、結果処理
+            # ループ上の stdout 書き込み圧を最小化する(GUIカードは periodic status でも更新)。
+            _emt = time.monotonic()
+            if _emt - getattr(self, "_last_caught_emit", 0.0) >= 2.0:
+                self._last_caught_emit = _emt
+                logger.info(
+                    f"[CAUGHT-NOW] resolved table={table_id} pred={sc} outcome={oc} -> {_r} follow={foll}  "
+                    f"込み={self.caught_wins}W/{self.caught_losses}L "
+                    f"なし={self.caught_now_wins}W/{self.caught_now_losses}L (signals={self.total_signals})"
+                )
+                send_msg({
+                    "type": "caught_stats",
+                    "caught_wins": self.caught_wins,
+                    "caught_losses": self.caught_losses,
+                    "caught_ties": self.caught_ties,
+                    "caught_win_rate": round((self.caught_wins / nA * 100) if nA else 0.0, 1),
+                    "caught_now_wins": self.caught_now_wins,
+                    "caught_now_losses": self.caught_now_losses,
+                    "caught_now_ties": self.caught_now_ties,
+                    "caught_now_win_rate": round((self.caught_now_wins / nN * 100) if nN else 0.0, 1),
+                    "total_signals": self.total_signals,
+                })
         except Exception:
             pass
 
@@ -1904,12 +1909,6 @@ class DualLinePragmaticBot(cp.Collector):
                     continue
                 gids.add(gid)
                 c = _winner_to_char(h.get("winner"))
-                # 拾NOW影決済(取りこぼし込み): 全卓のgameResultがここを通る(BET有無に無関係)。
-                # 受け子の結果はこのdgaフィードが本命(buf.handsは更新されない)。
-                if c in ("P", "B", "T"):
-                    self._resolve_caught_now(
-                        tid, c, extra_keys=(self._dga_qpid.get(tid, ""), self._dga_names.get(tid, ""))
-                    )
                 # Phase 2b settlement: the first NEW result on a table that has an
                 # open dga bet IS that bet's outcome. Hand the outcome to the main
                 # loop (which owns the money model + executor confirmation check).
@@ -1931,6 +1930,13 @@ class DualLinePragmaticBot(cp.Collector):
                                 "gid": gid, "outcome": c,
                                 "name": self._dga_names.get(tid, ""),
                             })
+                # 拾NOW影決済は決済enqueueの「後」で実行(統計のみ・取りこぼし込み)。
+                # ★決済/光り/追従のクリティカルパスを絶対に遅らせないため末尾に置く
+                #   (2026-06-23: 決済の前に置いていてfollow窓を1つ外す回帰を修正)。
+                if c in ("P", "B", "T"):
+                    self._resolve_caught_now(
+                        tid, c, extra_keys=(self._dga_qpid.get(tid, ""), self._dga_names.get(tid, ""))
+                    )
                 if c in ("P", "B"):
                     self._dga_seq[tid] = self._dga_seq.get(tid, "") + c
                     added = True
