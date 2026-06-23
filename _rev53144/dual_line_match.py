@@ -25,8 +25,8 @@ LIVE_SIGNAL_PATTERNS = frozenset({
     "telecho|telecho|B",
     "telecho|nikoichi|P",
     # "telecho|niconico|P",  # EXCLUDED 2026-06-19 weak ~49% (in/out-sample一致・low-regret) — VPS反映済/次ビルドでGUIからも除外
-    "niconico|niconico|B",
-    "niconico|dragon|P",
+    # "niconico|niconico|B",  # EXCLUDED 2026-06-23 OOS(5/26以降61k)で -0.077/負け転落 (136k再BT・dual_line_all_patterns)
+    # "niconico|dragon|P",     # EXCLUDED 2026-06-23 OOS で -0.034/負け転落 (同上)
     "sansan|telecho|P",
 })
 
@@ -42,7 +42,7 @@ LIVE_SIGNAL_PATTERNS_V4 = frozenset({
     "bline|telecho|B",
     # "telecho|niconico|P",  # EXCLUDED 2026-06-19 weak ~49% (in/out-sample一致・low-regret) — VPS反映済/次ビルドでGUIからも除外
     "niconico|nikoichi|B",
-    "telecho|niconico|B",
+    # "telecho|niconico|B",  # EXCLUDED 2026-06-23 OOS(5/26以降61k)で -0.035/負け転落 (136k再BT)
     "niconico|dragon|B",
     "niconico|nikoichi|P",
     "telecho|nikoichi|B",

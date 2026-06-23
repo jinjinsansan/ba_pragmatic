@@ -94,3 +94,6 @@ support_keys/
 **/admin_key
 
 .vercel
+
+# Archived scratch/debug helpers (2026-06-22 cleanup)
+_archive/

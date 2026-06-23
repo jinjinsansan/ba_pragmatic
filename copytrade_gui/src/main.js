@@ -254,8 +254,8 @@ function _periodicRestartHours() {
   const v = parseFloat(
     (process.env.BACOPY_PERIODIC_RESTART_HOURS || '').trim() ||
     (loadDotEnv().BACOPY_PERIODIC_RESTART_HOURS || '').trim() ||
-    '2.5'  // 2026-06-22: 6h→2.5h。Chrome膨張(2GB+でセンタリング遅延=NOW取りこぼし)を
-           // 溜める前に、賭けChromeごとリフレッシュする(下の firing で killCdpChrome)。
+    '6'  // 2026-06-23: 2.5h+Chromeリフレッシュは「再起動毎の48卓再センタリングで光り遅延」
+         // を招いた(bafather実証)ので 6h・エンジンのみ再起動に戻した。Chrome膨張対策は別途。
   );
   return Number.isFinite(v) && v > 0 ? v : 0;
 }
@@ -290,8 +290,8 @@ function schedulePeriodicRestart() {
   periodicRestartTimer = setInterval(() => {
     if (!botProcess || _botSpawning) return;
 
-    console.log('[periodic-restart] firing (preventive restart + Chrome refresh)');
-    _telegramNotifyFromMain('🔄 bacopy periodic restart (' + h + 'h: Chrome refresh + engine)');
+    console.log('[periodic-restart] firing (preventive restart)');
+    _telegramNotifyFromMain('🔄 bacopy periodic restart (' + h + 'h maintenance)');
     try {
       // 定期再起動は必ず resume=true で再spawnし SEQ を温存する。
       // (resume=false だと main が状態ファイルを削除し engine に --reset を渡すため、
@@ -305,23 +305,15 @@ function schedulePeriodicRestart() {
       try { botProcess.kill(); } catch (_) {}
       botProcess = null;
 
-      // ★Chrome膨張クリア: 賭け用Chrome(:9222)も kill する。再spawn時に _doStartBot が
-      //   ensureCdpChrome で新鮮なChromeを起動し直す(膨張ゼロ=センタリング高速=取りこぼし減)。
-      //   chrome_attach モードのみ(camoufoxは:9222を使わない)。個人Chromeは残す。
-      try {
-        const _env = loadDotEnv();
-        const bm = String(_env.BACOPY_BROWSER || _env.BACOPY_DUAL_LINE_BROWSER || process.env.BACOPY_BROWSER || '').trim().toLowerCase();
-        if (bm === 'chrome_attach' || bm === 'chrome-cdp' || bm === 'cdp') {
-          const port = _cdpPortFromUrl(_env.BACOPY_CHROME_CDP_URL || process.env.BACOPY_CHROME_CDP_URL || 'http://127.0.0.1:9222');
-          killCdpChrome(port);
-        }
-      } catch (_) {}
+      // 2026-06-23: 賭けChrome(:9222)の kill(自動リフレッシュ)は撤去。再起動毎の
+      // 48卓再センタリングで「決済→光り」が遅延する回帰を招いたため、エンジンのみ再起動に戻す。
+      // (killCdpChrome 関数は将来のより穏当なリフレッシュ用に残置・未使用)
 
       setTimeout(() => {
         if (!botProcess && cfg && !_botSpawning) {
           try { _doStartBot && _doStartBot(cfg, generation); } catch (e) { console.warn('[periodic-restart] respawn err:', e && e.message); }
         }
-      }, 6000);
+      }, 5000);
     } catch (e) {
       console.warn('[periodic-restart] error:', e && e.message);
     }
