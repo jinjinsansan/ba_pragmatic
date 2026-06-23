@@ -64,14 +64,22 @@ def parse_pattern(rx, groups_wl):
 
 
 def last_segment(pts):
-    """Counters reset on restart -> keep only the final monotonic-by-w run (current run)."""
+    """Counters reset on restart -> keep only the final run. BUT a reset that is later
+    *restored* (a subsequent point recovers to >= the pre-reset resolved -- e.g. the
+    2026-06-23 v4 state restore after a pattern-change wiped the cumulative) is NOT a real
+    new run: ignore that cut so the series stays continuous. The transient low blip in
+    between is then dropped by the n<MIN_N filter in to_series()."""
     if not pts:
         return []
     start = 0
     for i in range(1, len(pts)):
+        prev_r = pts[i - 1][1] + pts[i - 1][2]
+        cur_r = pts[i][1] + pts[i][2]
         # a reset shows up as total resolved dropping below the previous point
-        if (pts[i][1] + pts[i][2]) < (pts[i - 1][1] + pts[i - 1][2]):
-            start = i
+        if cur_r < prev_r:
+            restored = any((pts[j][1] + pts[j][2]) >= prev_r for j in range(i + 1, len(pts)))
+            if not restored:
+                start = i   # genuine (un-restored) reset -> this is the current run
     return pts[start:]
 
 
