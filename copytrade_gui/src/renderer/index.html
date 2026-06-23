@@ -153,12 +153,24 @@
           <span class="wrchart-status" id="wrChartStatus">履歴蓄積中…</span>
         </div>
         <div class="wrchart-row">
-          <span class="wrchart-label tag6">6P</span>
+          <span class="wrchart-sys">
+            <span class="wrchart-label tag6">6P</span>
+            <span class="wrcond" id="wrCond6" data-stage="wait" title="直近の調子（見るだけ）"><i class="wrcond-dot"></i><span class="wrcond-txt">—</span></span>
+          </span>
           <canvas class="wrchart-canvas" id="wrCanvas6" height="86"></canvas>
         </div>
         <div class="wrchart-row">
-          <span class="wrchart-label tag10">10P</span>
+          <span class="wrchart-sys">
+            <span class="wrchart-label tag10">10P</span>
+            <span class="wrcond" id="wrCond10" data-stage="wait" title="直近の調子（見るだけ）"><i class="wrcond-dot"></i><span class="wrcond-txt">—</span></span>
+          </span>
           <canvas class="wrchart-canvas" id="wrCanvas10" height="86"></canvas>
+        </div>
+        <div class="wrcond-note">
+          <span class="wrcond-note-txt">調子＝直近300手が自分の累計ペースのどこか・<b>見るだけ</b>（増減判断には使わない）</span>
+          <span class="wrcond-legend">
+            <i class="lg" data-stage="good"></i>好調<i class="lg" data-stage="soft"></i>軟調<i class="lg" data-stage="low"></i>低調<i class="lg" data-stage="bad"></i>悪調
+          </span>
         </div>
       </div>
       <div class="hourly-head" id="hourlyHead" title="時間帯別勝率(当日JST・10分毎更新)。クリックで展開">

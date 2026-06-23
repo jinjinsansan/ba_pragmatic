@@ -3018,9 +3018,66 @@ initAuth();
   const cv10 = document.getElementById('wrCanvas10');
   const statusEl = document.getElementById('wrChartStatus');
   const tabWrap = document.getElementById('wrChartTf');
+  const condEl6 = document.getElementById('wrCond6');
+  const condEl10 = document.getElementById('wrCond10');
 
   let lastData = null;
   let tab = 'pattern'; // 'pattern' | 'follow'
+
+  // ── 4段階コンディション ───────────────────────────────────────────
+  // 直近 ~300手の勝率が、自分の累計ペース p0 のどこに居るかを σ で判定。
+  //   好調: z>=0(累計と同等以上)  軟調: -1<=z<0  低調: -2<=z<-1  悪調: z<-2
+  // ★予測ではない(自己相関≈0)。短期=見るだけ / 長期累計<50%は warn-edge でエッジ劣化を示唆。
+  const COND_WINDOW = 300;       // 直近何手で「調子」を見るか
+  const COND_MIN = 80;           // これ未満の直近サンプルは判定しない(蓄積中)
+  const COND_LABEL = { good: '好調', soft: '軟調', low: '低調', bad: '悪調', wait: '—' };
+
+  function computeGauge(series) {
+    const pts = series && series.points;
+    if (!pts || pts.length < 2) return { stage: 'wait' };
+    const last = pts[pts.length - 1];
+    if (!last || !last.n || last.w == null || last.l == null) return { stage: 'wait' };
+    const p0 = last.w / last.n;                       // 累計ペース(基準・小数)
+    let prev = pts[0];
+    for (let i = pts.length - 1; i >= 0; i--) {       // 直近 COND_WINDOW 手だけ遡る
+      prev = pts[i];
+      if (last.n - pts[i].n >= COND_WINDOW) break;
+    }
+    const rw = last.w - prev.w, rl = last.l - prev.l, rn = rw + rl;
+    if (rn < COND_MIN) return { stage: 'wait', recentN: rn };
+    const recentWr = rw / rn;
+    const sigma = Math.sqrt(p0 * (1 - p0) / rn) || 1e-9;
+    const z = (recentWr - p0) / sigma;
+    let stage = 'bad';
+    if (z >= 0) stage = 'good';
+    else if (z >= -1) stage = 'soft';
+    else if (z >= -2) stage = 'low';
+    return {
+      stage, z, recentN: rn,
+      recentWr: recentWr * 100, p0: p0 * 100,
+      cumWr: last.wr, cumN: last.n,
+      warnEdge: (last.wr != null && last.wr < 50.0),  // 累計がBE割れ=エッジ劣化サイン
+    };
+  }
+
+  function updateCond(el, series, sysName) {
+    if (!el) return;
+    const g = computeGauge(series);
+    el.setAttribute('data-stage', g.stage || 'wait');
+    el.classList.toggle('warn-edge', !!g.warnEdge);
+    const txt = el.querySelector('.wrcond-txt');
+    if (txt) txt.textContent = COND_LABEL[g.stage] || '—';
+    if (g.stage === 'wait') {
+      el.title = `${sysName} 調子：直近データ蓄積中（${g.recentN || 0}手）`;
+    } else {
+      const tl = COND_LABEL[g.stage];
+      el.title =
+        `${sysName} 調子：${tl}（z=${g.z.toFixed(2)}）\n` +
+        `直近${g.recentN}手 ${g.recentWr.toFixed(1)}%  ←基準(累計${g.cumN}手) ${g.p0.toFixed(1)}%\n` +
+        (g.warnEdge ? '⚠累計が50%割れ＝エッジ劣化の疑い（長期で続くならパターン要確認）\n' : '') +
+        '※短期は見るだけ・増減判断には使わない（自己相関≈0）';
+    }
+  }
 
   const CHART_H = 100;
   function fitCanvas(cv) {
@@ -3120,6 +3177,8 @@ initAuth();
     const grp = lastData && lastData[tab];
     drawRange(cv6, grp && grp.v3, ACC6);
     drawRange(cv10, grp && grp.v4, ACC10);
+    updateCond(condEl6, grp && grp.v3, tab === 'follow' ? '6P(追従込)' : '6P');
+    updateCond(condEl10, grp && grp.v4, tab === 'follow' ? '10P(追従込)' : '10P');
     if (statusEl) {
       statusEl.textContent = (lastData && lastData.updated_at)
         ? `更新 ${(lastData.updated_at || '').slice(5, 16)}`
