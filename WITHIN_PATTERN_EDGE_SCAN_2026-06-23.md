@@ -1,0 +1,47 @@
+# 6/10パターンの「中にさらにエッジ」探索＝濃縮なし（厳密2スキャン）  2026-06-23
+
+ユーザー要望「6パターン/10パターンの中でさらに何かエッジを見つけたい」を、**過学習を避ける二段検証（in-sample選定→OOS検証）**で網羅的に探索。結論＝**エッジは「どのパターンか（質~1%）」だけ。中をどう割っても濃縮しない。**
+
+OOS分割＝`created_at >= 2026-05-26`（OOS 62,591シュー）。Z基準 p=0.5068(B)/0.4932(P)。
+
+## スキャン①＝パターン空間（全 china×big×pred 組合せ）
+in-sample（5/26前）で「正エッジ＋N≥300」を候補→OOSで「正＋Z≥1.5」を要求。
+```
+telecho|nikoichi|B ★採用  in[+0.0018 Z+0.58] OOS[+0.0371 Z+2.01 n=1396] ✓頑健
+telecho|telecho|B  ★採用  in[+0.0093 Z+1.18] OOS[+0.0142 Z+1.32 n=2200] OOS正
+niconico|nikoichi|P★採用  in[+0.0316 Z+1.10] OOS[+0.0425 Z+1.34 n=491]  OOS正
+niconico|dragon|B  ★採用  in[+0.0052 Z+0.66] OOS[+0.0185 Z+1.07 n=1053] OOS正
+telecho|nikoichi|P ★採用  in[+0.0202 Z+1.50] OOS[+0.0115 Z+0.96 n=1313] OOS薄正
+--- 非採用で in-sample 正でも OOS で崩れた（過学習の罠）---
+telecho|niconico|P  in[+0.0430 Z+1.75] OOS[+0.0212 Z+0.94]  ← OOSで半減
+telecho|telecho|P   in[+0.0030 Z+0.88] OOS[-0.0135]         ← OOS赤
+niconico|dragon|P   in[+0.0121 Z+0.93] OOS[-0.0349]         ← OOS赤
+telecho|niconico|B  in[+0.0155 Z+0.85] OOS[-0.0350]         ← OOS赤
+
+>>> 頑健な新エッジ（in+OOS正・OOS Z≥1.5・非採用）= 0個
+```
+→ **新パターン0個。現採用は全部OOS正**（特に telecho|nikoichi|B が OOS Z+2.01）＝**6/10集合そのものが「OOSを生き残るエッジ」の正体**。前回の3本除外（telecho|niconico|P 等）も再証明＝正しかった。
+
+## スキャン②＝形状の強さ（採用8本を強弱で分割）
+強さ＝珠盤路:bead行の非Tセル数 ＋ 大路:ドラゴン連長/テレコ交互継続長/ニコニコ・ニコイチ周期マッチ長。
+中央値でLOW/HIGH分割し、in-sampleの方向がOOSで再現＋有意かを検証。
+```
+パターン                in:HIGH-LOW  OOS:HIGH-LOW  OOS HIGH Z   判定
+bline|telecho|B           +2.5         -1.4         +0.62       反転
+niconico|nikoichi|P       +6.7         -0.6         +0.98       反転
+telecho|telecho|B         -0.3         -1.6         +0.55       フラット
+niconico|nikoichi|B       -0.1         +1.2         +0.39       誤差
+telecho|nikoichi|B        +1.6         +0.5         +1.81       同方向だがLOWも53%=濃縮なし
+telecho|nikoichi|P        -2.3         -3.4         +0.22       同方向(HIGHが悪い)だがOOS非有意(Z~1.4)
+sansan|telecho|P          -7.8        +11.0         +1.08       n=14/17で論外
+niconico|dragon|B          —            —            —          強さ常に≥8で分割不能(ドラゴンは元々強い)
+```
+→ **「強い形状ほど勝つ」がOOSで再現したパターン=0個**。in-sampleで良かった分割は全部OOSで消滅。唯一両サンプル同方向は `telecho|nikoichi|P`＝「長い形状ほど**逆に悪い**」だがOOS Z≈1.4で非有意＋8×2の多重比較で偽陽性濃厚＋仮説と逆。
+
+## 結論
+- **6/10の中にさらなるエッジは無い**（パターン空間も形状強さも濃縮ゼロ）。
+- エッジは [[EDGE_TIMESTRUCTURE_ANALYSIS]] と同じく**一様~1%で拡散**。唯一のレバー＝**どのパターンか（質）**だけ。
+- **現状の v3=3本 / v4=8本 ＋ OOS除外3本が最適解**。ここを弄ると過学習で悪化する＝**触らないのが正解**。
+- 梶原さんの「シュー内の偏り/回帰/形状」系仮説は [[MIDLEAD_DRAGON_NO_EDGE]]・[[PB_DAILY_IMBALANCE_NO_EDGE]] と全部同根（独立シャッフル＝自己相関0）。
+
+script=`/tmp/_edge_scan.py`・`/tmp/_strength_scan.py`（VPS）／基盤=`_vps_dlbt_html.py`(repat_bt)
