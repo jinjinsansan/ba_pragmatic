@@ -552,6 +552,17 @@ class DualLinePragmaticBot(cp.Collector):
         self.losses = 0
         self.ties = 0
         self.virtual_pnl = 0.0
+        # 拾ったNOW(チャンネルから受信した初回シグナル)の影の勝率。賭けたか否かに
+        # 関係なく、その台の次の結果で勝敗を付ける(=取りこぼし込み)。追従は対象外
+        # (追従は受信シグナルでなく賭け戦略)。実BET勝率(self.wins)とは別物。
+        self.caught_wins = 0      # 追従込み(全拾NOW=初回+追従)
+        self.caught_losses = 0
+        self.caught_ties = 0
+        self.caught_now_wins = 0  # 追従なし(初回NOWのみ)
+        self.caught_now_losses = 0
+        self.caught_now_ties = 0
+        self._caught_pending: list = []  # [{"ids": set, "side": "P"/"B", "follow": bool}]
+        self._caught_seen_count: dict = {}  # table_id -> 最後に見たbuf.hands長(拾NOW影決済用)
         self.shoe_changes: dict[str, int] = defaultdict(int)
         self.per_pattern: dict[str, dict] = defaultdict(
             lambda: {"pred": 0, "wins": 0, "losses": 0, "ties": 0, "pnl": 0.0}
@@ -660,10 +671,117 @@ class DualLinePragmaticBot(cp.Collector):
                 if isinstance(item, (dict, list)):
                     self._collect_table_ids_from_msg(item, out, depth + 1)
 
+    def _register_caught_now(self, *ids, side=None, is_follow=False) -> None:
+        """拾ったNOWを影の勝率追跡に登録する。実際にBETするか否かに関係なく、その台の
+        次の完了ハンドで勝敗が付く(取りこぼし込み)。LIVE受け子のみ。2系統で集計する:
+        ・追従込み(全NOW=初回+追従)  ・追従なし(初回NOWのみ)。is_follow で振り分け。
+        ★捕捉経路で台IDが異なる(table_id/qpid/target)ため全IDをエイリアス集合で保持し、
+        結果観測側はbufの全IDで照合する(=ID不一致でも当たる)。"""
+        try:
+            if not getattr(self.bet_executor, "is_live", False):
+                return  # 監視bot(dry-run)では集計しない
+            sc = str(side or "").strip().upper()[:1]
+            if sc not in ("P", "B"):
+                return
+            alias = set(str(x) for x in ids if x)
+            if not alias:
+                return
+            self._caught_pending.append({"ids": alias, "side": sc, "follow": bool(is_follow)})
+            if len(self._caught_pending) > 300:  # 無限増殖の保険
+                self._caught_pending = self._caught_pending[-300:]
+            logger.info(
+                f"[CAUGHT-NOW] registered ids={sorted(alias)} side={sc} "
+                f"follow={bool(is_follow)} pending={len(self._caught_pending)}"
+            )
+        except Exception:
+            pass
+
+    def _resolve_caught_now(self, table_id: str, outcome_char: str, buf=None, extra_keys=None) -> None:
+        """この台で今完了したハンド(P/B/T)に対し、最古の保留中・拾NOWを決済し集計。
+        BETの有無と無関係(取りこぼしも当たれば+1)。台IDはbuf/extra_keysの全IDで照合する。
+        追従込み(caught_*)は常時、追従なし(caught_now_*)は初回NOWのみ加算。"""
+        try:
+            if not self._caught_pending:
+                return
+            keys = {str(table_id)}
+            if buf is not None:
+                for a in (getattr(buf, "qpid_table_id", ""), getattr(buf, "table_name", "")):
+                    if a:
+                        keys.add(str(a))
+            if extra_keys:
+                for a in extra_keys:
+                    if a:
+                        keys.add(str(a))
+            idx = next((i for i, e in enumerate(self._caught_pending) if e["ids"] & keys), None)
+            if idx is None:
+                return
+            e = self._caught_pending.pop(idx)
+            sc = e["side"]
+            foll = bool(e.get("follow"))
+            oc = str(outcome_char).strip().upper()[:1]
+            if oc == "T":
+                _r = "T"
+            elif oc == sc:
+                _r = "W"
+            elif oc in ("P", "B"):
+                _r = "L"
+            else:
+                self._caught_pending.insert(idx, e)  # 未知の結果は戻して次ハンド待ち
+                return
+            # 追従込み(全NOW)
+            if _r == "T":
+                self.caught_ties += 1
+            elif _r == "W":
+                self.caught_wins += 1
+            else:
+                self.caught_losses += 1
+            # 追従なし(初回NOWのみ)
+            if not foll:
+                if _r == "T":
+                    self.caught_now_ties += 1
+                elif _r == "W":
+                    self.caught_now_wins += 1
+                else:
+                    self.caught_now_losses += 1
+            nA = self.caught_wins + self.caught_losses
+            nN = self.caught_now_wins + self.caught_now_losses
+            logger.info(
+                f"[CAUGHT-NOW] resolved table={table_id} pred={sc} outcome={oc} -> {_r} follow={foll}  "
+                f"込み={self.caught_wins}W/{self.caught_losses}L "
+                f"なし={self.caught_now_wins}W/{self.caught_now_losses}L (signals={self.total_signals})"
+            )
+            send_msg({
+                "type": "caught_stats",
+                "caught_wins": self.caught_wins,
+                "caught_losses": self.caught_losses,
+                "caught_ties": self.caught_ties,
+                "caught_win_rate": round((self.caught_wins / nA * 100) if nA else 0.0, 1),
+                "caught_now_wins": self.caught_now_wins,
+                "caught_now_losses": self.caught_now_losses,
+                "caught_now_ties": self.caught_now_ties,
+                "caught_now_win_rate": round((self.caught_now_wins / nN * 100) if nN else 0.0, 1),
+                "total_signals": self.total_signals,
+            })
+        except Exception:
+            pass
+
     def _process_table_frame(self, table_id: str) -> None:
         buf = self.buffers.get(table_id)
         if not buf:
             return
+        # 拾NOW影決済(取りこぼし込み): no_vps_poll等の分岐に依らず、全卓の新ハンドを
+        # 自前カウンタで追って判定する(BETの有無に関係なく)。bufの全IDで照合。
+        try:
+            _cur = len(buf.hands or [])
+            _prev = self._caught_seen_count.get(table_id)
+            self._caught_seen_count[table_id] = _cur
+            if _prev is not None and _cur > _prev and self._caught_pending:
+                for _nh in (buf.hands or [])[_prev:_cur]:
+                    _oc = _winner_to_char(_nh.get("winner"))
+                    if _oc:
+                        self._resolve_caught_now(table_id, _oc, buf)
+        except Exception:
+            pass
         if self.bet_executor.is_live and not self.no_vps_poll:
             # Normal LIVE is executor-only. The VPS is the sole signal source.
             # Still consume observed results for locally confirmed bets so GUI
@@ -681,6 +799,7 @@ class DualLinePragmaticBot(cp.Collector):
                     outcome_char = _winner_to_char(new_hand.get("winner"))
                     if not outcome_char:
                         continue
+                    # (拾NOW影決済は関数冒頭の自前カウンタ側で実施=分岐に依存しない)
                     try:
                         self._settle_confirmed_decision_from_hand(
                             table_id, buf, new_hand, outcome_char
@@ -771,6 +890,18 @@ class DualLinePragmaticBot(cp.Collector):
                     "wins": self.wins,
                     "losses": self.losses,
                     "ties": self.ties,
+                    "caught_wins": self.caught_wins,
+                    "caught_losses": self.caught_losses,
+                    "caught_ties": self.caught_ties,
+                    "caught_win_rate": round(
+                        (self.caught_wins / (self.caught_wins + self.caught_losses) * 100)
+                        if (self.caught_wins + self.caught_losses) else 0.0, 1),
+                    "caught_now_wins": self.caught_now_wins,
+                    "caught_now_losses": self.caught_now_losses,
+                    "caught_now_ties": self.caught_now_ties,
+                    "caught_now_win_rate": round(
+                        (self.caught_now_wins / (self.caught_now_wins + self.caught_now_losses) * 100)
+                        if (self.caught_now_wins + self.caught_now_losses) else 0.0, 1),
                     "current_turn": ms.get("seq_turn"),
                     "overshoot": ms.get("seq_overshoot"),
                     "turns_display": "".join(turns) if isinstance(turns, list) else "",
@@ -1773,6 +1904,12 @@ class DualLinePragmaticBot(cp.Collector):
                     continue
                 gids.add(gid)
                 c = _winner_to_char(h.get("winner"))
+                # 拾NOW影決済(取りこぼし込み): 全卓のgameResultがここを通る(BET有無に無関係)。
+                # 受け子の結果はこのdgaフィードが本命(buf.handsは更新されない)。
+                if c in ("P", "B", "T"):
+                    self._resolve_caught_now(
+                        tid, c, extra_keys=(self._dga_qpid.get(tid, ""), self._dga_names.get(tid, ""))
+                    )
                 # Phase 2b settlement: the first NEW result on a table that has an
                 # open dga bet IS that bet's outcome. Hand the outcome to the main
                 # loop (which owns the money model + executor confirmation check).
@@ -2044,6 +2181,7 @@ class DualLinePragmaticBot(cp.Collector):
         # Feed the operator panel so the dga NOW bet shows like a normal signal
         # (dga is the single source of truth for panel + bets in live mode).
         self.total_signals += 1
+        self._register_caught_now(tid, target, side=side)  # 拾NOW勝率(取りこぼし込み)
         try:
             self._send_manual_assist_item(
                 status="NOW", table_id=tid, table_name=name, qpid=target,
@@ -2400,6 +2538,7 @@ class DualLinePragmaticBot(cp.Collector):
             except Exception as ex:
                 logger.warning(f"[MANUAL-ASSIST] local focus queue failed id={local_id}: {ex}")
             self.total_signals += 1
+            self._register_caught_now(table_id, target_id, getattr(buf, "qpid_table_id", ""), side=bet_side)  # 拾NOW勝率
             self._send_manual_assist_item(
                 status="NOW",
                 table_id=table_id,
@@ -2540,6 +2679,7 @@ class DualLinePragmaticBot(cp.Collector):
         self.pending[table_id] = pending_entry
 
         self.total_signals += 1
+        self._register_caught_now(table_id, getattr(buf, "qpid_table_id", ""), side=bet_side)  # 拾NOW勝率
         send_phase("predicting", f"{bet_side} via {pattern_key}")
         send_action(f"🎯 #{self.total_signals} {pattern_key} → {bet_side} on {buf.table_name or table_id}")
         self._send_gui_money_status()
@@ -3178,6 +3318,7 @@ class DualLinePragmaticBot(cp.Collector):
         self._follow_bet_id = str(bet_id or "")
         self._follow_did = did
         self.total_signals += 1
+        self._register_caught_now(qpid, name, side=side, is_follow=True)  # 拾NOW率(追従)
         try:
             self._send_manual_assist_item(
                 status="NOW", table_id=qpid, table_name=name, qpid=qpid, side=side,
@@ -3941,6 +4082,12 @@ class DualLinePragmaticBot(cp.Collector):
                         "wins": self.wins,
                         "losses": self.losses,
                         "ties": self.ties,
+                        "caught_wins": self.caught_wins,
+                        "caught_losses": self.caught_losses,
+                        "caught_ties": self.caught_ties,
+                        "caught_now_wins": self.caught_now_wins,
+                        "caught_now_losses": self.caught_now_losses,
+                        "caught_now_ties": self.caught_now_ties,
                         "virtual_pnl": self.virtual_pnl,
                         "per_pattern": dict(self.per_pattern),
                         "pending": self.pending,
@@ -3980,6 +4127,12 @@ class DualLinePragmaticBot(cp.Collector):
             self.wins = s.get("wins", 0)
             self.losses = s.get("losses", 0)
             self.ties = s.get("ties", 0)
+            self.caught_wins = s.get("caught_wins", 0)
+            self.caught_losses = s.get("caught_losses", 0)
+            self.caught_ties = s.get("caught_ties", 0)
+            self.caught_now_wins = s.get("caught_now_wins", 0)
+            self.caught_now_losses = s.get("caught_now_losses", 0)
+            self.caught_now_ties = s.get("caught_now_ties", 0)
             self.virtual_pnl = float(s.get("virtual_pnl", 0.0))
             saved_pending = s.get("pending", {}) or {}
             if saved_pending:
@@ -5198,6 +5351,7 @@ class DualLinePragmaticBot(cp.Collector):
             except Exception as ex:
                 logger.warning(f"[MANUAL-ASSIST] focus queue failed did={did[:12]}: {ex}")
             self.total_signals += 1
+            self._register_caught_now(table_id, table_name, side=side)  # 拾NOW勝率(取りこぼし込み)
             self._send_manual_assist_item(
                 status="NOW",
                 table_id=table_id,
@@ -5363,6 +5517,7 @@ class DualLinePragmaticBot(cp.Collector):
             "decision_id": did,
         }
         self.total_signals += 1
+        self._register_caught_now(table_id, table_name, side=side)  # 拾NOW勝率(取りこぼし込み)
         send_phase("predicting", f"{side} via VPS")
         send_action(f"🎯 #{self.total_signals} {pattern_key or 'VPS'} → {side} on {table_name or table_id}")
         self._send_gui_money_status()

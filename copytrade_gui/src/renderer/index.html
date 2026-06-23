@@ -113,9 +113,17 @@
         <div class="stat-label">BALANCE</div>
         <div class="stat-value" id="balance">$0.00</div>
       </div>
-      <div class="stat-card">
+      <div class="stat-card" title="BET成立した分の勝率(追従・取りこぼしの影響込み)">
         <div class="stat-label">WIN RATE</div>
         <div class="stat-value" id="winRate">-</div>
+      </div>
+      <div class="stat-card" title="このGUIが拾った全NOW(初回+追従)の勝率。BETの有無に関係なく台の結果で判定(取りこぼし込み)">
+        <div class="stat-label">拾NOW率 追従込</div>
+        <div class="stat-value" id="caughtWinRate">-</div>
+      </div>
+      <div class="stat-card" title="拾った初回NOWのみ(追従を除く)の勝率。取りこぼし込み＝拾ったシグナルの素の質">
+        <div class="stat-label">拾NOW率 追従無</div>
+        <div class="stat-value" id="caughtNowWinRate">-</div>
       </div>
       <div class="stat-card master-card master-unknown" id="masterCard" title="Master connection / control status">
         <div class="stat-label">MASTER</div>

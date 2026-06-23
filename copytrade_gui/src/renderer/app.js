@@ -593,6 +593,24 @@ async function stopBotFlow({ forced = false, reason = '' } = {}) {
 
 $('#btnStart')?.addEventListener('click', () => startBotFlow({ auto: false }));
 
+// 拾ったNOWの勝率を2欄表示する。BET成立勝率(#winRate)とは別物で、BETの有無に関係なく
+// 台の結果で判定(取りこぼし込み)。#caughtWinRate=追従込み(初回+追従)、#caughtNowWinRate=追従なし(初回のみ)。
+function _setCaughtCard(elId, wins, losses, rate) {
+  const el = $('#' + elId);
+  if (!el) return;
+  const w = wins || 0, l = losses || 0, n = w + l;
+  if (n <= 0) { el.textContent = '-'; return; }
+  const r = (typeof rate === 'number') ? rate : (w / n * 100);
+  el.textContent = `${r.toFixed(1)}% (${w}W/${l}L)`;
+}
+function updateCaughtWinRate(msg) {
+  if (!msg) return;
+  if (typeof msg.caught_wins !== 'number' && typeof msg.caught_win_rate !== 'number'
+      && typeof msg.caught_now_wins !== 'number') return;
+  _setCaughtCard('caughtWinRate', msg.caught_wins, msg.caught_losses, msg.caught_win_rate);       // 追従込み
+  _setCaughtCard('caughtNowWinRate', msg.caught_now_wins, msg.caught_now_losses, msg.caught_now_win_rate); // 追従なし
+}
+
 function updateSessionDisplay() {
   const { session, daily } = _computePnl();
   const el = $('#sessionPnl');
@@ -2568,6 +2586,7 @@ window.valhalla.onAgentMessage((msg) => {
         const wr = ((msg.wins || 0) / totalBets * 100).toFixed(1);
         $('#winRate').textContent = `${wr}%`;
       }
+      updateCaughtWinRate(msg);
       if (typeof msg.balance === 'number' && msg.balance > 0) {
         _currentBalance = msg.balance;
         _balanceConfirmed = true;
@@ -2604,6 +2623,12 @@ window.valhalla.onAgentMessage((msg) => {
         logSeqProbe('status', msg.money_status, { wins: msg.wins || 0, losses: msg.losses || 0, ties: msg.ties || 0 });
         applyMoneyStatusToSignalPanel(msg.money_status);
       } else updateDevPanel(msg);
+      break;
+    }
+
+    case 'caught_stats': {
+      // 拾ったNOW(初回シグナル・取りこぼし込み)の勝率。BET勝率(#winRate)とは別物。
+      updateCaughtWinRate(msg);
       break;
     }
 

@@ -8,9 +8,9 @@ Set-Location 'E:\dev\Cusor\bacopy\copytrade_gui'
 $log = 'E:\dev\Cusor\bacopy\_build_user0210.log'
 function W($m){ "$((Get-Date).ToString('HH:mm:ss')) $m" | Out-File -FilePath $log -Append -Encoding utf8 }
 "" | Out-File -FilePath $log -Encoding utf8
-W "BUILD START (2026-06-23 #5: DROP OOS-negative patterns v3(niconico|niconico|B, niconico|dragon|P)+v4(telecho|niconico|B); REVERT auto Chrome refresh (caused flash-delay regression) to 6h engine-only; keeps loss_cut, bet123set/dalembertset, winrate chart)"
+W "BUILD START (2026-06-23 #6: ADD per-GUI 拾NOW率 (caught-NOW win rate, 2 cols 追従込/追従無, 取りこぼし込み, hooked into dga gameResult feed); keeps pattern-drop, loss_cut, bet123set/dalembertset, winrate chart, no auto-refresh)"
 $eng = Get-Item 'build_staging\engine\bacopy_engine.exe'
-W ("engine size=" + $eng.Length + " (expect 68731639 = 2A6C8A09 = refined whitelist v3=3/v4=8 + reconnect + bet123set/dalembertset)")
+W ("engine size=" + $eng.Length + " (expect 68735258 = F142EDB6 = caught-NOW 2col + refined whitelist v3=3/v4=8 + bet123set/dalembertset)")
 
 $users = @('02','03','04','05','06','07','08','09','10')
 foreach($n in $users){
