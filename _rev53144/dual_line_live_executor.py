@@ -4656,11 +4656,19 @@ class LiveBetExecutor:
             except Exception:
                 pass
             try:
+                _mh0 = time.time()  # 計装: 維持センタリング(NOW-bet-hold)の所要
                 self._maintain_active_now_bet_hold(now)
+                _mhdt = time.time() - _mh0
+                if _mhdt >= 2.0:
+                    logger.warning(f"[TICK-SLOW] _maintain_active_now_bet_hold {_mhdt:.1f}s")
             except Exception as ex:
                 logger.debug(f"[NOW-BET-HOLD] maintain failed: {ex}")
             try:
+                _vh0 = time.time()  # 計装: 維持センタリング(visible-bet-hold)の所要
                 self._maintain_visible_bet_hold(now)
+                _vhdt = time.time() - _vh0
+                if _vhdt >= 2.0:
+                    logger.warning(f"[TICK-SLOW] _maintain_visible_bet_hold {_vhdt:.1f}s")
             except Exception as ex:
                 logger.debug(f"[VISIBLE-HOLD] maintain failed: {ex}")
 
