@@ -8,9 +8,9 @@ Set-Location 'E:\dev\Cusor\bacopy\copytrade_gui'
 $log = 'E:\dev\Cusor\bacopy\_build_user0210.log'
 function W($m){ "$((Get-Date).ToString('HH:mm:ss')) $m" | Out-File -FilePath $log -Append -Encoding utf8 }
 "" | Out-File -FilePath $log -Encoding utf8
-W "BUILD START (2026-06-23 #6: ADD per-GUI 拾NOW率 (caught-NOW win rate, 2 cols 追従込/追従無, 取りこぼし込み, hooked into dga gameResult feed); keeps pattern-drop, loss_cut, bet123set/dalembertset, winrate chart, no auto-refresh)"
+W "BUILD START (2026-06-24 #9: STABLE base + REVERSE-BET (逆張り) + ENGINE-HEARTBEAT badge (賭けChromeに自走バッジ注入: ping停止=エンジン死亡を赤表示で可視化, BACOPY_ENGINE_HEARTBEAT=0 で無効) + centering env cap. engine=bafather-verified F5575BC7; GUI src has reverse toggle/banner)"
 $eng = Get-Item 'build_staging\engine\bacopy_engine.exe'
-W ("engine size=" + $eng.Length + " (expect 68735258 = F142EDB6 = caught-NOW 2col + refined whitelist v3=3/v4=8 + bet123set/dalembertset)")
+W ("engine size=" + $eng.Length + " (expect 68733644 = STABLE+reverse+heartbeat, bafather-verified MD5 F5575BC7EF400D2033999B9BAABD4A5A)")
 
 $users = @('02','03','04','05','06','07','08','09','10')
 foreach($n in $users){
