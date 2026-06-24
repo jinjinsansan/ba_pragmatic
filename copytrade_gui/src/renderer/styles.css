@@ -79,24 +79,36 @@ html[data-variant="user"] .dev-only { display: none !important; }
 html[data-variant="user"] .os-tag   { display: none !important; }
 .hidden { display: none !important; }
 
-/* 逆張りON 常時警告バナー(切り忘れ事故防止) */
-.reverse-banner {
-  position: relative;
-  z-index: 50;
-  background: #c1121f;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  text-align: center;
-  padding: 7px 14px;
-  letter-spacing: 0.3px;
-  box-shadow: 0 0 14px rgba(225, 0, 42, 0.7);
-  animation: reverseBannerPulse 1.4s ease-in-out infinite;
+/* 逆張りON 常時警告バナー — BETTING COCKPIT 調の浮遊グラスピル(#safetyBanner 準拠)。
+   ただし danger=neon red(--lose) で常時脈動させ、切り忘れに気付けるよう強めに発光。 */
+#reverseBanner {
+  position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%);
+  z-index: 61; display: inline-flex; align-items: center; gap: 9px;
+  max-width: calc(100% - 24px); padding: 7px 13px;
+  font-family: var(--font-hud); font-size: 11px; line-height: 1;
+  border-radius: 999px; white-space: nowrap;
+  background: rgba(28,6,12,0.86); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,45,85,0.5);
+  box-shadow: 0 6px 26px rgba(0,0,0,0.5), 0 0 22px rgba(255,45,85,0.25);
+  color: var(--text);
+  animation: sb-in 0.28s ease-out, rb-breathe 2.0s ease-in-out 0.28s infinite;
 }
-.reverse-banner b { color: #ffe08a; }
-@keyframes reverseBannerPulse {
-  0%, 100% { filter: brightness(1); }
-  50% { filter: brightness(1.25); }
+#reverseBanner .rb-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: var(--lose); box-shadow: 0 0 9px rgba(255,45,85,0.9);
+}
+#reverseBanner .rb-label { font-weight: 700; letter-spacing: 0.20em; color: rgba(255,45,85,0.72); }
+#reverseBanner .rb-state {
+  font-weight: 700; letter-spacing: 0.06em;
+  color: var(--lose); text-shadow: 0 0 10px rgba(255,45,85,0.5);
+}
+#reverseBanner .rb-msg {
+  color: var(--text-muted); letter-spacing: 0.01em;
+  overflow: hidden; text-overflow: ellipsis;
+}
+@keyframes rb-breathe {
+  0%,100% { box-shadow: 0 6px 26px rgba(0,0,0,0.5), 0 0 16px rgba(255,45,85,0.18); }
+  50%     { box-shadow: 0 6px 26px rgba(0,0,0,0.5), 0 0 32px rgba(255,45,85,0.40); }
 }
 
 /* ============================================================

@@ -28,8 +28,13 @@
     </div>
   </div>
 
-  <!-- 逆張りONの常時警告バナー(切り忘れ事故防止)。既定は hidden。 -->
-  <div id="reverseBanner" class="reverse-banner hidden">⚠ 逆張りモード ON — 予想の<b>逆side</b>に自動BET中（追従は停止）。エッジ無し・切り忘れ注意。</div>
+  <!-- 逆張りONの常時警告バナー(切り忘れ事故防止)。BETTING COCKPIT 調の浮遊グラスピル。既定は hidden。 -->
+  <div id="reverseBanner" class="hidden" role="status" aria-live="polite">
+    <span class="rb-dot"></span>
+    <span class="rb-label">REVERSE</span>
+    <span class="rb-state">逆張り ON</span>
+    <span class="rb-msg">予想の逆side に自動BET中・追従停止・エッジ無し（切り忘れ注意）</span>
+  </div>
 
   <!-- Setup Screen -->
   <div id="setupScreen" class="modal hidden">
