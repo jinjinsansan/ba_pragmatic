@@ -587,6 +587,54 @@ async (args) => {
 }
 """
 
+_ENGINE_HEARTBEAT_JS = r"""
+() => {
+  try {
+    if (window.__bacopyHbInstalled) return;
+    window.__bacopyHbInstalled = true;
+    if (typeof window.__bacopyEngineHb !== 'number') window.__bacopyEngineHb = 0;
+    var THRESH = 25; // seconds with no engine ping => show STOPPED
+    var render = function () {
+      try {
+        var root = document.body || document.documentElement;
+        if (!root) return;
+        var b = document.getElementById('bacopy-engine-hb');
+        if (!b) {
+          b = document.createElement('div');
+          b.id = 'bacopy-engine-hb';
+          b.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);'
+            + 'z-index:2147483647;font-family:ui-monospace,Consolas,monospace;font-weight:700;'
+            + 'pointer-events:none;letter-spacing:.03em;text-align:center;'
+            + 'border-radius:0 0 8px 8px;transition:background .2s;';
+          root.appendChild(b);
+        }
+        var hb = window.__bacopyEngineHb || 0;
+        var age = (Date.now() - hb) / 1000;
+        if (hb && age < THRESH) {
+          b.textContent = '● ENGINE LIVE';
+          b.style.background = 'rgba(0,160,100,.82)';
+          b.style.color = '#eafff5';
+          b.style.padding = '2px 10px';
+          b.style.fontSize = '11px';
+          b.style.boxShadow = 'none';
+        } else {
+          var ago = hb ? (' ' + Math.floor(age) + 's前から') : '';
+          b.textContent = '⚠ ENGINE STOPPED' + ago + ' — 賭けていません / 再起動してください';
+          var on = (Math.floor(Date.now() / 700) % 2) === 0;
+          b.style.background = on ? '#d10000' : '#7a0000';
+          b.style.color = '#fff';
+          b.style.padding = '6px 18px';
+          b.style.fontSize = '14px';
+          b.style.boxShadow = '0 0 18px rgba(209,0,0,.85)';
+        }
+      } catch (e) {}
+    };
+    setInterval(render, 1000);
+    render();
+  } catch (e) {}
+}
+"""
+
 _MULTI_LOBBY_FOCUS_JS = r"""
 async (args) => {
   const qpid = String((args && args.qpid) || '').trim();
@@ -1816,6 +1864,14 @@ class LiveBetExecutor:
         self._last_betslip_check_at: float = 0.0
         self._last_manual_assist_recover_at: float = 0.0
         self._last_lobby_recover_at: float = 0.0
+        # ── エンジン心拍(ハートビート)バッジ ───────────────────────────────
+        # 賭けChromeへ常時バッジを注入し、tick毎に「ping時刻」を更新する。バッジは
+        # ページ内タイマーで自走し、エンジンが死んでping停止すると赤「ENGINE STOPPED」
+        # を表示し続ける(=Chromeを見ている人がエンジン死亡に即気づける)。decision/bet/
+        # settlement経路には一切触れず、tick冒頭で軽量evaluateを5s間隔で打つだけ=安全。
+        # 無効化: BACOPY_ENGINE_HEARTBEAT=0 (既定ON)。
+        self._hb_enabled: bool = os.getenv("BACOPY_ENGINE_HEARTBEAT", "1").strip().lower() not in ("0", "false", "off", "no")
+        self._last_hb_ping_at: float = 0.0
         self._reconnecting_first_at: float = 0.0   # 再接続しています 最初の検出時刻
         self._manual_assist_watch_until: float = 0.0
         self._manual_assist_watch_target: str = ""
@@ -2219,6 +2275,16 @@ class LiveBetExecutor:
             logger.info("[EXEC-SETUP] WS bridge pre-installed via add_init_script OK")
         except Exception as e:
             logger.warning(f"[EXEC-SETUP] add_init_script FAILED: {e}")
+
+        # エンジン心拍バッジ: 全ページ(リロード後含む)に常駐させる。tick の ping が
+        # 止まればページ内タイマーが自走して赤「ENGINE STOPPED」を出す=エンジン死亡を
+        # 賭けChrome上で可視化(BACOPY_ENGINE_HEARTBEAT=0 で無効)。
+        if getattr(self, "_hb_enabled", False):
+            try:
+                context.add_init_script(_ENGINE_HEARTBEAT_JS)
+                logger.info("[EXEC-SETUP] engine-heartbeat badge pre-installed (BACOPY_ENGINE_HEARTBEAT=1)")
+            except Exception as e:
+                logger.warning(f"[EXEC-SETUP] heartbeat add_init_script FAILED: {e}")
 
         # hh88: CDP注入WSブリッジを全フレームに事前注入(WebSocket.prototype.send フック)。
         # route_web_socket を使わないので pusher 等の起動WSを壊さない。
@@ -4187,9 +4253,29 @@ class LiveBetExecutor:
             # フックがまだ無い(ユーザーが multibaccarat を開いた直後など) → 再注入を試みる
             self._hh88_reinject_bridge()
 
+    def _ping_engine_heartbeat(self, page: Any) -> None:
+        """賭けChromeのハートビートバッジへ「生存ping」を打つ。
+        ①バッジ未注入の既存ページにも冪等注入(__bacopyHbInstalledガード) ②ping時刻更新。
+        どちらも軽量evaluate。例外は呼び出し側で握り潰す(決済経路に影響させない)。"""
+        if page is None:
+            return
+        try:
+            page.evaluate(_ENGINE_HEARTBEAT_JS)
+        except Exception:
+            pass
+        page.evaluate("() => { try { window.__bacopyEngineHb = Date.now(); } catch (e) {} }")
+
     def tick(self) -> None:
         now = time.time()
         page = self._lobby_page
+        # エンジン心拍ping(5s間隔・軽量・try/exceptで決して落ちない)。バッジの自走表示で
+        # エンジン死亡を賭けChrome上に可視化する。決済/賭け経路には触れない。
+        if getattr(self, "_hb_enabled", False) and (now - self._last_hb_ping_at >= 5.0):
+            self._last_hb_ping_at = now
+            try:
+                self._ping_engine_heartbeat(page)
+            except Exception as ex:
+                logger.debug(f"[HEARTBEAT] ping failed: {ex}")
         # hh88: CDP注入ブリッジの受信フレームを吸い上げ、betsopen/win を既存パーサへ。
         if IS_HH88:
             try:
