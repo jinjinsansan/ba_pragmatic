@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('valhalla', {
   stopBot: () => ipcRenderer.invoke('stop-bot'),
   manualAssistCommand: (payload) => ipcRenderer.invoke('manual-assist-command', payload),
   setSafetyMode: (enabled) => ipcRenderer.invoke('set-safety-mode', !!enabled),
+  setReverseBet: (on) => ipcRenderer.invoke('set-reverse-bet', !!on),
 
   // Auth / billing
   authSignIn: (email, password) => ipcRenderer.invoke('auth-signin', { email, password }),

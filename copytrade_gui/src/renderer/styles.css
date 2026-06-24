@@ -79,6 +79,26 @@ html[data-variant="user"] .dev-only { display: none !important; }
 html[data-variant="user"] .os-tag   { display: none !important; }
 .hidden { display: none !important; }
 
+/* 逆張りON 常時警告バナー(切り忘れ事故防止) */
+.reverse-banner {
+  position: relative;
+  z-index: 50;
+  background: #c1121f;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  padding: 7px 14px;
+  letter-spacing: 0.3px;
+  box-shadow: 0 0 14px rgba(225, 0, 42, 0.7);
+  animation: reverseBannerPulse 1.4s ease-in-out infinite;
+}
+.reverse-banner b { color: #ffe08a; }
+@keyframes reverseBannerPulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.25); }
+}
+
 /* ============================================================
    FLASH OVERLAY (win/lose/profit/losscut full-screen pulse)
    ============================================================ */

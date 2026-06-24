@@ -28,6 +28,9 @@
     </div>
   </div>
 
+  <!-- 逆張りONの常時警告バナー(切り忘れ事故防止)。既定は hidden。 -->
+  <div id="reverseBanner" class="reverse-banner hidden">⚠ 逆張りモード ON — 予想の<b>逆side</b>に自動BET中（追従は停止）。エッジ無し・切り忘れ注意。</div>
+
   <!-- Setup Screen -->
   <div id="setupScreen" class="modal hidden">
     <div class="modal-content glass setup-card">
@@ -403,6 +406,14 @@
                 <option value="v3">6パターン</option>
                 <option value="v4">10パターン</option>
               </select>
+            </div>
+            <div class="form-group">
+              <label>逆張り（reverse）</label>
+              <select id="inputReverseBet">
+                <option value="off">OFF（通常＝予想どおりにBET）</option>
+                <option value="on">ON（予想の逆side にBET）</option>
+              </select>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">ONの間は v3/v4 のNOWが出たら<b>本来の逆(B↔P)</b>に自動BET。賭け・決済・光り・勝率は反転後で一貫します。<b style="color:#ff8888;">エッジはありません（規律/手動代替用）。ON中は追従を自動停止します。</b>切り忘れ防止のため<b>再起動すると必ずOFFに戻ります</b>（START都度ONにし直し）。</div>
             </div>
             <!-- 安全モードは廃止(2026-06-21・使用しなくなったためコメントアウト)。
                  復活させる場合はこのブロックのコメントを外すだけでよい。エンジン側の

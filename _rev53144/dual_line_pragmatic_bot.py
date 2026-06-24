@@ -491,6 +491,13 @@ class DualLinePragmaticBot(cp.Collector):
         self._follow_bet_id = ""          # 進行中の追従BETのbet_id(失敗即検知用)
         self._follow_did = ""             # 進行中の追従BETのdecision_id(pending掃除用)
         self._follow_reason = ""          # 直近追従の根拠表示(GUIアシストパネル用)
+        # ── 逆張り(reverse)モード ────────────────────────────────────────
+        # 正味NOW(v3/v4)の side を入口で B<->P 反転するだけ(T はそのまま)。賭け・
+        # 決済・光り・勝率カウントは反転後 side で一貫。タイミング/センタリング/決済
+        # 経路には一切触れない=安全。★env から読まない=再起動で必ず OFF に戻る
+        # (付けっぱなし事故防止)。stdin {"type":"set_reverse","on":bool} で即時切替。
+        # ON 中は追従(WIN追跡)を自動停止する(_follow_on_settled でゲート)。
+        self._reverse_bet = False
         # 利確(profit_stop)到達でGUIへ1回だけ停止通知を出す用。
         self._profit_stop_sent = False
         self.notify_signal = notify_signal
@@ -1470,6 +1477,8 @@ class DualLinePragmaticBot(cp.Collector):
                     self._set_dual_mode(str(msg.get("mode") or ""))
                 elif isinstance(msg, dict) and msg.get("type") == "safety_mode":
                     self._set_safety_mode(bool(msg.get("enabled")))
+                elif isinstance(msg, dict) and msg.get("type") == "set_reverse":
+                    self._set_reverse(bool(msg.get("on")))
 
         threading.Thread(target=_loop, name="manual-assist-stdin", daemon=True).start()
 
@@ -1515,6 +1524,49 @@ class DualLinePragmaticBot(cp.Collector):
                 pass
         # トグル直後に GUI 表示を即更新(20s ポーラを待たない)。
         self._send_safety_status()
+
+    def _maybe_reverse(self, side: str) -> str:
+        """逆張りON時のみ side を B<->P 反転して返す(T/不正値はそのまま)。
+        正味NOW(VPS/ローカル/DGA)の入口で1回だけ呼ぶ。place_bet 等の低レベル経路や
+        追従/TIEプッシュの再BET側には適用しない(二重反転を避けるため)。"""
+        if not getattr(self, "_reverse_bet", False):
+            return side
+        s = str(side or "").upper()
+        return {"B": "P", "P": "B"}.get(s, side)
+
+    def _set_reverse(self, on: bool) -> None:
+        """GUI から逆張り ON/OFF を即時切替(再起動不要)。ON=正味NOWの side を反転。
+        ON 中は追従(WIN追跡)を自動停止(_follow_on_settled でゲート)。素の6P/10P勝率を
+        見たい時は OFF。★再起動では env を読まず常に OFF=付けっぱなし事故を防ぐ。"""
+        prev = bool(getattr(self, "_reverse_bet", False))
+        self._reverse_bet = bool(on)
+        if prev != self._reverse_bet:
+            logger.info(f"[REVERSE] {'ENABLED' if self._reverse_bet else 'DISABLED'}")
+            # ON にした瞬間に進行中の追従チェーンは打ち切る(順方向前提のため)。
+            if self._reverse_bet:
+                try:
+                    self._follow_reset(reason="reverse_on")
+                except Exception:
+                    pass
+            try:
+                _send_telegram(
+                    "🔄 逆張りモード: ON（追従は自動停止）" if self._reverse_bet
+                    else "🔄 逆張りモード: OFF"
+                )
+            except Exception:
+                pass
+        self._send_reverse_status()
+
+    def _send_reverse_status(self) -> None:
+        """GUI へ逆張りの現在状態を通知(ON 中は赤い常時バナーを出すため)。"""
+        try:
+            send_msg({
+                "type": "reverse_status",
+                "enabled": bool(getattr(self, "_reverse_bet", False)),
+                "ts": time.time(),
+            })
+        except Exception:
+            pass
 
     def _safety_wr_str(self) -> str:
         """ログ用: 当日累計勝率(v3/v4)と取得経過秒。"""
@@ -1991,6 +2043,11 @@ class DualLinePragmaticBot(cp.Collector):
         pattern = str(sig.get("pattern_key") or "")
         if side not in ("P", "B"):
             return
+        # 逆張りON: DGA正味NOWの side も反転(pattern は順方向のまま=系統判定用)。
+        if getattr(self, "_reverse_bet", False):
+            _orig_side = side
+            side = self._maybe_reverse(side)
+            logger.info(f"[REVERSE] dga side {_orig_side}->{side} pattern={pattern}")
         if _is_unsupported_table_name(f"{name} {qpid} {tid}"):
             return  # not a dual-line betting table (Privé / unsupported)
         # Regular-tables-only toggle (BACOPY_DGA_REGULAR_ONLY=1): skip Speed/Turbo
@@ -2441,6 +2498,13 @@ class DualLinePragmaticBot(cp.Collector):
         if self.use_v2_filter and pattern_key not in V2_PATTERNS:
             self._diag_skip("v2_filter", f"table={buf.table_name or table_id} pattern={pattern_key}")
             return
+
+        # 逆張りON: 系統ゲート(pattern_key)通過後に side を反転。以降の bet/caught_now/
+        # 決済は反転後 bet_side で一貫する(pattern_key は順方向のまま=表示/系統判定用)。
+        if getattr(self, "_reverse_bet", False):
+            _orig_bet_side = bet_side
+            bet_side = self._maybe_reverse(bet_side)
+            logger.info(f"[REVERSE] local-signal side {_orig_bet_side}->{bet_side} pattern={pattern_key}")
 
         # Private系など$1 BETやdual-line対象に合わないテーブルは対象外。
         # Speed/Turboはマルチエリアの事前入場でBET対象にする。
@@ -3259,7 +3323,11 @@ class DualLinePragmaticBot(cp.Collector):
         # ── WIN ──
         if result == "WIN":
             kind = self._follow_kind or self._follow_big_kind(pattern_key)
-            if self._follow_enabled and kind in ("telecho", "dragon"):
+            # 逆張りON中は追従(WIN追跡)を自動停止。追従は順方向(本来side)前提の論理で、
+            # 反転BETに追従すると論理破綻するため。GUIの追従選択(_follow_enabled)は保持し、
+            # 逆張りOFFで復帰する。TIEプッシュ(上)は実BET側の繰り返しなので反転と一貫=継続。
+            if self._follow_enabled and not getattr(self, "_reverse_bet", False) \
+                    and kind in ("telecho", "dragon"):
                 self._follow_active = True
                 self._follow_table_id = qpid
                 self._follow_table_name = table_name or qpid
@@ -4784,6 +4852,12 @@ class DualLinePragmaticBot(cp.Collector):
         if side not in ("P", "B"):
             logger.warning(f"[DECISION] invalid side={side!r} in {did}")
             return
+        # 逆張りON: 正味NOWの side をここで反転。以降の caught_now/NOW-LOCK/place_bet/
+        # 決済まで反転後 side で一貫する。pattern_key(=系統ゲート)は元のまま=正味NOWでのみ逆張り。
+        if getattr(self, "_reverse_bet", False):
+            _orig_side = side
+            side = self._maybe_reverse(side)
+            logger.info(f"[REVERSE] VPS decision side {_orig_side}->{side} did={did[:12]}")
         pattern_key = str(fa.get("pattern_key") or decision.get("pattern_key") or "")
         # ── モードフィルタ: 選択中モードの decision のみ BET (既定 v3) ──
         # decision の mode 未指定は v3 扱い(後方互換)。選択モードと不一致なら無視。

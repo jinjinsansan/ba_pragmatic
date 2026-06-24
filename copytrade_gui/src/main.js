@@ -2016,6 +2016,21 @@ app.whenReady().then(() => {
     }
   });
 
+  // 逆張り(reverse)モードの即時 ON/OFF をエンジンへ stdin で送る(再起動不要)。
+  // ★永続化しない: 起動時は常に OFF(エンジン側 _reverse_bet=False 固定)。
+  ipcMain.handle('set-reverse-bet', (_evt, on) => {
+    try {
+      if (!botProcess || !botProcess.stdin || botProcess.killed) {
+        return { ok: false, error: 'engine_not_running' };
+      }
+      const msg = { type: 'set_reverse', on: !!on };
+      botProcess.stdin.write(JSON.stringify(msg) + '\n', 'utf-8');
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+  });
+
   ipcMain.handle('auth-signin', async (_evt, payload) => {
     const email = String(payload && payload.email ? payload.email : '').trim();
     const password = String(payload && payload.password ? payload.password : '').trim();

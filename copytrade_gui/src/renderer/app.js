@@ -564,6 +564,8 @@ async function startBotFlow({ auto = false } = {}) {
   config.resume_results = Array.isArray(results) ? results.slice() : [];
   _startedAt = Date.now();
   setRunning(true);
+  // 逆張りは非永続: エンジンは起動時 OFF 固定なので UI も OFF に揃える(付けっぱなし防止)。
+  try { const r = $('#inputReverseBet'); if (r) r.value = 'off'; _setReverseBanner(false); } catch (_) {}
   setPhase('scanning', auto ? 'armed' : 'starting...');
   addLog(auto ? 'Armed. Waiting for master signal...' : 'Bot starting...', 'info');
   try {
@@ -582,6 +584,8 @@ async function stopBotFlow({ forced = false, reason = '' } = {}) {
     await window.valhalla.stopBot();
   } catch {}
   setRunning(false);
+  // 逆張りUIをOFFへ(エンジン停止=状態消滅)。
+  try { const r = $('#inputReverseBet'); if (r) r.value = 'off'; _setReverseBanner(false); } catch (_) {}
   if (forced && reason) {
     addLog(`Bot stopped: ${reason}`, 'warn');
     setAction(reason);
@@ -828,6 +832,13 @@ setTimeout(() => {
   $('#inputMoneyType')?.addEventListener('change', () => { _applyMoneyTypeVisibility(); _commitMoneyMode(); });
   $('#inputSeqVariant')?.addEventListener('change', _commitMoneyMode);
   $('#inputFlatVariant')?.addEventListener('change', _commitMoneyMode);
+  // 逆張り(reverse): ライブ stdin で即時 ON/OFF。★設定保存しない=非永続(再起動でOFF)。
+  // バナーはエンジンの reverse_status 確認で確定表示するが、押下時に楽観的に即反映。
+  $('#inputReverseBet')?.addEventListener('change', function () {
+    const on = this.value === 'on';
+    try { window.valhalla?.setReverseBet?.(on); } catch (_) {}
+    try { _setReverseBanner(on); } catch (_) {}
+  });
   // 安全モードは廃止(2026-06-21)。UIをコメントアウト済み(#inputSafetyMode 不在)。
   // 下のリスナーは要素が無ければ ?. で no-op だが、明示的に無効化しておく。
   /* 安全モード(廃止):
@@ -2422,6 +2433,13 @@ function renderDailyPnl() {
 // engine の safety_status を受けて「安全モードで待機中(=不具合ではない)」を
 // 一目で分かるよう全体を黄色で縁取り+下部バナー表示する。稼働中(賭けられる
 // 系統あり)は緑バナー。OFF/未稼働は表示を消す。
+// 逆張りON 警告バナーの表示/非表示。エンジンの reverse_status と押下時の楽観反映で呼ぶ。
+function _setReverseBanner(on) {
+  const b = document.getElementById('reverseBanner');
+  if (b) b.classList.toggle('hidden', !on);
+  try { document.body.classList.toggle('reverse-on', !!on); } catch (_) {}
+}
+
 function applySafetyStatus(msg) {
   const enabled = !!(msg && msg.enabled);
   const holding = !!(msg && msg.holding);
@@ -2687,6 +2705,14 @@ window.valhalla.onAgentMessage((msg) => {
 
     case 'safety_status': {
       applySafetyStatus(msg);
+      break;
+    }
+
+    case 'reverse_status': {
+      // エンジンが確定した逆張り状態でバナーとドロップダウンを同期。
+      _setReverseBanner(!!msg.enabled);
+      const sel = $('#inputReverseBet');
+      if (sel) sel.value = msg.enabled ? 'on' : 'off';
       break;
     }
 
