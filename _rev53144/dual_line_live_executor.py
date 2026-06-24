@@ -587,56 +587,69 @@ async (args) => {
 }
 """
 
-_ENGINE_HEARTBEAT_JS = r"""
-() => {
-  try {
-    if (window.__bacopyHbInstalled) return;
-    window.__bacopyHbInstalled = true;
-    if (typeof window.__bacopyEngineHb !== 'number') window.__bacopyEngineHb = 0;
-    var THRESH = 25; // seconds with no engine ping => show STOPPED
-    var render = function () {
-      try {
-        var root = document.body || document.documentElement;
-        if (!root) return;
-        var b = document.getElementById('bacopy-engine-hb');
-        if (!b) {
-          b = document.createElement('div');
-          b.id = 'bacopy-engine-hb';
-          b.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);'
-            + 'z-index:2147483647;font-family:ui-monospace,Consolas,monospace;font-weight:700;'
-            + 'pointer-events:none;letter-spacing:.03em;text-align:center;'
-            + 'border-radius:0 0 8px 8px;transition:background .2s;';
-          root.appendChild(b);
-        }
-        var hb = window.__bacopyEngineHb || 0;
-        var age = (Date.now() - hb) / 1000;
-        if (hb && age < THRESH) {
-          b.textContent = '● ENGINE LIVE';
-          b.style.background = 'rgba(0,160,100,.82)';
-          b.style.color = '#eafff5';
-          b.style.padding = '2px 10px';
-          b.style.fontSize = '11px';
-          b.style.boxShadow = 'none';
-        } else {
-          var ago = hb ? (' ' + Math.floor(age) + 's前から') : '';
-          b.textContent = '⚠ ENGINE STOPPED' + ago + ' — 賭けていません / 再起動してください';
-          var on = (Math.floor(Date.now() / 700) % 2) === 0;
-          b.style.background = on ? '#d10000' : '#7a0000';
-          b.style.color = '#fff';
-          b.style.padding = '6px 18px';
-          b.style.fontSize = '14px';
-          b.style.boxShadow = '0 0 18px rgba(209,0,0,.85)';
-        }
-      } catch (e) {}
-    };
-    setInterval(render, 1000);
-    render();
-  } catch (e) {}
-}
+# ハートビートバッジ本体(IIFE)。add_init_script でも、センタリングの相乗りでも同じコードを
+# 注入できるよう関数スコープのIIFEに切り出す(var が外へ漏れず、どこに埋めても変数衝突しない)。
+# __bacopyHbInstalled ガードで1フレームにつき1回だけ install(以後はページ内 setInterval が自走)。
+_HB_BADGE_BODY = r"""
+  (function () {
+    try {
+      if (window.__bacopyHbInstalled) return;
+      window.__bacopyHbInstalled = true;
+      if (typeof window.__bacopyEngineHb !== 'number') window.__bacopyEngineHb = 0;
+      var THRESH = 180; // 生存印が無い秒数>これで赤「STOPPED」。20s毎の全フレームping+相乗りで通常は<20s。
+                        // 起動時 _ensure_multi_area 再ロード(実測~148s)等の一時ブロックでは赤化させず、
+                        // 真の死亡(=3分継続)のみ赤化(user06の4時間放置には3分検知で十分)。
+      var render = function () {
+        try {
+          var root = document.body || document.documentElement;
+          if (!root) return;
+          var b = document.getElementById('bacopy-engine-hb');
+          if (!b) {
+            b = document.createElement('div');
+            b.id = 'bacopy-engine-hb';
+            b.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);'
+              + 'z-index:2147483647;font-family:ui-monospace,Consolas,monospace;font-weight:700;'
+              + 'pointer-events:none;letter-spacing:.03em;text-align:center;'
+              + 'border-radius:0 0 8px 8px;transition:background .2s;';
+            root.appendChild(b);
+          }
+          var hb = window.__bacopyEngineHb || 0;
+          var age = (Date.now() - hb) / 1000;
+          if (hb && age < THRESH) {
+            b.textContent = '● ENGINE LIVE';
+            b.style.background = 'rgba(0,160,100,.82)';
+            b.style.color = '#eafff5';
+            b.style.padding = '2px 10px';
+            b.style.fontSize = '11px';
+            b.style.boxShadow = 'none';
+          } else {
+            var ago = hb ? (' ' + Math.floor(age) + 's前から') : '';
+            b.textContent = '⚠ ENGINE STOPPED' + ago + ' — 賭けていません / 再起動してください';
+            var on = (Math.floor(Date.now() / 700) % 2) === 0;
+            b.style.background = on ? '#d10000' : '#7a0000';
+            b.style.color = '#fff';
+            b.style.padding = '6px 18px';
+            b.style.fontSize = '14px';
+            b.style.boxShadow = '0 0 18px rgba(209,0,0,.85)';
+          }
+        } catch (e) {}
+      };
+      setInterval(render, 1000);
+      render();
+    } catch (e) {}
+  })();
 """
+
+# add_init_script 用(ページ/フレーム読み込み時に自動注入)。中身は相乗りと同一の本体。
+_ENGINE_HEARTBEAT_JS = "() => {\n" + _HB_BADGE_BODY + "\n}"
 
 _MULTI_LOBBY_FOCUS_JS = r"""
 async (args) => {
+  // engine-alive piggyback: 生存印 + バッジ強制インストール(このフレーム=賭け画面に常駐させる)。
+  // センタリングは既にこのフレームでevaluateされているので追加の往復はゼロ。
+  // __HB_BADGE_INSTALL__ は定義後に _HB_BADGE_BODY へ置換される(IIFEなので変数衝突なし)。
+  try { window.__bacopyEngineHb = Date.now(); } catch (e) {}
+  /*__HB_BADGE_INSTALL__*/
   const qpid = String((args && args.qpid) || '').trim();
   const click = !!(args && args.click);
   const maxScroll = Math.max(1, Number((args && args.maxScroll) || 48));
@@ -1420,6 +1433,10 @@ async (args) => {
   return { ok:true, found:false, clicked:false, matchIndex:-1, totalNodes:Number(finalTarget.total || 0), scroll: scrollMeta(cachedScroller), mountedQpids: mountedQpidSample(8), reason: timedOut ? 'deadline' : undefined };
 }
 """
+
+# 相乗りプレースホルダをバッジ本体(IIFE)へ置換 = センタリングの度に賭け画面フレームへ
+# バッジを強制インストール(追加往復ゼロ・__bacopyHbInstalledガードで2回目以降はboolチェックのみ)。
+_MULTI_LOBBY_FOCUS_JS = _MULTI_LOBBY_FOCUS_JS.replace("/*__HB_BADGE_INSTALL__*/", _HB_BADGE_BODY)
 
 _MULTI_TILE_SNAPSHOT_JS = r"""
 () => {
@@ -4254,23 +4271,48 @@ class LiveBetExecutor:
             self._hh88_reinject_bridge()
 
     def _ping_engine_heartbeat(self, page: Any) -> None:
-        """賭けChromeのハートビートバッジへ「生存ping」を打つ。
-        ①バッジ未注入の既存ページにも冪等注入(__bacopyHbInstalledガード) ②ping時刻更新。
-        どちらも軽量evaluate。例外は呼び出し側で握り潰す(決済経路に影響させない)。"""
+        """賭けChromeのハートビートバッジへ「生存ping」を打つ(アイドル時用フォールバック)。
+        通常はセンタリングevaluate(_MULTI_LOBBY_FOCUS_JS)に相乗りして往復ゼロで更新されるため、
+        これはNOWが長く来ずセンタリングも走らない暇な時間の保険。
+        ★軽量setter1本のみ(DOM生成なし)。バッジ再注入はadd_init_scriptが担うのでここでは行わない
+          (旧版はここで毎回 _ENGINE_HEARTBEAT_JS を再evaluateしており、重い同期往復が決済/光り経路を
+           ブロックしていた=2026-06-24の回帰の原因)。所要msを計測し、ブロックしたら警告する。"""
         if page is None:
             return
+        t0 = time.time()
+        setter = "() => { try { window.__bacopyEngineHb = Date.now(); } catch (e) {} }"
+        # ★バッジは賭けグリッド(クロスオリジンiframe=主フレームでない)側に出るので、全フレームへ
+        #   生存印を打つ。主フレームだけだとバッジのあるフレームが更新されず誤って赤化する
+        #   (2026-06-24: アイドル/起動時の誤「STOPPED」赤化の真因)。各evaluateは軽量setter。
         try:
-            page.evaluate(_ENGINE_HEARTBEAT_JS)
+            frames = list(page.frames)
         except Exception:
-            pass
-        page.evaluate("() => { try { window.__bacopyEngineHb = Date.now(); } catch (e) {} }")
+            frames = []
+        if frames:
+            for fr in frames:
+                try:
+                    fr.evaluate(setter)
+                except Exception:
+                    pass
+        else:
+            try:
+                page.evaluate(setter)
+            except Exception:
+                pass
+        dt_ms = (time.time() - t0) * 1000.0
+        if dt_ms >= 400.0:
+            logger.warning(f"[HB-PING] fallback ping(all-frames) blocked {dt_ms:.0f}ms (renderer busy)")
+        else:
+            logger.info(f"[HB-PING] fallback ping(all-frames) {dt_ms:.0f}ms")
 
     def tick(self) -> None:
         now = time.time()
         page = self._lobby_page
-        # エンジン心拍ping(5s間隔・軽量・try/exceptで決して落ちない)。バッジの自走表示で
-        # エンジン死亡を賭けChrome上に可視化する。決済/賭け経路には触れない。
-        if getattr(self, "_hb_enabled", False) and (now - self._last_hb_ping_at >= 5.0):
+        # エンジン心拍ping(60s間隔・全フレーム軽量setter・try/exceptで決して落ちない)。
+        # 賭け中はセンタリング相乗り(往復ゼロ)がframe[3]を更新するのでpingは実質不要=アイドル保険。
+        # 賭けグリッド(busy iframe)への同期evaluateは~500ms-1.2s掛かるため、頻度を60sに抑え
+        # 賭け窓と重なる確率と決済遅延を最小化(THRESH 180s>60sなので誤赤化しない)。決済/賭け/光り経路非接触。
+        if getattr(self, "_hb_enabled", False) and (now - self._last_hb_ping_at >= 60.0):
             self._last_hb_ping_at = now
             try:
                 self._ping_engine_heartbeat(page)
