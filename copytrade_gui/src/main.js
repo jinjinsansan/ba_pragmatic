@@ -652,6 +652,56 @@ function killCdpChrome(port) {
   } catch (e) { console.warn('[cdp-chrome] kill failed:', e && e.message); return 0; }
 }
 
+// ── 賭けChrome(:9222) 膨張モニタ ─────────────────────────────────────────────
+// 賭けChromeは長時間で膨張(2GB+でセンタリング遅延→NOW取りこぼし/黄色枠握り・3.9GBで
+// 詰まり実測)し、GUI/エンジン再起動では消えない(別プロセス)。OS再起動 or :9222 kill で
+// しか消えない。そこで「合計RAM」を読み取って renderer にバッジ表示し、再起動の目安を
+// 一目で分かるようにする。★kill はせず読むだけ=決済/賭け/光り経路に一切非接触。
+// killCdpChrome と同じ CommandLine 一致で賭けChromeだけを集計(個人Chromeは別profileで無視)。
+function getCdpChromeRam(port) {
+  if (process.platform !== 'win32') return null;
+  try {
+    const ps =
+      `$p = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'chrome.exe' -and ` +
+      `($_.CommandLine -like '*cdp_chrome_profile*' -or $_.CommandLine -like '*remote-debugging-port=${port}*') }; ` +
+      `$mb = [math]::Round((($p | Measure-Object WorkingSetSize -Sum).Sum)/1MB); ` +
+      `$cnt = @($p).Count; ` +
+      `$old = ($p | Sort-Object CreationDate | Select-Object -First 1).CreationDate; ` +
+      `$up = if ($old) { [math]::Round(((Get-Date) - $old).TotalMinutes) } else { 0 }; ` +
+      `Write-Output ('' + $mb + '|' + $cnt + '|' + $up)`;
+    const out = execSync(`powershell -NoProfile -Command "${ps}"`, { encoding: 'utf8', timeout: 15000 }).trim();
+    const parts = out.split('|');
+    const mb = parseInt(parts[0], 10) || 0;
+    const cnt = parseInt(parts[1], 10) || 0;
+    const up = parseInt(parts[2], 10) || 0;
+    if (cnt <= 0 || mb <= 0) return null;
+    return { mb: mb, count: cnt, uptimeMin: up };
+  } catch (e) { console.warn('[chrome-bloat] query failed:', e && e.message); return null; }
+}
+
+// 60秒ごとに賭けChromeのRAMを読んで renderer に送る(読み取りのみ)。
+// env BACOPY_CHROME_BLOAT_MONITOR=0 で無効・BACOPY_CHROME_BLOAT_SEC で間隔変更。
+let _bloatTimer = null;
+function startChromeBloatMonitor() {
+  if (_bloatTimer) return;
+  if (String(process.env.BACOPY_CHROME_BLOAT_MONITOR || '1').trim() === '0') return;
+  const sec = Math.max(20, parseInt(process.env.BACOPY_CHROME_BLOAT_SEC || '60', 10) || 60);
+  const poll = () => {
+    try {
+      const env = loadDotEnv();
+      const port = _cdpPortFromUrl(env.BACOPY_CHROME_CDP_URL || process.env.BACOPY_CHROME_CDP_URL || 'http://127.0.0.1:9222');
+      const r = getCdpChromeRam(port);
+      if (r) sendToRenderer('chrome-bloat', r);
+    } catch (_) {}
+  };
+  _bloatTimer = setInterval(poll, sec * 1000);
+  setTimeout(poll, 8000);  // 初回は起動が落ち着いた頃
+  console.log('[chrome-bloat] monitor started, interval=' + sec + 's');
+}
+function stopChromeBloatMonitor() {
+  if (_bloatTimer) { clearInterval(_bloatTimer); _bloatTimer = null; }
+}
+
 // ── CDP Chrome watchdog (auto-recover :9222 death) ──────────────────────────
 // 受け子GUIが「気づいたら停止」する最頻原因 = betting用デバッグChrome(:9222)が
 // 死ぬ → engine connect_over_cdp ECONNREFUSED → fatal → 自動再起動もChrome不在で
@@ -1329,6 +1379,7 @@ function _doStartBot(config, generation = _botGeneration) {
 
   startWatchdog();
   startCdpWatchdog();
+  startChromeBloatMonitor();
 
   const thisProcess = botProcess;
   const thisSpawnAt = lastSpawnAt;
@@ -1428,6 +1479,7 @@ function stopBot() {
   _botGeneration++;
   _botSpawning = false;
   stopCdpWatchdog();  // ユーザ停止時はCDPウォッチドッグも止める(意図しない自動再起動を防ぐ)
+  stopChromeBloatMonitor();
   if (!botProcess) {
     stopWatchdog();
     return;

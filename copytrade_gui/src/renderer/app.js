@@ -2475,6 +2475,39 @@ function applySafetyStatus(msg) {
     '</span>';
 }
 
+// 賭けChrome(:9222)の膨張を GUI右下のバッジで可視化(緑<2GB/黄2-3GB/赤≥3GB=再起動推奨)。
+// main.js が60秒ごとに合計RAMを読み取り(kill せず=決済非接触)送ってくる。膨張はGUI/エンジン
+// 再起動では消えない→赤になったら OS再起動 or 賭けChrome作り直しの合図(心拍バッジと同じ思想)。
+function renderChromeBloatBadge(d) {
+  if (!d || !d.mb) return;
+  let b = document.getElementById('chromeBloatBadge');
+  if (!b) {
+    b = document.createElement('div');
+    b.id = 'chromeBloatBadge';
+    b.style.cssText =
+      'position:fixed;right:12px;bottom:12px;z-index:2147483000;' +
+      'font-family:ui-monospace,Consolas,monospace;font-size:12px;font-weight:700;' +
+      'padding:6px 12px;border-radius:10px;pointer-events:none;letter-spacing:.02em;color:#fff;' +
+      'display:flex;gap:8px;align-items:center;box-shadow:0 2px 10px rgba(0,0,0,.35);';
+    document.body.appendChild(b);
+  }
+  const gb = (d.mb / 1024).toFixed(1);
+  let bg, note;
+  if (d.mb >= 3000) { bg = 'rgba(209,0,0,.92)'; note = '⚠ 再起動推奨'; }
+  else if (d.mb >= 2000) { bg = 'rgba(190,140,0,.92)'; note = '様子見'; }
+  else { bg = 'rgba(0,150,90,.88)'; note = '良好'; }
+  b.style.background = bg;
+  const up = d.uptimeMin >= 60
+    ? (Math.floor(d.uptimeMin / 60) + 'h' + (d.uptimeMin % 60) + 'm')
+    : (d.uptimeMin + 'm');
+  b.textContent = `賭けChrome ${gb}GB ・ 起動${up} ・ ${note}`;
+}
+try {
+  if (window.valhalla && window.valhalla.onChromeBloat) {
+    window.valhalla.onChromeBloat((d) => { try { renderChromeBloatBadge(d); } catch (_) {} });
+  }
+} catch (_) {}
+
 window.valhalla.onAgentMessage((msg) => {
   try {
     const t = (msg && msg.type) || 'unknown';
