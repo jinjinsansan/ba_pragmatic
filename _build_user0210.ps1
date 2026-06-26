@@ -8,9 +8,9 @@ Set-Location 'E:\dev\Cusor\bacopy\copytrade_gui'
 $log = 'E:\dev\Cusor\bacopy\_build_user0210.log'
 function W($m){ "$((Get-Date).ToString('HH:mm:ss')) $m" | Out-File -FilePath $log -Append -Encoding utf8 }
 "" | Out-File -FilePath $log -Encoding utf8
-W "BUILD START (2026-06-24 #9: STABLE base + REVERSE-BET (逆張り) + ENGINE-HEARTBEAT badge (賭けChromeに自走バッジ注入: ping停止=エンジン死亡を赤表示で可視化, BACOPY_ENGINE_HEARTBEAT=0 で無効) + centering env cap. engine=bafather-verified F5575BC7; GUI src has reverse toggle/banner)"
+W "BUILD START (2026-06-25 #11: STABLE base + REVERSE-BET + ENGINE-HEARTBEAT badge REDESIGNED (相乗り install+全フレームping/60s+THRESH180s) + centering env cap + ★賭けChrome膨張バッジ (GUI右下にRAM色付き表示 緑<2GB/黄2-3GB/赤≥3GB再起動推奨・kill せず読むだけ決済非接触・BACOPY_CHROME_BLOAT_MONITOR=0 で無効). engine=bafather-verified 03AE23AE; GUI src has reverse toggle/banner + bloat badge)"
 $eng = Get-Item 'build_staging\engine\bacopy_engine.exe'
-W ("engine size=" + $eng.Length + " (expect 68733644 = STABLE+reverse+heartbeat, bafather-verified MD5 F5575BC7EF400D2033999B9BAABD4A5A)")
+W ("engine size=" + $eng.Length + " (expect 68733831 = STABLE+reverse+heartbeat-redesigned, bafather-verified MD5 03AE23AE452F5A96022A1BC455939BB4)")
 
 $users = @('02','03','04','05','06','07','08','09','10')
 foreach($n in $users){
