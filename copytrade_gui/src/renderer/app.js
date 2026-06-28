@@ -769,7 +769,7 @@ const DEFAULT_SETTINGS = {
   dga_auto_bet: false,
   dga_regular_only: true,
 };
-const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small06', 'small1', 'small2', 'small6', 'small10', 'small30', 'kelly', 'dual_line', 'dual_line_assist', 'dual_line_auto', 'dual_line_auto_follow']);
+const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small06', 'small1', 'small14', 'small2', 'small24', 'small6', 'small10', 'small30', 'kelly', 'dual_line', 'dual_line_assist', 'dual_line_auto', 'dual_line_auto_follow']);
 
 function normalizeBetMode(mode) {
   return ALLOWED_BET_MODES.has(mode) ? mode : 'flat_1usd';

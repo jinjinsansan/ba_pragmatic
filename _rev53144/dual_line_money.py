@@ -2,7 +2,7 @@
 
 BetManager:
   - フラット ベット（単一ユニット）
-  - SMALL SEQ シリーズ (0.2/0.6/1/3/6/10/30 start)
+  - SMALL SEQ シリーズ (0.2/0.6/1/1.4/2/2.4/3/6/10/30 start)
   - 1-2-3打法 (bet123: 1回目1単位→2回目2単位→同結果連続なら3回目3単位→リセット)
   - 純粋マーチンゲール
   - 利確 / 損切
@@ -57,6 +57,18 @@ SEQ_SMALL2 = [
     96, 110, 126, 146, 170, 200, 240, 280, 334, 400, 466, 534, 600, 666,
 ]
 
+# SMALL1 のちょうど1.4倍($1.4 start・天井466.2x=333x)。全段が$0.2の倍数=チップ妥当額。
+SEQ_SMALL14 = [
+    1.4, 2.8, 5.6, 8.4, 11.2, 14.0, 18.2, 22.4, 26.6, 32.2, 39.2, 44.8, 51.8, 60.2,
+    67.2, 77.0, 88.2, 102.2, 119.0, 140.0, 168.0, 196.0, 233.8, 280.0, 326.2, 373.8, 420.0, 466.2,
+]
+
+# SMALL1 のちょうど2.4倍($2.4 start・天井799.2x=333x)。全段が$0.2の倍数=チップ妥当額。
+SEQ_SMALL24 = [
+    2.4, 4.8, 9.6, 14.4, 19.2, 24.0, 31.2, 38.4, 45.6, 55.2, 67.2, 76.8, 88.8, 103.2,
+    115.2, 132.0, 151.2, 175.2, 204.0, 240.0, 288.0, 336.0, 400.8, 480.0, 559.2, 640.8, 720.0, 799.2,
+]
+
 # SMALL02 のちょうど3倍(全段がチップ最小単位 $0.2 の倍数)
 SEQ_SMALL06 = [
     0.6, 1.2, 1.8, 2.4, 3.6, 4.8, 6.0,
@@ -101,14 +113,16 @@ SEQ_SHAPE_DEFENSE = [  # CAND_B: 序盤最緩・天井200x(生存最優先)
     1, 1, 1, 2, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 26, 31, 37, 44, 52,
     62, 74, 88, 104, 122, 140, 158, 176, 194, 200,
 ]
-SMALL_SEQ_MODES = ("small02", "small06", "small1", "small2", "small3", "small6", "small10", "small30")
+SMALL_SEQ_MODES = ("small02", "small06", "small1", "small14", "small2", "small24", "small3", "small6", "small10", "small30")
 
 BET_MODES = {
     "flat": "1 unit flat",
     "small02": "SMALL SEQ $0.20 start",
     "small06": "SMALL SEQ $0.60 start",
     "small1": "SMALL SEQ $1 start",
+    "small14": "SMALL SEQ $1.40 start",
     "small2": "SMALL SEQ $2 start",
+    "small24": "SMALL SEQ $2.40 start",
     "small3": "SMALL SEQ $3 start",
     "small6": "SMALL SEQ $6 start",
     "small10": "SMALL SEQ $10 start",
@@ -257,7 +271,8 @@ class BetManager:
         # 攻撃型(=従来)の基準配列
         attack = {
             "small02": SEQ_SMALL02, "small06": SEQ_SMALL06, "small1": SEQ_SMALL1,
-            "small2": SEQ_SMALL2, "small3": SEQ_SMALL3, "small6": SEQ_SMALL6,
+            "small14": SEQ_SMALL14, "small2": SEQ_SMALL2, "small24": SEQ_SMALL24,
+            "small3": SEQ_SMALL3, "small6": SEQ_SMALL6,
             "small10": SEQ_SMALL10, "small30": SEQ_SMALL30,
         }.get(m)
         if attack is None:
