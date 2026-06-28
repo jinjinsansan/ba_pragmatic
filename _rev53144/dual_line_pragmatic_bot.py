@@ -450,14 +450,19 @@ class DualLinePragmaticBot(cp.Collector):
         self.dual_mode = (os.getenv("BACOPY_DUAL_MODE", "v3") or "v3").strip().lower()
         if self.dual_mode not in ("v3", "v4"):
             self.dual_mode = "v3"
-        # ── 安全モード(GUI プルダウン): 当日累計勝率ゲート ─────────────────────
-        # ON のとき _handle_decision で「当日累計>=50.0%の系統だけ BET」(両方>=50なら
-        # 6P=v3 優先・どちらも未達/データ無は BET しない)。状態は stdin で即時 ON/OFF、
-        # 勝率は _safety_stats_poll_loop が /api/hourly-stats(VPS watcher が NOW 毎に
-        # 更新)を ~20s 毎に取得。OFF のとき本メソッドの判定は一切働かず従来挙動。
+        # ── 安全モード(GUI トグル): エッジ劣化(warn-edge)ゲート ─────────────────
+        # ON のとき _handle_decision で「選択中の系統(6P/6P追従/10P/10P追従)の
+        # 長期累計勝率 >= 50.0% なら BET / < 50.0%(=warn-edge=エッジ劣化) なら停止」。
+        # ★短期の調子(好調/軟調/低調/悪調 badge)では判定しない(自己相関≈0で先行性ゼロ・
+        #   勝率チャートのコード自身が「短期は見るだけ・増減判断に使うな」と明記)。
+        #   死んだパターンを退役させる長期累計でのみゲート(2026-06-28 改訂)。
+        # 長期累計は _safety_stats_poll_loop が /api/winrate-trend を ~60s 毎に取得。
+        # データ無/古い時はフェイルセーフ=賭ける(warn-edge は確証がある時だけ停止)。
+        # OFF のとき本メソッドの判定は一切働かず従来挙動。
         self._safety_enabled = _env_bool("BACOPY_SAFETY_MODE", False)
-        self._safety_stats = {"v3": {"w": 0, "n": 0}, "v4": {"w": 0, "n": 0}}
-        self._safety_stats_at = 0.0  # 最後に hourly-stats を取得できた時刻(鮮度ガード)
+        # 4系統の長期累計勝率%(None=データ無): v3=6P/v4=10P/follow_v3=6P追従/follow_v4=10P追従
+        self._safety_trend = {"v3": None, "v4": None, "follow_v3": None, "follow_v4": None}
+        self._safety_stats_at = 0.0  # 最後に winrate-trend を取得できた時刻(鮮度ガード)
         self.no_vps_poll = no_vps_poll
         self.manual_assist = bool(manual_assist)
         self.manual_assist_auto_click = bool(
@@ -1568,73 +1573,66 @@ class DualLinePragmaticBot(cp.Collector):
         except Exception:
             pass
 
-    def _safety_wr_str(self) -> str:
-        """ログ用: 当日累計勝率(v3/v4)と取得経過秒。"""
-        s = getattr(self, "_safety_stats", {}) or {}
+    @staticmethod
+    def _safety_label(key: str) -> str:
+        """系統キー → 表示名。"""
+        return {"v3": "6P", "v4": "10P", "follow_v3": "6P追従", "follow_v4": "10P追従"}.get(key, key)
 
-        def _fmt(k: str) -> str:
-            d = s.get(k) or {}
-            n = int(d.get("n") or 0)
-            w = int(d.get("w") or 0)
-            return f"{k}={w}/{n}({w / n * 100:.1f}%)" if n > 0 else f"{k}=-/-"
+    def _safety_selected_key(self) -> str:
+        """GUIで選択中の系統キー: 6P=v3 / 10P=v4 / 6P追従=follow_v3 / 10P追従=follow_v4。"""
+        base = "v4" if str(getattr(self, "dual_mode", "v3")) == "v4" else "v3"
+        return ("follow_" + base) if bool(getattr(self, "_follow_enabled", False)) else base
 
-        age = time.time() - float(getattr(self, "_safety_stats_at", 0.0) or 0.0)
-        return f"{_fmt('v3')} {_fmt('v4')} age={age:.0f}s"
-
-    def _safety_allowed_systems(self) -> set:
-        """当日累計勝率から BET 許可系統を返す。
-        - 各系統 OK = データ有(n>0) かつ 勝率 >= 50.0%。
-        - 両方OK → {'v3'}(6P優先) / 片方のみ → その系統 / どちらも× → set()(BETしない)。
-        - hourly-stats が一度も取れていない/古い(>300s)→ set()(データ無=BETしない)。
-        """
+    def _safety_selected_ok(self) -> bool:
+        """選択系統の長期累計勝率ゲート: >=50% で賭ける(True) / <50%(=warn-edge=エッジ劣化)で停止(False)。
+        データ無/古い(>300s)はフェイルセーフ=True(賭ける。warn-edge は確証がある時だけ停止)。"""
         if time.time() - float(getattr(self, "_safety_stats_at", 0.0) or 0.0) > 300.0:
-            return set()
-        s = getattr(self, "_safety_stats", {}) or {}
+            return True
+        cur = (getattr(self, "_safety_trend", {}) or {}).get(self._safety_selected_key())
+        if cur is None:
+            return True
+        return float(cur) >= 50.0
 
-        def _ok(k: str) -> bool:
-            d = s.get(k) or {}
-            n = int(d.get("n") or 0)
-            w = int(d.get("w") or 0)
-            return n > 0 and (w / n) * 100.0 >= 50.0
-
-        if _ok("v3"):
-            return {"v3"}     # 両方OKでも 6P を優先
-        if _ok("v4"):
-            return {"v4"}
-        return set()
+    def _safety_wr_str(self) -> str:
+        """ログ用: 選択系統名と長期累計勝率・取得経過秒。"""
+        key = self._safety_selected_key()
+        cur = (getattr(self, "_safety_trend", {}) or {}).get(key)
+        age = time.time() - float(getattr(self, "_safety_stats_at", 0.0) or 0.0)
+        wr = f"{cur:.1f}%" if cur is not None else "-/-"
+        return f"sel={self._safety_label(key)} cumWR={wr} age={age:.0f}s"
 
     def _send_safety_status(self) -> None:
-        """GUI へ安全モードの現在状態を通知(待機=holding か・許可系統・当日勝率)。
-        GUI はこれを受けて「安全モードで待機中(不具合ではない)」を明示表示する。"""
+        """GUI へ安全モードの現在状態を通知(選択系統・長期累計勝率・warn-edgeで停止中か)。
+        GUI はこれを受けて ON 中は常時バナー表示(賭け中=緑 / エッジ劣化で停止中=黄)。"""
         try:
             enabled = bool(getattr(self, "_safety_enabled", False))
-            allowed = sorted(self._safety_allowed_systems()) if enabled else []
-            s = getattr(self, "_safety_stats", {}) or {}
-
-            def _wr(k: str) -> dict:
-                d = s.get(k) or {}
-                n = int(d.get("n") or 0)
-                w = int(d.get("w") or 0)
-                return {"w": w, "n": n, "wr": (w / n * 100.0) if n > 0 else None}
-
+            key = self._safety_selected_key()
+            cur = (getattr(self, "_safety_trend", {}) or {}).get(key)
             fresh = (time.time() - float(getattr(self, "_safety_stats_at", 0.0) or 0.0)) <= 300.0
+            ok = self._safety_selected_ok()
             send_msg({
                 "type": "safety_status",
                 "enabled": enabled,
-                # ON だが賭けられる系統が無い(両方<50% or データ無/古い)=待機中。
-                "holding": enabled and not allowed,
-                "allowed": allowed,           # ["v3"]/["v4"]/[]
-                "v3": _wr("v3"),
-                "v4": _wr("v4"),
-                "fresh": fresh,               # 勝率データが取得できているか
+                # ON かつ warn-edge(選択系統の長期累計<50%)で停止中 = holding。
+                "holding": enabled and not ok,
+                "system": key,                       # v3/v4/follow_v3/follow_v4
+                "label": self._safety_label(key),    # 6P/10P/6P追従/10P追従
+                "wr": (float(cur) if cur is not None else None),  # 長期累計勝率%
+                "fresh": fresh,                      # 勝率データが取得できているか
                 "ts": time.time(),
             })
         except Exception:
             pass
 
     def _safety_stats_poll_loop(self) -> None:
-        """/api/hourly-stats を ~20s 毎に取得して当日累計(v3/v4)を _safety_stats に格納。
+        """/api/winrate-trend を ~60s 毎に取得して4系統の長期累計勝率(cur)を _safety_trend に格納。
         安全モードの ON/OFF に関わらず常時更新(切替直後から正しい値で判定できるよう)。"""
+        def _cur(d):
+            try:
+                c = (d or {}).get("cur")
+                return float(c) if c is not None else None
+            except Exception:
+                return None
         while True:
             try:
                 got = False
@@ -1643,24 +1641,25 @@ class DualLinePragmaticBot(cp.Collector):
                     key = str(t.get("api_key") or "").strip()
                     if not base:
                         continue
-                    data = self._api_get("/api/hourly-stats", "", base_url=base, api_key=key)
-                    if isinstance(data, dict) and data.get("ok"):
-                        for k in ("v3", "v4"):
-                            d = data.get(k) or {}
-                            self._safety_stats[k] = {
-                                "w": int(d.get("cum_w") or 0),
-                                "n": int(d.get("cum_n") or 0),
-                            }
+                    data = self._api_get("/api/winrate-trend", "", base_url=base, api_key=key)
+                    if isinstance(data, dict) and (data.get("v3") or data.get("v4")):
+                        fol = data.get("follow") or {}
+                        self._safety_trend = {
+                            "v3": _cur(data.get("v3")),
+                            "v4": _cur(data.get("v4")),
+                            "follow_v3": _cur(fol.get("v3")),
+                            "follow_v4": _cur(fol.get("v4")),
+                        }
                         self._safety_stats_at = time.time()
                         got = True
                         break
                 if not got:
-                    logger.debug("[SAFETY-STATS] no hourly-stats from any target")
+                    logger.debug("[SAFETY-STATS] no winrate-trend from any target")
             except Exception as e:
                 logger.debug(f"[SAFETY-STATS] poll error: {e}")
-            # 取得の成否に関わらず GUI へ現在状態を通知(待機表示の鮮度維持)。
+            # 取得の成否に関わらず GUI へ現在状態を通知(常時バナー表示の鮮度維持)。
             self._send_safety_status()
-            time.sleep(20)
+            time.sleep(60)
 
     def _handle_manual_assist_command(self, msg: dict) -> None:
         if not self.manual_assist:
@@ -4865,35 +4864,24 @@ class DualLinePragmaticBot(cp.Collector):
         dmode = str(decision.get("mode") or fa.get("mode") or "v3").strip().lower()
         sysname = "v4" if dmode == "v4" else "v3"
         active_mode = getattr(self, "dual_mode", "v3")
-        if getattr(self, "_safety_enabled", False):
-            # ── 安全モード: 単一モードロックを解いて両系統(v3/v4)を受け、当日累計
-            #    勝率>=50%の系統だけ通す(両方>=50なら 6P=v3 優先・どちらも×/データ無は
-            #    一切 BET しない)。各 decision はその系統の whitelist で検査する。
-            allowed = self._safety_allowed_systems()
-            if sysname not in allowed:
-                logger.info(
-                    f"[SAFETY-GATE] skip did={did[:12]} sys={sysname} "
-                    f"allowed={sorted(allowed) if allowed else '[]'} {self._safety_wr_str()}"
-                )
-                return
-            active_whitelist = V4_PATTERNS if sysname == "v4" else V2_PATTERNS
-            if self.use_v2_filter and pattern_key not in active_whitelist:
-                logger.warning(
-                    f"[DECISION] rejected non-whitelist (safety/{sysname}): "
-                    f"did={did[:12]} pattern={pattern_key or '-'}"
-                )
-                return
-        else:
-            # 従来挙動(安全モードOFF): 選択中モードのみ・その whitelist で検査。
-            if dmode != active_mode:
-                return
-            active_whitelist = V4_PATTERNS if active_mode == "v4" else V2_PATTERNS
-            if self.use_v2_filter and pattern_key not in active_whitelist:
-                logger.warning(
-                    f"[DECISION] rejected non-whitelist signal: did={did[:12]} "
-                    f"mode={active_mode} pattern={pattern_key or '-'}"
-                )
-                return
+        # 選択中モードの decision のみ(安全モードON/OFFに関わらず・選択系統で判定)。
+        if dmode != active_mode:
+            return
+        active_whitelist = V4_PATTERNS if active_mode == "v4" else V2_PATTERNS
+        if self.use_v2_filter and pattern_key not in active_whitelist:
+            logger.warning(
+                f"[DECISION] rejected non-whitelist signal: did={did[:12]} "
+                f"mode={active_mode} pattern={pattern_key or '-'}"
+            )
+            return
+        # ── 安全モード(warn-edge): ON かつ 選択系統(6P/6P追従/10P/10P追従)の長期累計
+        #    勝率 < 50.0% = エッジ劣化 なら BET 停止。>=50% / データ無/古いは通す。
+        #    ★短期の調子(badge)では止めない(先行性ゼロ)。死んだパターンの退役のみ。
+        if getattr(self, "_safety_enabled", False) and not self._safety_selected_ok():
+            logger.info(
+                f"[SAFETY-GATE] skip (warn-edge) did={did[:12]} {self._safety_wr_str()}"
+            )
+            return
         captured_at = str(decision.get("captured_at") or "").strip()
         if captured_at:
             try:

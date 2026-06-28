@@ -839,9 +839,7 @@ setTimeout(() => {
     try { window.valhalla?.setReverseBet?.(on); } catch (_) {}
     try { _setReverseBanner(on); } catch (_) {}
   });
-  // 安全モードは廃止(2026-06-21)。UIをコメントアウト済み(#inputSafetyMode 不在)。
-  // 下のリスナーは要素が無ければ ?. で no-op だが、明示的に無効化しておく。
-  /* 安全モード(廃止):
+  // 安全モード(エッジ劣化ガード・2026-06-28 復活): 選択系統の長期累計<50%でBET停止。
   $('#inputSafetyMode')?.addEventListener('change', function() {
     const enabled = this.value === 'on';
     try { window.valhalla?.setSafetyMode?.(enabled); } catch (_) {}
@@ -851,7 +849,6 @@ setTimeout(() => {
       localStorage.setItem('bacopy_settings', JSON.stringify(st));
     } catch (_) {}
   });
-  */
 }, 100);
 
 // MONEY MODE 二段ゲート: 「SEQ」選択時はスモールSEQ(0.2/1/3/6)、非SEQ時は
@@ -2453,16 +2450,17 @@ function applySafetyStatus(msg) {
     document.body.appendChild(banner);
   }
   banner.className = holding ? 'holding' : 'active';
-  const wr = (d) => (d && d.n ? Number(d.wr || 0).toFixed(1) : '—');
-  const v3 = wr(msg && msg.v3), v4 = wr(msg && msg.v4);
+  const label = (msg && msg.label) || '—';                 // 選択系統名 6P/10P/6P追従/10P追従
+  const wrNum = (msg && msg.wr != null) ? Number(msg.wr) : null;  // 選択系統の長期累計勝率%
+  const wrTxt = (wrNum != null) ? wrNum.toFixed(1) + '%' : '—';
   let state, message;
   if (holding) {
-    state = '待機';
-    message = (msg && msg.fresh === false) ? '勝率データ取得待ち' : '当日勝率 50%未満 — BET停止中';
+    state = '停止';
+    message = `${label} 長期累計 ${wrTxt}（50%割れ＝エッジ劣化）— BET停止中`;
   } else {
     state = '稼働';
-    const sys = ((msg && msg.allowed) || []).map((s) => (s === 'v3' ? '6P' : '10P')).join('・') || '—';
-    message = `${sys} を狙っています`;
+    const note = (msg && msg.fresh === false) ? '（データ取得待ち・安全側で継続）' : '';
+    message = `${label} を狙っています（長期累計 ${wrTxt}）${note}`;
   }
   banner.innerHTML =
     '<span class="sb-dot"></span>' +
@@ -2470,8 +2468,7 @@ function applySafetyStatus(msg) {
     `<span class="sb-state">${state}</span>` +
     `<span class="sb-msg">${message}</span>` +
     '<span class="sb-stats">' +
-      `<span class="sb-stat tag6">6P ${v3}%</span>` +
-      `<span class="sb-stat tag10">10P ${v4}%</span>` +
+      `<span class="sb-stat ${(msg && msg.system || '').indexOf('v4') >= 0 ? 'tag10' : 'tag6'}">${label} ${wrTxt}</span>` +
     '</span>';
 }
 
