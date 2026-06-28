@@ -450,18 +450,18 @@ class DualLinePragmaticBot(cp.Collector):
         self.dual_mode = (os.getenv("BACOPY_DUAL_MODE", "v3") or "v3").strip().lower()
         if self.dual_mode not in ("v3", "v4"):
             self.dual_mode = "v3"
-        # ── 安全モード(GUI トグル): エッジ劣化(warn-edge)ゲート ─────────────────
+        # ── 安全モード(GUI トグル): コンディション(好調/軟調/低調/悪調)ゲート ────────
         # ON のとき _handle_decision で「選択中の系統(6P/6P追従/10P/10P追従)の
-        # 長期累計勝率 >= 50.0% なら BET / < 50.0%(=warn-edge=エッジ劣化) なら停止」。
-        # ★短期の調子(好調/軟調/低調/悪調 badge)では判定しない(自己相関≈0で先行性ゼロ・
-        #   勝率チャートのコード自身が「短期は見るだけ・増減判断に使うな」と明記)。
-        #   死んだパターンを退役させる長期累計でのみゲート(2026-06-28 改訂)。
-        # 長期累計は _safety_stats_poll_loop が /api/winrate-trend を ~60s 毎に取得。
-        # データ無/古い時はフェイルセーフ=賭ける(warn-edge は確証がある時だけ停止)。
-        # OFF のとき本メソッドの判定は一切働かず従来挙動。
+        # コンディションが 好調/軟調 なら BET / 低調/悪調 なら BET停止」。
+        # コンディション = 勝率チャートと同じ計算: 直近~300手の勝率が自分の累計ペース p0 の
+        # どこに居るかを σ で判定(好調 z>=0 / 軟調 -1<=z<0 / 低調 -2<=z<-1 / 悪調 z<-2)。
+        # ★規律/手動代替用。短期は自己相関≈0で先行性ゼロ=EVは改善しない(参加を減らすだけ)。
+        #   エッジ劣化(長期累計<50%)の監視は別途オーナーが目視/依頼で行う(自動化しない)。
+        # コンディションは _safety_stats_poll_loop が /api/winrate-trend を ~60s 毎に取得し計算。
+        # データ無/古い/蓄積中(直近<80手)はフェイルセーフ=賭ける。OFFは判定せず従来挙動。
         self._safety_enabled = _env_bool("BACOPY_SAFETY_MODE", False)
-        # 4系統の長期累計勝率%(None=データ無): v3=6P/v4=10P/follow_v3=6P追従/follow_v4=10P追従
-        self._safety_trend = {"v3": None, "v4": None, "follow_v3": None, "follow_v4": None}
+        # 4系統のコンディション: {stage, z, recentWr, cumWr}。v3=6P/v4=10P/follow_v3=6P追従/follow_v4=10P追従
+        self._safety_badge = {"v3": None, "v4": None, "follow_v3": None, "follow_v4": None}
         self._safety_stats_at = 0.0  # 最後に winrate-trend を取得できた時刻(鮮度ガード)
         self.no_vps_poll = no_vps_poll
         self.manual_assist = bool(manual_assist)
@@ -1583,41 +1583,86 @@ class DualLinePragmaticBot(cp.Collector):
         base = "v4" if str(getattr(self, "dual_mode", "v3")) == "v4" else "v3"
         return ("follow_" + base) if bool(getattr(self, "_follow_enabled", False)) else base
 
+    # コンディション窓(勝率チャート GUI computeGauge と一致)
+    _COND_WINDOW = 300   # 直近何手で「調子」を見るか
+    _COND_MIN = 80       # これ未満の直近サンプルは判定しない(蓄積中=賭ける)
+
+    @staticmethod
+    def _compute_badge(series: dict):
+        """winrate-trend の1系統(series={points:[{w,l,n,wr}...]})から
+        コンディション {stage(good/soft/low/bad/wait), z, recentWr, cumWr} を計算。
+        GUI app.js computeGauge と同一ロジック。データ不足は stage='wait'。"""
+        try:
+            pts = (series or {}).get("points") or []
+            if len(pts) < 2:
+                return {"stage": "wait"}
+            last = pts[-1]
+            n = int(last.get("n") or 0); w = int(last.get("w") or 0)
+            if n <= 0:
+                return {"stage": "wait"}
+            p0 = w / n
+            prev = pts[0]
+            for i in range(len(pts) - 1, -1, -1):
+                prev = pts[i]
+                if n - int(pts[i].get("n") or 0) >= DualLinePragmaticBot._COND_WINDOW:
+                    break
+            rw = w - int(prev.get("w") or 0)
+            rl = int(last.get("l") or 0) - int(prev.get("l") or 0)
+            rn = rw + rl
+            if rn < DualLinePragmaticBot._COND_MIN:
+                return {"stage": "wait", "recentN": rn}
+            recent_wr = rw / rn
+            sigma = (p0 * (1 - p0) / rn) ** 0.5 or 1e-9
+            z = (recent_wr - p0) / sigma
+            stage = "bad"
+            if z >= 0: stage = "good"
+            elif z >= -1: stage = "soft"
+            elif z >= -2: stage = "low"
+            return {"stage": stage, "z": z, "recentWr": recent_wr * 100.0,
+                    "cumWr": (last.get("wr")), "recentN": rn}
+        except Exception:
+            return {"stage": "wait"}
+
     def _safety_selected_ok(self) -> bool:
-        """選択系統の長期累計勝率ゲート: >=50% で賭ける(True) / <50%(=warn-edge=エッジ劣化)で停止(False)。
-        データ無/古い(>300s)はフェイルセーフ=True(賭ける。warn-edge は確証がある時だけ停止)。"""
+        """選択系統のコンディションゲート: 好調/軟調 で賭ける(True) / 低調/悪調 で停止(False)。
+        データ無/古い(>300s)/蓄積中(wait)はフェイルセーフ=True(賭ける)。"""
         if time.time() - float(getattr(self, "_safety_stats_at", 0.0) or 0.0) > 300.0:
             return True
-        cur = (getattr(self, "_safety_trend", {}) or {}).get(self._safety_selected_key())
-        if cur is None:
-            return True
-        return float(cur) >= 50.0
+        b = (getattr(self, "_safety_badge", {}) or {}).get(self._safety_selected_key())
+        stage = (b or {}).get("stage") if b else None
+        if stage in ("low", "bad"):
+            return False
+        return True  # good/soft/wait/None → 賭ける
 
     def _safety_wr_str(self) -> str:
-        """ログ用: 選択系統名と長期累計勝率・取得経過秒。"""
+        """ログ用: 選択系統名・コンディション・直近勝率・取得経過秒。"""
         key = self._safety_selected_key()
-        cur = (getattr(self, "_safety_trend", {}) or {}).get(key)
+        b = (getattr(self, "_safety_badge", {}) or {}).get(key) or {}
+        stage = b.get("stage", "-")
+        rw = b.get("recentWr")
         age = time.time() - float(getattr(self, "_safety_stats_at", 0.0) or 0.0)
-        wr = f"{cur:.1f}%" if cur is not None else "-/-"
-        return f"sel={self._safety_label(key)} cumWR={wr} age={age:.0f}s"
+        rws = f"{rw:.1f}%" if isinstance(rw, (int, float)) else "-/-"
+        return f"sel={self._safety_label(key)} cond={stage} recent={rws} age={age:.0f}s"
 
     def _send_safety_status(self) -> None:
-        """GUI へ安全モードの現在状態を通知(選択系統・長期累計勝率・warn-edgeで停止中か)。
-        GUI はこれを受けて ON 中は常時バナー表示(賭け中=緑 / エッジ劣化で停止中=黄)。"""
+        """GUI へ安全モードの現在状態を通知(選択系統・コンディション・低調/悪調で停止中か)。
+        GUI はこれを受けて ON 中は常時バナー表示(賭け中=緑 / 低調・悪調で停止中=黄)。"""
         try:
             enabled = bool(getattr(self, "_safety_enabled", False))
             key = self._safety_selected_key()
-            cur = (getattr(self, "_safety_trend", {}) or {}).get(key)
+            b = (getattr(self, "_safety_badge", {}) or {}).get(key) or {}
             fresh = (time.time() - float(getattr(self, "_safety_stats_at", 0.0) or 0.0)) <= 300.0
             ok = self._safety_selected_ok()
             send_msg({
                 "type": "safety_status",
                 "enabled": enabled,
-                # ON かつ warn-edge(選択系統の長期累計<50%)で停止中 = holding。
+                # ON かつ 低調/悪調 で停止中 = holding。
                 "holding": enabled and not ok,
                 "system": key,                       # v3/v4/follow_v3/follow_v4
                 "label": self._safety_label(key),    # 6P/10P/6P追従/10P追従
-                "wr": (float(cur) if cur is not None else None),  # 長期累計勝率%
+                "stage": b.get("stage"),             # good/soft/low/bad/wait
+                "recentWr": b.get("recentWr"),       # 直近~300手の勝率%
+                "cumWr": b.get("cumWr"),             # 長期累計勝率%(参考)
                 "fresh": fresh,                      # 勝率データが取得できているか
                 "ts": time.time(),
             })
@@ -1625,14 +1670,8 @@ class DualLinePragmaticBot(cp.Collector):
             pass
 
     def _safety_stats_poll_loop(self) -> None:
-        """/api/winrate-trend を ~60s 毎に取得して4系統の長期累計勝率(cur)を _safety_trend に格納。
-        安全モードの ON/OFF に関わらず常時更新(切替直後から正しい値で判定できるよう)。"""
-        def _cur(d):
-            try:
-                c = (d or {}).get("cur")
-                return float(c) if c is not None else None
-            except Exception:
-                return None
+        """/api/winrate-trend を ~60s 毎に取得して4系統のコンディション(好調/軟調/低調/悪調)を
+        _safety_badge に格納。安全モードの ON/OFF に関わらず常時更新(切替直後から正しく判定)。"""
         while True:
             try:
                 got = False
@@ -1644,11 +1683,11 @@ class DualLinePragmaticBot(cp.Collector):
                     data = self._api_get("/api/winrate-trend", "", base_url=base, api_key=key)
                     if isinstance(data, dict) and (data.get("v3") or data.get("v4")):
                         fol = data.get("follow") or {}
-                        self._safety_trend = {
-                            "v3": _cur(data.get("v3")),
-                            "v4": _cur(data.get("v4")),
-                            "follow_v3": _cur(fol.get("v3")),
-                            "follow_v4": _cur(fol.get("v4")),
+                        self._safety_badge = {
+                            "v3": self._compute_badge(data.get("v3")),
+                            "v4": self._compute_badge(data.get("v4")),
+                            "follow_v3": self._compute_badge(fol.get("v3")),
+                            "follow_v4": self._compute_badge(fol.get("v4")),
                         }
                         self._safety_stats_at = time.time()
                         got = True
@@ -4874,12 +4913,12 @@ class DualLinePragmaticBot(cp.Collector):
                 f"mode={active_mode} pattern={pattern_key or '-'}"
             )
             return
-        # ── 安全モード(warn-edge): ON かつ 選択系統(6P/6P追従/10P/10P追従)の長期累計
-        #    勝率 < 50.0% = エッジ劣化 なら BET 停止。>=50% / データ無/古いは通す。
-        #    ★短期の調子(badge)では止めない(先行性ゼロ)。死んだパターンの退役のみ。
+        # ── 安全モード(コンディション): ON かつ 選択系統(6P/6P追従/10P/10P追従)の
+        #    コンディションが 低調/悪調 なら BET 停止。好調/軟調/蓄積中/データ無は通す。
+        #    ★規律/手動代替用。短期は先行性ゼロ=EV非改善(参加を減らすだけ)。
         if getattr(self, "_safety_enabled", False) and not self._safety_selected_ok():
             logger.info(
-                f"[SAFETY-GATE] skip (warn-edge) did={did[:12]} {self._safety_wr_str()}"
+                f"[SAFETY-GATE] skip (cond low/bad) did={did[:12]} {self._safety_wr_str()}"
             )
             return
         captured_at = str(decision.get("captured_at") or "").strip()

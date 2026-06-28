@@ -2451,16 +2451,19 @@ function applySafetyStatus(msg) {
   }
   banner.className = holding ? 'holding' : 'active';
   const label = (msg && msg.label) || '—';                 // 選択系統名 6P/10P/6P追従/10P追従
-  const wrNum = (msg && msg.wr != null) ? Number(msg.wr) : null;  // 選択系統の長期累計勝率%
-  const wrTxt = (wrNum != null) ? wrNum.toFixed(1) + '%' : '—';
+  const COND = { good: '好調', soft: '軟調', low: '低調', bad: '悪調', wait: '蓄積中' };
+  const stage = (msg && msg.stage) || 'wait';
+  const condTxt = COND[stage] || '—';
+  const rw = (msg && msg.recentWr != null) ? Number(msg.recentWr).toFixed(1) + '%' : '—';
   let state, message;
   if (holding) {
     state = '停止';
-    message = `${label} 長期累計 ${wrTxt}（50%割れ＝エッジ劣化）— BET停止中`;
+    message = `${label} が ${condTxt}（直近 ${rw}）— BET停止中`;
   } else {
     state = '稼働';
-    const note = (msg && msg.fresh === false) ? '（データ取得待ち・安全側で継続）' : '';
-    message = `${label} を狙っています（長期累計 ${wrTxt}）${note}`;
+    const note = (msg && msg.fresh === false) ? '（データ取得待ち・安全側で継続）'
+               : (stage === 'wait' ? '（蓄積中・安全側で継続）' : '');
+    message = `${label} ${condTxt}（直近 ${rw}）— BET中${note}`;
   }
   banner.innerHTML =
     '<span class="sb-dot"></span>' +
@@ -2468,7 +2471,7 @@ function applySafetyStatus(msg) {
     `<span class="sb-state">${state}</span>` +
     `<span class="sb-msg">${message}</span>` +
     '<span class="sb-stats">' +
-      `<span class="sb-stat ${(msg && msg.system || '').indexOf('v4') >= 0 ? 'tag10' : 'tag6'}">${label} ${wrTxt}</span>` +
+      `<span class="sb-stat ${(msg && msg.system || '').indexOf('v4') >= 0 ? 'tag10' : 'tag6'}">${label} ${condTxt}</span>` +
     '</span>';
 }
 

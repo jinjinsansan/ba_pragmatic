@@ -421,12 +421,12 @@
               <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">ONの間は v3/v4 のNOWが出たら<b>本来の逆(B↔P)</b>に自動BET。賭け・決済・光り・勝率は反転後で一貫します。<b style="color:#ff8888;">エッジはありません（規律/手動代替用）。ON中は追従を自動停止します。</b>切り忘れ防止のため<b>再起動すると必ずOFFに戻ります</b>（START都度ONにし直し）。</div>
             </div>
             <div class="form-group">
-              <label>安全モード（エッジ劣化ガード）</label>
+              <label>安全モード（コンディション連動）</label>
               <select id="inputSafetyMode">
                 <option value="off">OFF（常時BET）</option>
-                <option value="on">ON（選択系統の長期累計が50%以上の時だけBET）</option>
+                <option value="on">ON（好調/軟調=BET・低調/悪調=停止）</option>
               </select>
-              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">ONの間は<b>選択中の系統（6P／6P追従／10P／10P追従）の長期累計勝率が50%以上</b>の時だけ自動BET。<b>50%割れ＝エッジ劣化</b>とみなしBET停止（ロビー維持・セッション生存）。<b style="color:#88bbff;">※短期の調子（好調/軟調/低調/悪調）では判定しません</b>（先行性ゼロ＝予想に使えないため）。死んだパターンを自動退役させる用途。データ無し／古い時は安全側で<b>賭けます</b>。ON中は<b>状態バナーを常時表示</b>。</div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">ONの間は<b>選択中の系統（6P／6P追従／10P／10P追従）のコンディション</b>で自動BETを切替。<b style="color:#7fd4a0;">好調・軟調＝BET</b>／<b style="color:#e0a060;">低調・悪調＝BET停止</b>（ロビー維持・セッション生存）。コンディションは勝率チャートと同じ（直近~300手が累計ペースより何σ下か）。<b style="color:#88bbff;">※規律/手動代替用です</b>（短期は先行性ゼロ＝EVは上がらず、賭けを減らすだけ）。エッジ劣化（長期累計50%割れ）の監視はチャート/オーナー目視で別途。蓄積中／データ無し／古い時は安全側で<b>賭けます</b>。ON中は<b>状態バナーを常時表示</b>。</div>
             </div>
             <div class="form-group">
               <label>MONEY MODE</label>
