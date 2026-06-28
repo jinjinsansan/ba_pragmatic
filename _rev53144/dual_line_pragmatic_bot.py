@@ -1681,11 +1681,14 @@ class DualLinePragmaticBot(cp.Collector):
                     if not base:
                         continue
                     data = self._api_get("/api/winrate-trend", "", base_url=base, api_key=key)
-                    if isinstance(data, dict) and (data.get("v3") or data.get("v4")):
+                    # 構造: {ok, updated_at, pattern:{v3,v4}, follow:{v3,v4}}
+                    # ★6P/10Pは data["pattern"] の下(トップレベルではない)。
+                    if isinstance(data, dict) and (data.get("pattern") or data.get("follow")):
+                        pat = data.get("pattern") or {}
                         fol = data.get("follow") or {}
                         self._safety_badge = {
-                            "v3": self._compute_badge(data.get("v3")),
-                            "v4": self._compute_badge(data.get("v4")),
+                            "v3": self._compute_badge(pat.get("v3")),
+                            "v4": self._compute_badge(pat.get("v4")),
                             "follow_v3": self._compute_badge(fol.get("v3")),
                             "follow_v4": self._compute_badge(fol.get("v4")),
                         }
