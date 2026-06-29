@@ -839,7 +839,8 @@ setTimeout(() => {
     try { window.valhalla?.setReverseBet?.(on); } catch (_) {}
     try { _setReverseBanner(on); } catch (_) {}
   });
-  // 安全モード(エッジ劣化ガード・2026-06-28 復活): 選択系統の長期累計<50%でBET停止。
+  // 安全モード(コンディション・ゲート): 選択系統のコンディションが「好調」のときだけ
+  // BET / それ以外(軟調/低調/悪調/蓄積中/データ無)は安全側=BET停止。判定はエンジン側。
   $('#inputSafetyMode')?.addEventListener('change', function() {
     const enabled = this.value === 'on';
     try { window.valhalla?.setSafetyMode?.(enabled); } catch (_) {}
@@ -2458,12 +2459,14 @@ function applySafetyStatus(msg) {
   let state, message;
   if (holding) {
     state = '停止';
-    message = `${label} が ${condTxt}（直近 ${rw}）— BET停止中`;
+    // 好調以外は全停止。データ未取得/蓄積中で止まっている時は理由を明示。
+    const why = (msg && msg.fresh === false) ? '（データ取得待ち・安全側で停止）'
+              : (stage === 'wait' ? '（蓄積中・安全側で停止）'
+              : '（好調でないため停止）');
+    message = `${label} が ${condTxt}（直近 ${rw}）— BET停止中${why}`;
   } else {
     state = '稼働';
-    const note = (msg && msg.fresh === false) ? '（データ取得待ち・安全側で継続）'
-               : (stage === 'wait' ? '（蓄積中・安全側で継続）' : '');
-    message = `${label} ${condTxt}（直近 ${rw}）— BET中${note}`;
+    message = `${label} ${condTxt}（直近 ${rw}）— BET中（好調）`;
   }
   banner.innerHTML =
     '<span class="sb-dot"></span>' +

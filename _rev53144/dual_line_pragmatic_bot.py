@@ -452,13 +452,13 @@ class DualLinePragmaticBot(cp.Collector):
             self.dual_mode = "v3"
         # ── 安全モード(GUI トグル): コンディション(好調/軟調/低調/悪調)ゲート ────────
         # ON のとき _handle_decision で「選択中の系統(6P/6P追従/10P/10P追従)の
-        # コンディションが 好調/軟調 なら BET / 低調/悪調 なら BET停止」。
+        # コンディションが 好調 のときだけ BET / それ以外(軟調/低調/悪調)は BET停止」。
         # コンディション = 勝率チャートと同じ計算: 直近~300手の勝率が自分の累計ペース p0 の
         # どこに居るかを σ で判定(好調 z>=0 / 軟調 -1<=z<0 / 低調 -2<=z<-1 / 悪調 z<-2)。
         # ★規律/手動代替用。短期は自己相関≈0で先行性ゼロ=EVは改善しない(参加を減らすだけ)。
         #   エッジ劣化(長期累計<50%)の監視は別途オーナーが目視/依頼で行う(自動化しない)。
         # コンディションは _safety_stats_poll_loop が /api/winrate-trend を ~60s 毎に取得し計算。
-        # データ無/古い/蓄積中(直近<80手)はフェイルセーフ=賭ける。OFFは判定せず従来挙動。
+        # データ無/古い/蓄積中(直近<80手)は安全側=停止(好調が確認できた時だけ賭ける)。OFFは判定せず従来挙動。
         self._safety_enabled = _env_bool("BACOPY_SAFETY_MODE", False)
         # 4系統のコンディション: {stage, z, recentWr, cumWr}。v3=6P/v4=10P/follow_v3=6P追従/follow_v4=10P追従
         self._safety_badge = {"v3": None, "v4": None, "follow_v3": None, "follow_v4": None}
@@ -1624,15 +1624,14 @@ class DualLinePragmaticBot(cp.Collector):
             return {"stage": "wait"}
 
     def _safety_selected_ok(self) -> bool:
-        """選択系統のコンディションゲート: 好調/軟調 で賭ける(True) / 低調/悪調 で停止(False)。
-        データ無/古い(>300s)/蓄積中(wait)はフェイルセーフ=True(賭ける)。"""
+        """選択系統のコンディションゲート: 好調 のみ賭ける(True) / それ以外は停止(False)。
+        軟調/低調/悪調 はもちろん、データ無/古い(>300s)/蓄積中(wait) も安全側=停止(False)。
+        ＝判定不能なら賭けない(好調が確認できた時だけ賭ける)。"""
         if time.time() - float(getattr(self, "_safety_stats_at", 0.0) or 0.0) > 300.0:
-            return True
+            return False
         b = (getattr(self, "_safety_badge", {}) or {}).get(self._safety_selected_key())
         stage = (b or {}).get("stage") if b else None
-        if stage in ("low", "bad"):
-            return False
-        return True  # good/soft/wait/None → 賭ける
+        return stage == "good"  # good のみ賭ける / soft/low/bad/wait/None → 停止
 
     def _safety_wr_str(self) -> str:
         """ログ用: 選択系統名・コンディション・直近勝率・取得経過秒。"""
@@ -4917,11 +4916,12 @@ class DualLinePragmaticBot(cp.Collector):
             )
             return
         # ── 安全モード(コンディション): ON かつ 選択系統(6P/6P追従/10P/10P追従)の
-        #    コンディションが 低調/悪調 なら BET 停止。好調/軟調/蓄積中/データ無は通す。
+        #    コンディションが 好調 でないなら BET 停止。好調のときだけ通す。
+        #    (軟調/低調/悪調/蓄積中/データ無/古い は全て停止＝判定不能なら賭けない)
         #    ★規律/手動代替用。短期は先行性ゼロ=EV非改善(参加を減らすだけ)。
         if getattr(self, "_safety_enabled", False) and not self._safety_selected_ok():
             logger.info(
-                f"[SAFETY-GATE] skip (cond low/bad) did={did[:12]} {self._safety_wr_str()}"
+                f"[SAFETY-GATE] skip (cond != good) did={did[:12]} {self._safety_wr_str()}"
             )
             return
         captured_at = str(decision.get("captured_at") or "").strip()
