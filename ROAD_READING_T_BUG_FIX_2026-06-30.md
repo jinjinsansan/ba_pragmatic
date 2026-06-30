@@ -39,11 +39,19 @@
 
 ## 6. デプロイ状況
 - ✅ **VPS監視bot `/opt/laplace2`**：T込み + v3=6本 反映・再起動済（PID更新）。検証=nikoichi系が発火（`[v4-publish] telecho\|nikoichi\|B`）・v3決定公開・v3フィルタ機能。バックアップ=`*.bak_20260630_160751`。
-- ✅ **master 中継のみ**＝修正不要。
-- **＝VPS駆動の全受け子は今この瞬間からT込み・正しい罫線で賭ける**（master中継・受け子エンジン再ビルド不要）。
-- ⚠️ **bafather停止中**＝起動すれば正しく賭ける。
-- **Phase 3（受け子エンジン再ビルド）優先度低**：VPS駆動では実BET側はmaster決定なので旧エンジンでも正しい。再ビルドはローカルDGA経路/GUI表示/caught_now整合用。
-- repo変更（`dual_line_match.py`±`_rev53144`, `_rev53144/dual_line_pragmatic_bot.py`）コミット予定。
+- ✅ **master 中継のみ**（`bacopy_api.py`はシグナル計算せず）＝修正不要。
+- ✅ repo変更コミット済＝`01f0f66`（push済）。
+- ✅ **bafatherエンジンをスワップ済**＝`a4d567d0`(68,741,833・T込み+v3=6本)。OS再起動後に**実NOWで新パターンを取りこぼさず賭けるのを実証**（BET-CONFIRMED・追従WIN・bet_window_closed=0）。旧バックアップ=`bacopy_engine.exe.bak_20260630_165555`。
+- ✅ **受け子インストーラ9個 再ビルド済**＝engine`a4d567d0`・`copytrade_gui/dist/`(各418.4MB・**未配布**)。
+
+### ★訂正(2026-06-30追記)：受け子エンジン再ビルドは「不要」ではなかった
+当初「VPS駆動なら受け子エンジン再ビルド不要で全部正しく賭ける」と書いたが**部分的に誤り**。**受け子エンジンは中継された決定を自分のローカル whitelist で再フィルタする**（`_handle_decision` L4911-4917 `use_v2_filter`・preposition段でも `[PREPOS] rejected candidate reason=non-whitelist-pattern`）。
+- **既存3本**（telecho\|telecho\|B / telecho\|nikoichi\|P / sansan\|telecho\|P）：旧エンジン(v3=3)でも**受理＋VPSが送るT込みの正しいsideで賭ける**＝T込み修正の核心は再ビルド無しで全受け子に届く。
+- **新3本**（niconico\|nikoichi\|P / niconico\|dragon\|B / niconico\|nikoichi\|B）：旧エンジンは**拒否**（ローカルv3=3に無い）＝**新ビルド配布まで賭けない**。テレグラム(更新済VPS bot)には出るがGUI(旧)には出ない、という乖離になる。
+- ＝**新3本を賭けるには受け子エンジンの v3=6 化(再ビルド+配布)が必須**。bafatherはスワップ済で解消。受け子02-10は**未配布**＝既存3本のみ賭けている状態(配布で6本化)。
+
+### センタリング/光り遅延(別件・実害なし確認)
+v3=6でNOW1.8倍だが**NOWは稀**で実害は限定的。光り遅延は既知のセンタリング基底問題(focus missリトライ+毎tick48タイル)で**v3=6はほぼ無関係**・T修正とも無関係([[project_centering_tickblock_diag]])。★**賭けChrome膨張クリアはOS再起動でのみ可**(GUI STOP→STARTは:9222が生き残り消えない=実測1.7GBで確認)。実証=OS再起動後 取りこぼし0・実NOW+追従とも間に合う＝**光り遅延はcosmetic、お金に影響なし**。env cap(`MULTI_FOCUS_MS=1500`等)は設定済・効いている(138s→4s)。
 
 ## 7. ★未決：カウンタの汚染（様子見中）
 - bot再起動で**カウンタ復元**＝6/6からの間違いBET累計に、今からの正しいBETが**加算され混ざる**。
