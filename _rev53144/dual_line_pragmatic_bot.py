@@ -2521,7 +2521,7 @@ class DualLinePragmaticBot(cp.Collector):
         seq_chars = []
         for h in (history_hands if history_hands is not None else (buf.hands or [])):
             c = _winner_to_char(h.get("winner"))
-            if c and c != "T":
+            if c:  # ★T込みで罫線を読む(設計通り)。2026-06-30 修正(従来は c != "T" でTを誤って除外)。
                 seq_chars.append(c)
         observed_sequence = "".join(seq_chars)
 
@@ -2805,7 +2805,7 @@ class DualLinePragmaticBot(cp.Collector):
         seq_chars = []
         for h in (buf.hands or []):
             c = _winner_to_char(h.get("winner"))
-            if c and c != "T":
+            if c:  # ★T込みで罫線を読む(設計通り)。2026-06-30 修正(従来は c != "T" でTを誤って除外)。
                 seq_chars.append(c)
         seq = "".join(seq_chars)
         preview = live_preposition_for_history(seq)
@@ -4836,7 +4836,7 @@ class DualLinePragmaticBot(cp.Collector):
         seq_chars = []
         for h in (buf.hands or []):
             c = _winner_to_char(h.get("winner"))
-            if c and c != "T":
+            if c:  # ★T込みで罫線を読む(設計通り)。2026-06-30 修正(従来は c != "T" でTを誤って除外)。
                 seq_chars.append(c)
         seq = "".join(seq_chars)
         next_n = len(seq) + 1

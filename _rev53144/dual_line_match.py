@@ -21,6 +21,8 @@ from dual_line_logic import (
 PredictionType = Literal["P", "B", "undecided"]
 ActionType = Literal["BET_P", "BET_B", "LOOK"]
 
+# v3 = T込み(正定義)OOS生存6本 + sansan(稀だが残す) 2026-06-30。
+# ★前提: bot/engine が罫線をT込みで読む修正と同時にのみ正しい(T除外のままだと別パターンが発火)。
 LIVE_SIGNAL_PATTERNS = frozenset({
     "telecho|telecho|B",
     "telecho|nikoichi|P",
@@ -28,6 +30,9 @@ LIVE_SIGNAL_PATTERNS = frozenset({
     # "niconico|niconico|B",  # EXCLUDED 2026-06-23 OOS(5/26以降61k)で -0.077/負け転落 (136k再BT・dual_line_all_patterns)
     # "niconico|dragon|P",     # EXCLUDED 2026-06-23 OOS で -0.034/負け転落 (同上)
     "sansan|telecho|P",
+    "niconico|nikoichi|P",   # ADDED 2026-06-30 (T込みOOSマルチcut生存)
+    "niconico|dragon|B",     # ADDED 2026-06-30 (同上)
+    "niconico|nikoichi|B",   # ADDED 2026-06-30 (同上)
 })
 
 # v4: 勝率≥51% かつ $/BET>0 かつ サンプル≥200 の10パターン
@@ -99,7 +104,8 @@ def live_signal_for_history(
     callers (which pass only ``history``) keep the exact v3 behaviour. Pass
     ``LIVE_SIGNAL_PATTERNS_V4`` to evaluate the v4 ten-pattern whitelist.
     """
-    seq = "".join(c for c in str(history or "") if c in ("P", "B"))
+    # ★罫線はT込みで読む(設計通り・bead_row_cellsはTを含めて行を組む)。2026-06-30 修正。
+    seq = "".join(c for c in str(history or "") if c in ("P", "B", "T"))
     d = decide(seq, len(seq) + 1)
     if d.action == "LOOK":
         return None
@@ -127,7 +133,8 @@ def live_preposition_for_history(
     ``patterns`` defaults to the v3 six-pattern whitelist (callers passing only
     ``history`` are unchanged). Pass ``LIVE_SIGNAL_PATTERNS_V4`` for v4 forecasts.
     """
-    seq = "".join(c for c in str(history or "") if c in ("P", "B"))
+    # ★罫線はT込みで読む(設計通り)。2026-06-30 修正。予告の suffix(P/B)は将来手の予想なのでそのまま。
+    seq = "".join(c for c in str(history or "") if c in ("P", "B", "T"))
     if live_signal_for_history(seq, patterns) is not None:
         return {"score": 0, "steps_before": 0, "side": "", "candidates": [], "pattern_keys": []}
     for steps_before in (1, 2):
