@@ -564,13 +564,20 @@ async function startBotFlow({ auto = false } = {}) {
   config.resume_results = Array.isArray(results) ? results.slice() : [];
   _startedAt = Date.now();
   setRunning(true);
-  // 逆張りは非永続: エンジンは起動時 OFF 固定なので UI も OFF に揃える(付けっぱなし防止)。
-  try { const r = $('#inputReverseBet'); if (r) r.value = 'off'; _setReverseBanner(false); } catch (_) {}
+  // 逆張り: Start 前に ON ならこのセッションは逆張りで起動する(下の startBot 後にエンジンへ適用)。
+  // 完全なアプリ再起動では既定 OFF に戻る=非永続(切り忘れ事故防止)。常時の赤バナーで注意喚起。
+  const _reverseOn = ($('#inputReverseBet')?.value === 'on');
+  _setReverseBanner(_reverseOn);
   setPhase('scanning', auto ? 'armed' : 'starting...');
   addLog(auto ? 'Armed. Waiting for master signal...' : 'Bot starting...', 'info');
   try {
     await window.valhalla.startBot(config);
     addLog('Bot started.', 'info');
+    // 起動後にエンジンへ逆張り状態を適用(stdin)。エンジンは reverse_status で確定同期しバナーを保つ。
+    if (_reverseOn) {
+      try { window.valhalla?.setReverseBet?.(true); } catch (_) {}
+      addLog('逆張り ON で起動（予想の逆side に自動BET・追従停止・エッジ無し）', 'warn');
+    }
   } catch (e) {
     addLog(`Start failed: ${e.message || e}`, 'lose');
     setRunning(false);
@@ -584,8 +591,9 @@ async function stopBotFlow({ forced = false, reason = '' } = {}) {
     await window.valhalla.stopBot();
   } catch {}
   setRunning(false);
-  // 逆張りUIをOFFへ(エンジン停止=状態消滅)。
-  try { const r = $('#inputReverseBet'); if (r) r.value = 'off'; _setReverseBanner(false); } catch (_) {}
+  // 逆張り: バナーは消す(停止中=BETしていない)が、トグルの意図(ON)は保持し次の Start で再適用。
+  // 完全なアプリ再起動でのみ既定 OFF に戻る(非永続=切り忘れ事故防止)。
+  try { _setReverseBanner(false); } catch (_) {}
   if (forced && reason) {
     addLog(`Bot stopped: ${reason}`, 'warn');
     setAction(reason);
