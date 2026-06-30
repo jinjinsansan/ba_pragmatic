@@ -565,18 +565,23 @@ async function startBotFlow({ auto = false } = {}) {
   _startedAt = Date.now();
   setRunning(true);
   // 逆張り: Start 前に ON ならこのセッションは逆張りで起動する(下の startBot 後にエンジンへ適用)。
-  // 完全なアプリ再起動では既定 OFF に戻る=非永続(切り忘れ事故防止)。常時の赤バナーで注意喚起。
+  // 完全なアプリ再起動では既定 OFF に戻る=非永続(切り忘れ事故防止)。
+  // ★バナーは楽観表示しない=エンジンの reverse_status 確定でのみ点灯(「届いていないのにON表示」の嘘を防ぐ)。
   const _reverseOn = ($('#inputReverseBet')?.value === 'on');
-  _setReverseBanner(_reverseOn);
   setPhase('scanning', auto ? 'armed' : 'starting...');
   addLog(auto ? 'Armed. Waiting for master signal...' : 'Bot starting...', 'info');
   try {
     await window.valhalla.startBot(config);
     addLog('Bot started.', 'info');
-    // 起動後にエンジンへ逆張り状態を適用(stdin)。エンジンは reverse_status で確定同期しバナーを保つ。
+    // 起動後にエンジンへ逆張りを適用(stdin)。エンジンの stdin reader 起動タイミングに依存しないよう
+    // 確実に届くまで数回再送(各回トグルが ON のままの時だけ=起動直後に OFF にしたら尊重)。
+    // 反映成功は赤バナーの点灯(=エンジンの reverse_status 確定)で確認できる。
     if (_reverseOn) {
-      try { window.valhalla?.setReverseBet?.(true); } catch (_) {}
-      addLog('逆張り ON で起動（予想の逆side に自動BET・追従停止・エッジ無し）', 'warn');
+      const _sendRev = () => { try { if ($('#inputReverseBet')?.value === 'on') window.valhalla?.setReverseBet?.(true); } catch (_) {} };
+      _sendRev();
+      setTimeout(_sendRev, 5000);
+      setTimeout(_sendRev, 12000);
+      addLog('逆張り ON で起動（エンジン起動後に適用・反転は赤バナー点灯で確認）', 'warn');
     }
   } catch (e) {
     addLog(`Start failed: ${e.message || e}`, 'lose');
@@ -841,11 +846,12 @@ setTimeout(() => {
   $('#inputSeqVariant')?.addEventListener('change', _commitMoneyMode);
   $('#inputFlatVariant')?.addEventListener('change', _commitMoneyMode);
   // 逆張り(reverse): ライブ stdin で即時 ON/OFF。★設定保存しない=非永続(再起動でOFF)。
-  // バナーはエンジンの reverse_status 確認で確定表示するが、押下時に楽観的に即反映。
+  // ★バナーは楽観表示しない=エンジンへ送るだけ。点灯はエンジンの reverse_status 確定で行う
+  //   (= バナーON ⟺ エンジンも確実に逆張りON。届いていないのにON表示する嘘を防ぐ)。
+  //   稼働中でないと届かない=バナーが点かない時は「効いていない」が一目で分かる。
   $('#inputReverseBet')?.addEventListener('change', function () {
     const on = this.value === 'on';
     try { window.valhalla?.setReverseBet?.(on); } catch (_) {}
-    try { _setReverseBanner(on); } catch (_) {}
   });
   // 安全モード(コンディション・ゲート): 選択系統のコンディションが「好調」のときだけ
   // BET / それ以外(軟調/低調/悪調/蓄積中/データ無)は安全側=BET停止。判定はエンジン側。
