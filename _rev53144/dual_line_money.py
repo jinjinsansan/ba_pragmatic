@@ -3,6 +3,7 @@
 BetManager:
   - フラット ベット（単一ユニット）
   - SMALL SEQ シリーズ (0.2/0.6/1/1.4/2/2.4/3/6/10/30 start)
+  - PLAYER SEQ シリーズ (0.2/0.4/1/2/3 start: 元祖48段 — 〇×ロジック仕様書元祖.txt の階段を開始額で比例展開・型なし)
   - 1-2-3打法 (bet123: 1回目1単位→2回目2単位→同結果連続なら3回目3単位→リセット)
   - 純粋マーチンゲール
   - 利確 / 損切
@@ -27,6 +28,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from marubatsu_strategy import MaruBatsuTracker, SetData
+from marubatsu_strategy import SEQ as _MARUBATSU_ORIGINAL_SEQ
 
 logger = logging.getLogger("dual_line.money")
 
@@ -98,6 +100,18 @@ SEQ_SMALL30 = [
     1090, 1260, 1440, 1640, 1870, 2150, 2450, 2800,
 ]
 
+# 元祖SEQ = 大学ノート版(〇×ロジック仕様書元祖.txt)の48段・$1 start・天井$250。
+# marubatsu_strategy.SEQ からimport=旧MaruBatsu系と同一値を保証(重複定義しない)。
+# ★プレイヤーSEQ(player*)は元祖忠実がコンセプトのため型(shape)を適用しない=常にこの階段。
+# 変種は $1 基準の元祖階段 × 開始額 で比例展開(small2=small1×2 と同流儀)。
+# 元祖が全段整数なので ×(0.2の倍数) は必ず最小チップ$0.2の倍数に乗る(丸め不要)。
+SEQ_PLAYER1 = list(_MARUBATSU_ORIGINAL_SEQ)
+SEQ_PLAYER02 = [round(x * 0.2, 4) for x in SEQ_PLAYER1]  # $0.2 start・天井$50
+SEQ_PLAYER04 = [round(x * 0.4, 4) for x in SEQ_PLAYER1]  # $0.4 start・天井$100
+SEQ_PLAYER2 = [x * 2 for x in SEQ_PLAYER1]               # $2 start・天井$500
+SEQ_PLAYER3 = [x * 3 for x in SEQ_PLAYER1]               # $3 start・天井$750
+PLAYER_SEQ_MODES = ("player02", "player04", "player1", "player2", "player3")
+
 # ── SEQ 型(shape) — 階段の“並び”を $1 基準で定義し開始額で比例展開する ──────
 # 攻撃型(attack) = 上記 SEQ_SMALL* をそのまま使う(従来=ゼロ回帰)。
 # バランス型(balance)=CAND_A / 守備型(defense)=CAND_B は $1 基準の整数配列で、
@@ -113,7 +127,7 @@ SEQ_SHAPE_DEFENSE = [  # CAND_B: 序盤最緩・天井200x(生存最優先)
     1, 1, 1, 2, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 26, 31, 37, 44, 52,
     62, 74, 88, 104, 122, 140, 158, 176, 194, 200,
 ]
-SMALL_SEQ_MODES = ("small02", "small06", "small1", "small14", "small2", "small24", "small3", "small6", "small10", "small30")
+SMALL_SEQ_MODES = ("small02", "small06", "small1", "small14", "small2", "small24", "small3", "small6", "small10", "small30") + PLAYER_SEQ_MODES
 
 BET_MODES = {
     "flat": "1 unit flat",
@@ -127,6 +141,11 @@ BET_MODES = {
     "small6": "SMALL SEQ $6 start",
     "small10": "SMALL SEQ $10 start",
     "small30": "SMALL SEQ $30 start (ex-NewSEQ30)",
+    "player02": "PLAYER SEQ $0.20 start (original 48-step x0.2, ceiling $50)",
+    "player04": "PLAYER SEQ $0.40 start (original 48-step x0.4, ceiling $100)",
+    "player1": "PLAYER SEQ $1 start (original 48-step, ceiling $250)",
+    "player2": "PLAYER SEQ $2 start (original 48-step x2, ceiling $500)",
+    "player3": "PLAYER SEQ $3 start (original 48-step x3, ceiling $750)",
     "martingale": "pure Martingale",
     "dalembert": "D'Alembert (+/-1 unit)",
     "bet123": "1-2-3 method (1/2/3 units cycle)",
@@ -208,6 +227,8 @@ class BetManager:
             )
             # 検証/運用用: どの型(階段)で動いているかをログで確認できるようにする。
             _shape = (os.getenv("BACOPY_SEQ_SHAPE", "") or "attack").strip().lower() or "attack"
+            if self.mode in PLAYER_SEQ_MODES:
+                _shape = "original"  # 元祖階段固定・型は適用されない
             try:
                 logger.info(
                     f"[SEQ-SHAPE] mode={self.mode} shape={_shape} set_size={self.seq_set_size} "
@@ -274,6 +295,8 @@ class BetManager:
             "small14": SEQ_SMALL14, "small2": SEQ_SMALL2, "small24": SEQ_SMALL24,
             "small3": SEQ_SMALL3, "small6": SEQ_SMALL6,
             "small10": SEQ_SMALL10, "small30": SEQ_SMALL30,
+            "player02": SEQ_PLAYER02, "player04": SEQ_PLAYER04,
+            "player1": SEQ_PLAYER1, "player2": SEQ_PLAYER2, "player3": SEQ_PLAYER3,
         }.get(m)
         if attack is None:
             return [1.0]
@@ -281,6 +304,9 @@ class BetManager:
         # ── 型(shape)切替: balance=CAND_A / defense=CAND_B を開始額で比例展開 ──
         # 既定 attack は従来挙動のまま(ゼロ回帰)。env `BACOPY_SEQ_SHAPE` で切替。
         shape = (os.getenv("BACOPY_SEQ_SHAPE", "") or "").strip().lower()
+        # player*(プレイヤーSEQ=元祖忠実)は型を適用しない=常に元祖48段(×開始額)のまま
+        if m in PLAYER_SEQ_MODES:
+            return attack
         if m in SMALL_SEQ_MODES and shape in ("balance", "a", "bal", "cand_a"):
             start = attack[0]
             return [round(x * start, 4) for x in SEQ_SHAPE_BALANCE]

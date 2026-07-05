@@ -783,7 +783,7 @@ const DEFAULT_SETTINGS = {
   dga_auto_bet: false,
   dga_regular_only: true,
 };
-const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small06', 'small1', 'small14', 'small2', 'small24', 'small6', 'small10', 'small30', 'kelly', 'dual_line', 'dual_line_assist', 'dual_line_auto', 'dual_line_auto_follow']);
+const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small06', 'small1', 'small14', 'small2', 'small24', 'small6', 'small10', 'small30', 'player02', 'player04', 'player1', 'player2', 'player3', 'kelly', 'dual_line', 'dual_line_assist', 'dual_line_auto', 'dual_line_auto_follow']);
 
 function normalizeBetMode(mode) {
   return ALLOWED_BET_MODES.has(mode) ? mode : 'flat_1usd';
@@ -844,7 +844,7 @@ setTimeout(() => {
   });
   // MONEY MODE: SEQ / 非SEQ の二段ゲート
   $('#inputMoneyType')?.addEventListener('change', () => { _applyMoneyTypeVisibility(); _commitMoneyMode(); });
-  $('#inputSeqVariant')?.addEventListener('change', _commitMoneyMode);
+  $('#inputSeqVariant')?.addEventListener('change', () => { _commitMoneyMode(); _applyMoneyTypeVisibility(); });
   $('#inputFlatVariant')?.addEventListener('change', _commitMoneyMode);
   // 逆張り(reverse): ライブ stdin で即時 ON/OFF。★設定保存しない=非永続(再起動でOFF)。
   // ★バナーは楽観表示しない=エンジンへ送るだけ。点灯はエンジンの reverse_status 確定で行う
@@ -878,8 +878,11 @@ function _applyMoneyTypeVisibility() {
   if ($('#seqVariantGroup')) $('#seqVariantGroup').style.display = seq ? '' : 'none';
   // ターン制(セット長 5/7)は SEQ と ×セット系 で使う
   if ($('#seqTurnsGroup')) $('#seqTurnsGroup').style.display = (seq || setmode) ? '' : 'none';
-  // 型(攻撃/バランス/守備)は SEQ と Kelly の両方で使う
-  if ($('#seqShapeGroup')) $('#seqShapeGroup').style.display = (seq || kelly) ? '' : 'none';
+  // 型(攻撃/バランス/守備)は SEQ と Kelly の両方で使う。
+  // ただし player*(プレイヤーSEQ=元祖忠実)は型が適用されない(エンジン側でも無視)ため隠す。
+  const isPlayerSeq = seq && (($('#inputSeqVariant')?.value || '').indexOf('player') === 0);
+  if ($('#seqShapeGroup')) $('#seqShapeGroup').style.display = ((seq && !isPlayerSeq) || kelly) ? '' : 'none';
+  if ($('#player1Note')) $('#player1Note').style.display = isPlayerSeq ? '' : 'none';
   if ($('#kellyBankrollGroup')) $('#kellyBankrollGroup').style.display = kelly ? '' : 'none';
   if ($('#flatVariantGroup')) $('#flatVariantGroup').style.display = other ? '' : 'none';
   // ユニット額入力は フラット系 と ×セット系 で使う
@@ -899,7 +902,7 @@ function _commitMoneyMode() {
 }
 function _loadMoneyModeUI(mode) {
   const m = String(mode || 'small1');
-  const isSeq = m.indexOf('small') === 0;  // small02/small1/small3/small6
+  const isSeq = m.indexOf('small') === 0 || m.indexOf('player') === 0;  // small02.../player02-player3(元祖)
   const isKelly = m === 'kelly';
   const isB123set = m === 'bet123set';
   const isDalset = m === 'dalembertset';
