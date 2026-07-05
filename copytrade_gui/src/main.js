@@ -21,6 +21,9 @@ const os = require('os');
 
 let mainWindow = null;
 let botProcess = null;
+// 逆張りトグルの直近状態。engine が(auto-restart 含め)起動したら ON の間だけ set_reverse を
+// 再送する自動再適用に使う。GUI アプリ再起動で false に戻る=非永続の安全(切り忘れ防止)は維持。
+let _lastReverseOn = false;
 let watchdogProcess = null;
 let activeBotConfigSignature = '';
 
@@ -1350,6 +1353,23 @@ function _doStartBot(config, generation = _botGeneration) {
   }
   _botSpawning = false;
 
+  // 逆張り自動再適用: engine が(auto-restart/watchdog 復旧/定期再起動含め)起動したら、直近トグルが
+  // ON の間だけ set_reverse を再送する。engine の stdin reader 起動タイミングに依存しないよう数回。
+  // GUI が生きている限り逆張りを維持=夜間の engine 再起動で OFF に戻る問題を解消。GUI を閉じる/
+  // アプリ再起動すると _lastReverseOn=false(module 初期値)に戻る=非永続の切り忘れ防止は維持。
+  if (_lastReverseOn) {
+    const _reapplyReverse = () => {
+      try {
+        if (_lastReverseOn && botProcess && botProcess.stdin && !botProcess.killed) {
+          botProcess.stdin.write(JSON.stringify({ type: 'set_reverse', on: true }) + '\n', 'utf-8');
+        }
+      } catch (_) {}
+    };
+    setTimeout(_reapplyReverse, 2000);
+    setTimeout(_reapplyReverse, 7000);
+    setTimeout(_reapplyReverse, 14000);
+  }
+
   if (process.platform === 'win32') {
     setTimeout(() => {
       try {
@@ -2072,6 +2092,7 @@ app.whenReady().then(() => {
   // ★永続化しない: 起動時は常に OFF(エンジン側 _reverse_bet=False 固定)。
   ipcMain.handle('set-reverse-bet', (_evt, on) => {
     try {
+      _lastReverseOn = !!on;  // engine再起動時の自動再適用のため直近状態を保持
       if (!botProcess || !botProcess.stdin || botProcess.killed) {
         return { ok: false, error: 'engine_not_running' };
       }

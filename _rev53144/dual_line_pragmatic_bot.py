@@ -573,7 +573,12 @@ class DualLinePragmaticBot(cp.Collector):
         self.caught_now_wins = 0  # 追従なし(初回NOWのみ)
         self.caught_now_losses = 0
         self.caught_now_ties = 0
-        self._caught_pending: list = []  # [{"ids": set, "side": "P"/"B", "follow": bool}]
+        # 逆張り専用: 登録時に逆張りONだった拾NOW(初回のみ・反転後sideで判定)を分離集計。
+        # 順方向の拾NOW率(素の質)を汚染させず、逆張りの実績を単独で見るため。
+        self.caught_rev_wins = 0
+        self.caught_rev_losses = 0
+        self.caught_rev_ties = 0
+        self._caught_pending: list = []  # [{"ids": set, "side": "P"/"B", "follow": bool, "rev": bool}]
         self._caught_seen_count: dict = {}  # table_id -> 最後に見たbuf.hands長(拾NOW影決済用)
         self.shoe_changes: dict[str, int] = defaultdict(int)
         self.per_pattern: dict[str, dict] = defaultdict(
@@ -698,7 +703,8 @@ class DualLinePragmaticBot(cp.Collector):
             alias = set(str(x) for x in ids if x)
             if not alias:
                 return
-            self._caught_pending.append({"ids": alias, "side": sc, "follow": bool(is_follow)})
+            self._caught_pending.append({"ids": alias, "side": sc, "follow": bool(is_follow),
+                                         "rev": bool(getattr(self, "_reverse_bet", False))})
             if len(self._caught_pending) > 300:  # 無限増殖の保険
                 self._caught_pending = self._caught_pending[-300:]
             logger.info(
@@ -755,8 +761,18 @@ class DualLinePragmaticBot(cp.Collector):
                     self.caught_now_wins += 1
                 else:
                     self.caught_now_losses += 1
+            # 逆張り専用(登録時に逆張りONだったもの=反転後sideで判定済み。逆張り中は追従停止
+            # なので実質初回NOWのみ)。順方向拾NOW率と混ざらないよう独立集計。
+            if bool(e.get("rev")):
+                if _r == "T":
+                    self.caught_rev_ties += 1
+                elif _r == "W":
+                    self.caught_rev_wins += 1
+                else:
+                    self.caught_rev_losses += 1
             nA = self.caught_wins + self.caught_losses
             nN = self.caught_now_wins + self.caught_now_losses
+            nR = self.caught_rev_wins + self.caught_rev_losses
             # カウンタは常時更新済み。I/O(ログ+GUI送信)は >=2s にスロットルして、結果処理
             # ループ上の stdout 書き込み圧を最小化する(GUIカードは periodic status でも更新)。
             _emt = time.monotonic()
@@ -777,6 +793,10 @@ class DualLinePragmaticBot(cp.Collector):
                     "caught_now_losses": self.caught_now_losses,
                     "caught_now_ties": self.caught_now_ties,
                     "caught_now_win_rate": round((self.caught_now_wins / nN * 100) if nN else 0.0, 1),
+                    "caught_rev_wins": self.caught_rev_wins,
+                    "caught_rev_losses": self.caught_rev_losses,
+                    "caught_rev_ties": self.caught_rev_ties,
+                    "caught_rev_win_rate": round((self.caught_rev_wins / nR * 100) if nR else 0.0, 1),
                     "total_signals": self.total_signals,
                 })
         except Exception:
@@ -4202,6 +4222,9 @@ class DualLinePragmaticBot(cp.Collector):
                         "caught_now_wins": self.caught_now_wins,
                         "caught_now_losses": self.caught_now_losses,
                         "caught_now_ties": self.caught_now_ties,
+                        "caught_rev_wins": self.caught_rev_wins,
+                        "caught_rev_losses": self.caught_rev_losses,
+                        "caught_rev_ties": self.caught_rev_ties,
                         "virtual_pnl": self.virtual_pnl,
                         "per_pattern": dict(self.per_pattern),
                         "pending": self.pending,
@@ -4247,6 +4270,9 @@ class DualLinePragmaticBot(cp.Collector):
             self.caught_now_wins = s.get("caught_now_wins", 0)
             self.caught_now_losses = s.get("caught_now_losses", 0)
             self.caught_now_ties = s.get("caught_now_ties", 0)
+            self.caught_rev_wins = s.get("caught_rev_wins", 0)
+            self.caught_rev_losses = s.get("caught_rev_losses", 0)
+            self.caught_rev_ties = s.get("caught_rev_ties", 0)
             self.virtual_pnl = float(s.get("virtual_pnl", 0.0))
             saved_pending = s.get("pending", {}) or {}
             if saved_pending:

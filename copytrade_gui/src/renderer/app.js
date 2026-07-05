@@ -626,6 +626,7 @@ function updateCaughtWinRate(msg) {
       && typeof msg.caught_now_wins !== 'number') return;
   _setCaughtCard('caughtWinRate', msg.caught_wins, msg.caught_losses, msg.caught_win_rate);       // 追従込み
   _setCaughtCard('caughtNowWinRate', msg.caught_now_wins, msg.caught_now_losses, msg.caught_now_win_rate); // 追従なし
+  _setCaughtCard('caughtRevWinRate', msg.caught_rev_wins, msg.caught_rev_losses, msg.caught_rev_win_rate); // 逆張り専用
 }
 
 function updateSessionDisplay() {
