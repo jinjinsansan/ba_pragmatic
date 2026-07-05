@@ -746,30 +746,32 @@ class DualLinePragmaticBot(cp.Collector):
             else:
                 self._caught_pending.insert(idx, e)  # 未知の結果は戻して次ハンド待ち
                 return
-            # 追従込み(全NOW)
-            if _r == "T":
-                self.caught_ties += 1
-            elif _r == "W":
-                self.caught_wins += 1
-            else:
-                self.caught_losses += 1
-            # 追従なし(初回NOWのみ)
-            if not foll:
-                if _r == "T":
-                    self.caught_now_ties += 1
-                elif _r == "W":
-                    self.caught_now_wins += 1
-                else:
-                    self.caught_now_losses += 1
-            # 逆張り専用(登録時に逆張りONだったもの=反転後sideで判定済み。逆張り中は追従停止
-            # なので実質初回NOWのみ)。順方向拾NOW率と混ざらないよう独立集計。
+            # ★逆張り分は「逆張り専用」だけに入れ、順方向カウンタ(追従込/追従なし)は一切触らない。
+            # =順方向 拾NOW率(素の質)は逆張り中フリーズ(汚染ゼロ)/逆張り分は caught_rev に隔離。
             if bool(e.get("rev")):
+                # 逆張り専用(反転後sideで判定済み。逆張り中は追従停止=実質初回NOWのみ)
                 if _r == "T":
                     self.caught_rev_ties += 1
                 elif _r == "W":
                     self.caught_rev_wins += 1
                 else:
                     self.caught_rev_losses += 1
+            else:
+                # 順方向: 追従込み(全NOW)
+                if _r == "T":
+                    self.caught_ties += 1
+                elif _r == "W":
+                    self.caught_wins += 1
+                else:
+                    self.caught_losses += 1
+                # 順方向: 追従なし(初回NOWのみ)
+                if not foll:
+                    if _r == "T":
+                        self.caught_now_ties += 1
+                    elif _r == "W":
+                        self.caught_now_wins += 1
+                    else:
+                        self.caught_now_losses += 1
             nA = self.caught_wins + self.caught_losses
             nN = self.caught_now_wins + self.caught_now_losses
             nR = self.caught_rev_wins + self.caught_rev_losses
