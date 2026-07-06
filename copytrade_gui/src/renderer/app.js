@@ -615,6 +615,9 @@ $('#btnStart')?.addEventListener('click', () => startBotFlow({ auto: false }));
 function _setCaughtCard(elId, wins, losses, rate) {
   const el = $('#' + elId);
   if (!el) return;
+  // フィールド欠落(このメッセージにこの系統が載っていない)は触らない。
+  // 例: rev欄の無い status が来ても、caught_stats で表示した値を'-'で上書きしない。
+  if (typeof wins !== 'number' && typeof losses !== 'number' && typeof rate !== 'number') return;
   const w = wins || 0, l = losses || 0, n = w + l;
   if (n <= 0) { el.textContent = '-'; return; }
   const r = (typeof rate === 'number') ? rate : (w / n * 100);

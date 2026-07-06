@@ -941,6 +941,15 @@ class DualLinePragmaticBot(cp.Collector):
                     "caught_now_win_rate": round(
                         (self.caught_now_wins / (self.caught_now_wins + self.caught_now_losses) * 100)
                         if (self.caught_now_wins + self.caught_now_losses) else 0.0, 1),
+                    # ★逆張り専用も載せる。caught_stats だけに入れて status に入れ忘れると、
+                    # GUI が status 受信のたびに rev カードをフィールド欠落=0件として
+                    # 「-」で上書きする(2026-07-06 bafather で実発生)。
+                    "caught_rev_wins": self.caught_rev_wins,
+                    "caught_rev_losses": self.caught_rev_losses,
+                    "caught_rev_ties": self.caught_rev_ties,
+                    "caught_rev_win_rate": round(
+                        (self.caught_rev_wins / (self.caught_rev_wins + self.caught_rev_losses) * 100)
+                        if (self.caught_rev_wins + self.caught_rev_losses) else 0.0, 1),
                     "current_turn": ms.get("seq_turn"),
                     "overshoot": ms.get("seq_overshoot"),
                     "turns_display": "".join(turns) if isinstance(turns, list) else "",
