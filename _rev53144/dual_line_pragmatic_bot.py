@@ -578,7 +578,10 @@ class DualLinePragmaticBot(cp.Collector):
         self.caught_rev_wins = 0
         self.caught_rev_losses = 0
         self.caught_rev_ties = 0
-        self._caught_pending: list = []  # [{"ids": set, "side": "P"/"B", "follow": bool, "rev": bool}]
+        # 拾NOW率の集計対象日(JST)。日付が変わったら自動でゼロクリアして「今日の率」を表示する。
+        # state 保存/復元にも同梱し、跨日再起動でも前日値を持ち越さない。
+        self._caught_stat_date = self._billing_jst_date()
+        self._caught_pending: list = []  # [{"ids": set, "side": "P"/"B", "follow": bool}]
         self._caught_seen_count: dict = {}  # table_id -> 最後に見たbuf.hands長(拾NOW影決済用)
         self.shoe_changes: dict[str, int] = defaultdict(int)
         self.per_pattern: dict[str, dict] = defaultdict(
@@ -688,6 +691,46 @@ class DualLinePragmaticBot(cp.Collector):
                 if isinstance(item, (dict, list)):
                     self._collect_table_ids_from_msg(item, out, depth + 1)
 
+    def _maybe_daily_caught_reset(self) -> None:
+        """JST日付が変わっていたら拾NOW率カウンタを自動ゼロクリアする(=毎日「今日の率」で開始)。
+        _resolve_caught_now の先頭で毎回呼ぶ(=当日最初のNOW決済時に前日分を落とす)。跨日再起動時は
+        _load_state で復元した _caught_stat_date と比較して初回決済で落ちる。判定は文字列比較のみで軽量。"""
+        try:
+            today = self._billing_jst_date()
+            if self._caught_stat_date != today:
+                prev = self._caught_stat_date
+                self._caught_stat_date = today
+                logger.info(f"[CAUGHT-NOW] JST日付繰り越し {prev}->{today} → 拾NOW率を自動リセット")
+                self._reset_caught_stats()
+        except Exception:
+            pass
+
+    def _reset_caught_stats(self) -> None:
+        """拾NOW率(順方向 追従込/追従なし・逆張り)の全カウンタをゼロに戻す。稼働中に stdin
+        {"type":"reset_caught"} で叩ける。用途は2つ:
+        ・新方式(モード非依存の影集計)へ切替直後、旧仕様で貯めた汚染値を一度だけ捨てる。
+        ・「今日の率」を見たい時に日初などで手動ゼロクリアする(=日次リセットの代替)。
+        保留中の未決済NOWも破棄し、state を保存して即 GUI へ 0 を反映する。"""
+        self.caught_wins = self.caught_losses = self.caught_ties = 0
+        self.caught_now_wins = self.caught_now_losses = self.caught_now_ties = 0
+        self.caught_rev_wins = self.caught_rev_losses = self.caught_rev_ties = 0
+        self._caught_pending = []
+        logger.info("[CAUGHT-NOW] stats reset (順方向・逆張り 全カウンタ=0, pending破棄)")
+        try:
+            self._save_state()
+        except Exception:
+            pass
+        try:
+            send_msg({
+                "type": "caught_stats",
+                "caught_wins": 0, "caught_losses": 0, "caught_ties": 0, "caught_win_rate": 0.0,
+                "caught_now_wins": 0, "caught_now_losses": 0, "caught_now_ties": 0, "caught_now_win_rate": 0.0,
+                "caught_rev_wins": 0, "caught_rev_losses": 0, "caught_rev_ties": 0, "caught_rev_win_rate": 0.0,
+                "total_signals": self.total_signals,
+            })
+        except Exception:
+            pass
+
     def _register_caught_now(self, *ids, side=None, is_follow=False) -> None:
         """拾ったNOWを影の勝率追跡に登録する。実際にBETするか否かに関係なく、その台の
         次の完了ハンドで勝敗が付く(取りこぼし込み)。LIVE受け子のみ。2系統で集計する:
@@ -700,11 +743,16 @@ class DualLinePragmaticBot(cp.Collector):
             sc = str(side or "").strip().upper()[:1]
             if sc not in ("P", "B"):
                 return
+            # ★呼び出し元は逆張りON時に反転後(_maybe_reverse済み)の side を渡してくる。影の勝率は
+            #   「モード非依存」で順方向・逆張りの両方を毎ハンド出すため、保存 side は常に順方向
+            #   (反転前)へ正規化する。現在の逆張り状態で反転を打ち消す(登録は同一コールスタック内で
+            #   _maybe_reverse 直後に呼ばれるため self._reverse_bet はこのシグナル時点の値=正しく戻る)。
+            if bool(getattr(self, "_reverse_bet", False)):
+                sc = {"P": "B", "B": "P"}.get(sc, sc)
             alias = set(str(x) for x in ids if x)
             if not alias:
                 return
-            self._caught_pending.append({"ids": alias, "side": sc, "follow": bool(is_follow),
-                                         "rev": bool(getattr(self, "_reverse_bet", False))})
+            self._caught_pending.append({"ids": alias, "side": sc, "follow": bool(is_follow)})
             if len(self._caught_pending) > 300:  # 無限増殖の保険
                 self._caught_pending = self._caught_pending[-300:]
             logger.info(
@@ -719,6 +767,7 @@ class DualLinePragmaticBot(cp.Collector):
         BETの有無と無関係(取りこぼしも当たれば+1)。台IDはbuf/extra_keysの全IDで照合する。
         追従込み(caught_*)は常時、追従なし(caught_now_*)は初回NOWのみ加算。"""
         try:
+            self._maybe_daily_caught_reset()  # JST日跨ぎで「今日の率」に自動リセット
             if not self._caught_pending:
                 return
             keys = {str(table_id)}
@@ -746,32 +795,34 @@ class DualLinePragmaticBot(cp.Collector):
             else:
                 self._caught_pending.insert(idx, e)  # 未知の結果は戻して次ハンド待ち
                 return
-            # ★逆張り分は「逆張り専用」だけに入れ、順方向カウンタ(追従込/追従なし)は一切触らない。
-            # =順方向 拾NOW率(素の質)は逆張り中フリーズ(汚染ゼロ)/逆張り分は caught_rev に隔離。
-            if bool(e.get("rev")):
-                # 逆張り専用(反転後sideで判定済み。逆張り中は追従停止=実質初回NOWのみ)
+            # ★モード非依存の影集計。実際のBET方向(順張り/逆張り)に関係なく、拾った全NOWを
+            #   「順方向(元シグナルside)」と「逆張り(反転side)」の両方で毎ハンド判定する。
+            #   sc は _register_caught_now で常に順方向(反転前)へ正規化済み → _r は順方向結果。
+            #   逆張り結果 _rr は P<->B 反転(T はそのまま)なので W<->L を入れ替えるだけ。
+            _rr = "T" if _r == "T" else ("L" if _r == "W" else "W")
+            # 順方向: 追従込み(全NOW=初回+追従)
+            if _r == "T":
+                self.caught_ties += 1
+            elif _r == "W":
+                self.caught_wins += 1
+            else:
+                self.caught_losses += 1
+            # 初回NOWのみ(追従を除く): 順方向「追従なし」と逆張りを対の母集団で集計する。
+            # 逆張りを初回のみにするのは、実逆張り運用が追従を自動停止する挙動に忠実に合わせるため
+            # (=逆張り拾NOW率は「追従なし」の反転ミラー。同一ハンドで公平比較できる)。
+            if not foll:
                 if _r == "T":
-                    self.caught_rev_ties += 1
+                    self.caught_now_ties += 1
                 elif _r == "W":
+                    self.caught_now_wins += 1
+                else:
+                    self.caught_now_losses += 1
+                if _rr == "T":
+                    self.caught_rev_ties += 1
+                elif _rr == "W":
                     self.caught_rev_wins += 1
                 else:
                     self.caught_rev_losses += 1
-            else:
-                # 順方向: 追従込み(全NOW)
-                if _r == "T":
-                    self.caught_ties += 1
-                elif _r == "W":
-                    self.caught_wins += 1
-                else:
-                    self.caught_losses += 1
-                # 順方向: 追従なし(初回NOWのみ)
-                if not foll:
-                    if _r == "T":
-                        self.caught_now_ties += 1
-                    elif _r == "W":
-                        self.caught_now_wins += 1
-                    else:
-                        self.caught_now_losses += 1
             nA = self.caught_wins + self.caught_losses
             nN = self.caught_now_wins + self.caught_now_losses
             nR = self.caught_rev_wins + self.caught_rev_losses
@@ -1515,6 +1566,8 @@ class DualLinePragmaticBot(cp.Collector):
                     self._set_safety_mode(bool(msg.get("enabled")))
                 elif isinstance(msg, dict) and msg.get("type") == "set_reverse":
                     self._set_reverse(bool(msg.get("on")))
+                elif isinstance(msg, dict) and msg.get("type") == "reset_caught":
+                    self._reset_caught_stats()
 
         threading.Thread(target=_loop, name="manual-assist-stdin", daemon=True).start()
 
@@ -4236,6 +4289,7 @@ class DualLinePragmaticBot(cp.Collector):
                         "caught_rev_wins": self.caught_rev_wins,
                         "caught_rev_losses": self.caught_rev_losses,
                         "caught_rev_ties": self.caught_rev_ties,
+                        "caught_stat_date": self._caught_stat_date,
                         "virtual_pnl": self.virtual_pnl,
                         "per_pattern": dict(self.per_pattern),
                         "pending": self.pending,
@@ -4284,6 +4338,9 @@ class DualLinePragmaticBot(cp.Collector):
             self.caught_rev_wins = s.get("caught_rev_wins", 0)
             self.caught_rev_losses = s.get("caught_rev_losses", 0)
             self.caught_rev_ties = s.get("caught_rev_ties", 0)
+            # 保存時の集計対象日を復元。今日と違えば当日最初のNOW決済(_maybe_daily_caught_reset)で
+            # 前日値を自動リセットする=跨日再起動でも前日の率を持ち越さない。
+            self._caught_stat_date = s.get("caught_stat_date") or self._caught_stat_date
             self.virtual_pnl = float(s.get("virtual_pnl", 0.0))
             saved_pending = s.get("pending", {}) or {}
             if saved_pending:

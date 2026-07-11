@@ -857,6 +857,20 @@ setTimeout(() => {
     const on = this.value === 'on';
     try { window.valhalla?.setReverseBet?.(on); } catch (_) {}
   });
+  // 拾NOW率の手動リセット(順張り・逆張りとも当日ゼロクリア)。エンジンは JST 日跨ぎでも自動リセット。
+  $('#btnResetCaught')?.addEventListener('click', async function () {
+    if (!confirm('拾NOW率(順張り・逆張り)を今すぐゼロにしますか？\n「今日の率」を計り直したい時に使います。')) return;
+    try {
+      const r = await window.valhalla?.resetCaught?.();
+      if (r && r.ok) {
+        addLog('[CAUGHT] 拾NOW率をリセットしました', 'info');
+      } else {
+        addLog('[CAUGHT] リセット失敗: ' + ((r && r.error) || 'エンジン未稼働') , 'warn');
+      }
+    } catch (e) {
+      addLog('[CAUGHT] リセット失敗: ' + (e && e.message ? e.message : String(e)), 'warn');
+    }
+  });
   // 安全モード(コンディション・ゲート): 選択系統のコンディションが「好調」のときだけ
   // BET / それ以外(軟調/低調/悪調/蓄積中/データ無)は安全側=BET停止。判定はエンジン側。
   $('#inputSafetyMode')?.addEventListener('change', function() {

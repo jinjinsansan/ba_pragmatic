@@ -2104,6 +2104,20 @@ app.whenReady().then(() => {
     }
   });
 
+  // 拾NOW率(順方向 追従込/追従なし・逆張り)カウンタの手動ゼロクリアをエンジンへ stdin で送る。
+  // 日初などに叩けば「今日の率」を見られる(エンジンは JST 日跨ぎで自動リセットもする)。
+  ipcMain.handle('reset-caught', (_evt) => {
+    try {
+      if (!botProcess || !botProcess.stdin || botProcess.killed) {
+        return { ok: false, error: 'engine_not_running' };
+      }
+      botProcess.stdin.write(JSON.stringify({ type: 'reset_caught' }) + '\n', 'utf-8');
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+  });
+
   ipcMain.handle('auth-signin', async (_evt, payload) => {
     const email = String(payload && payload.email ? payload.email : '').trim();
     const password = String(payload && payload.password ? payload.password : '').trim();

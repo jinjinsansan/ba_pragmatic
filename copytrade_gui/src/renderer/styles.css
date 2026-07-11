@@ -1035,3 +1035,22 @@ body.safety-holding::before {
   0%,100% { box-shadow: inset 0 0 16px rgba(255,210,61,0.10); border-color: rgba(255,210,61,0.22); }
   50%     { box-shadow: inset 0 0 30px rgba(255,210,61,0.22); border-color: rgba(255,210,61,0.42); }
 }
+
+/* 拾NOW率リセットボタン(逆張りカード内・小型) */
+.caught-reset-btn {
+  margin-top: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #ffd23d;
+  background: rgba(255,210,61,0.08);
+  border: 1px solid rgba(255,210,61,0.35);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.caught-reset-btn:hover {
+  background: rgba(255,210,61,0.18);
+  border-color: rgba(255,210,61,0.6);
+}
+.caught-reset-btn:active { transform: translateY(1px); }

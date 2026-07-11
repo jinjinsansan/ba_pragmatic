@@ -125,17 +125,18 @@
         <div class="stat-label">WIN RATE</div>
         <div class="stat-value" id="winRate">-</div>
       </div>
-      <div class="stat-card" title="このGUIが拾った全NOW(初回+追従)の勝率。BETの有無に関係なく台の結果で判定(取りこぼし込み)">
+      <div class="stat-card" title="このGUIが拾った全NOW(初回+追従)の勝率。BETの有無・現在のモードに関係なく台の結果で判定(取りこぼし込み)。当日分のみ(JST日跨ぎで自動リセット)">
         <div class="stat-label">拾NOW率 追従込</div>
         <div class="stat-value" id="caughtWinRate">-</div>
       </div>
-      <div class="stat-card" title="拾った初回NOWのみ(追従を除く)の勝率。取りこぼし込み＝拾ったシグナルの素の質">
+      <div class="stat-card" title="拾った初回NOWのみ(追従を除く)の順張り勝率。モード非依存で常時集計。当日分のみ">
         <div class="stat-label">拾NOW率 追従無</div>
         <div class="stat-value" id="caughtNowWinRate">-</div>
       </div>
-      <div class="stat-card" title="逆張りモードONの間に拾ったNOWだけの勝率(反転後sideで判定)。順方向の拾NOW率と混ざらない逆張り専用集計。リセットスタートで0クリア。">
+      <div class="stat-card" title="拾った初回NOWを『逆張りしていたら』の勝率(=追従無の反転ミラー・同一ハンド)。モード非依存で常時集計。当日分のみ。右の⟳で手動リセットも可">
         <div class="stat-label">逆張り拾NOW率</div>
         <div class="stat-value" id="caughtRevWinRate">-</div>
+        <button id="btnResetCaught" class="caught-reset-btn" title="拾NOW率(順張り・逆張り)を今すぐゼロにする=『今日の率』を計り直す">⟳ リセット</button>
       </div>
       <div class="stat-card master-card master-unknown" id="masterCard" title="Master connection / control status">
         <div class="stat-label">MASTER</div>
