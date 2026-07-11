@@ -422,8 +422,10 @@
               <select id="inputReverseBet">
                 <option value="off">OFF（通常＝予想どおりにBET）</option>
                 <option value="on">ON（予想の逆side にBET）</option>
+                <option value="auto">AUTO（前1時間&lt;50%なら逆張り）</option>
               </select>
-              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">ONの間は v3/v4 のNOWが出たら<b>本来の逆(B↔P)</b>に自動BET。賭け・決済・光り・勝率は反転後で一貫します。<b style="color:#ff8888;">エッジはありません（規律/手動代替用）。ON中は追従を自動停止します。</b>ONにしてSTARTすると<b>そのセッションは逆張りで起動</b>します（STOP→STARTでも維持）。切り忘れ防止のため<b>アプリを再起動すると必ずOFFに戻ります</b>。</div>
+              <div id="autoRevInfo" class="hidden" style="font-size:11px; margin-top:3px; color:var(--text-muted);"></div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">ONの間は v3/v4 のNOWが出たら<b>本来の逆(B↔P)</b>に自動BET。賭け・決済・光り・勝率は反転後で一貫します。<b style="color:#ff8888;">エッジはありません（規律/手動代替用）。ON中は追従を自動停止します。</b>ONにしてSTARTすると<b>そのセッションは逆張りで起動</b>します（STOP→STARTでも維持）。切り忘れ防止のため<b>アプリを再起動すると必ずOFFに戻ります</b>。<br><b style="color:#ffcc66;">AUTO</b>＝TIME RATE の<b>1つ前の1時間</b>（選択中の系統）が<b>50%以上なら順張り／50%未満なら逆張り</b>を60秒毎に自動適用。前1時間のデータが無い間は現状維持。<b style="color:#ff8888;">実験機能＝エッジを作りません（検証済）。</b></div>
             </div>
             <div class="form-group">
               <label>安全モード（コンディション連動）</label>

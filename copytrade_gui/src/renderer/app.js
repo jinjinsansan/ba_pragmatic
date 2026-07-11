@@ -582,6 +582,13 @@ async function startBotFlow({ auto = false } = {}) {
       setTimeout(_sendRev, 5000);
       setTimeout(_sendRev, 12000);
       addLog('逆張り ON で起動（エンジン起動後に適用・反転は赤バナー点灯で確認）', 'warn');
+    } else if ($('#inputReverseBet')?.value === 'auto') {
+      // AUTO: 起動直後にも前1時間判定を適用(以後は60秒毎のhourly-stats受信で再適用)。
+      const _sendAuto = () => { try { if ($('#inputReverseBet')?.value === 'auto') evalAutoReverse(); } catch (_) {} };
+      _sendAuto();
+      setTimeout(_sendAuto, 5000);
+      setTimeout(_sendAuto, 12000);
+      addLog('AUTO逆張りで起動（前1時間のTIME RATEで自動判定・反転中は赤バナー点灯）', 'warn');
     }
   } catch (e) {
     addLog(`Start failed: ${e.message || e}`, 'lose');
@@ -853,7 +860,16 @@ setTimeout(() => {
   // ★バナーは楽観表示しない=エンジンへ送るだけ。点灯はエンジンの reverse_status 確定で行う
   //   (= バナーON ⟺ エンジンも確実に逆張りON。届いていないのにON表示する嘘を防ぐ)。
   //   稼働中でないと届かない=バナーが点かない時は「効いていない」が一目で分かる。
+  // AUTO: 判定と送信は evalAutoReverse (hourly-stats 60秒毎) が担う。切替直後にも一度評価。
   $('#inputReverseBet')?.addEventListener('change', function () {
+    if (this.value === 'auto') {
+      addLog('[AUTO逆] AUTOモード開始 — 前1時間のTIME RATEで順張り/逆張りを60秒毎に自動判定', 'warn');
+      evalAutoReverse();
+      return;
+    }
+    _autoRevState.desired = null; _autoRevState.hour = null;
+    const info = document.getElementById('autoRevInfo');
+    if (info) info.classList.add('hidden');
     const on = this.value === 'on';
     try { window.valhalla?.setReverseBet?.(on); } catch (_) {}
   });
@@ -2781,9 +2797,10 @@ window.valhalla.onAgentMessage((msg) => {
 
     case 'reverse_status': {
       // エンジンが確定した逆張り状態でバナーとドロップダウンを同期。
+      // ★AUTO選択中はセレクトを上書きしない(AUTOの意思を保持)=バナーだけが実状態を示す。
       _setReverseBanner(!!msg.enabled);
       const sel = $('#inputReverseBet');
-      if (sel) sel.value = msg.enabled ? 'on' : 'off';
+      if (sel && sel.value !== 'auto') sel.value = msg.enabled ? 'on' : 'off';
       break;
     }
 
@@ -3022,6 +3039,53 @@ renderRecent();
 applyDevMode();
 initModalTabs();
 initAuth();
+
+// ── AUTO逆張り(実験機能) ────────────────────────────────────────────
+// TIME RATE(master /api/hourly-stats)の「1つ前の1時間」の勝率で順張り/逆張りを自動切替する。
+// 判定=選択中の系統(6P/10P)の前1時間: 勝率50%以上→順張り(reverse OFF) / 50%未満→逆張り(ON)。
+// データ受信毎(60秒)に毎回エンジンへ送信する(冪等)=エンジンを再起動しても最大60秒で再適用され、
+// 「トグルONなのにエンジンに届いていない」事故がAUTO中は構造的に起きない。
+// 前1時間のデータが無い間(0時台・master不達等)は現状維持。★検証済みエッジ無し=規律/実験用。
+// 反映の真実はエンジンの reverse_status(赤バナー)のみ=ここでは楽観表示しない。
+const _autoRevState = { desired: null, hour: null, lastData: null };
+function evalAutoReverse(data) {
+  try {
+    if (data) _autoRevState.lastData = data;
+    const sel = $('#inputReverseBet');
+    if (!sel || sel.value !== 'auto') return;
+    const info = document.getElementById('autoRevInfo');
+    const show = (txt, color) => {
+      if (!info) return;
+      info.textContent = txt;
+      info.classList.remove('hidden');
+      info.style.color = color || 'var(--text-muted)';
+    };
+    const d = _autoRevState.lastData;
+    if (!d || !d.ok) { show('AUTO: TIME RATE未受信 — 現状維持（受信後に自動判定）'); return; }
+    const mode = ($('#inputDualMode')?.value === 'v4') ? 'v4' : 'v3';
+    const src = d[mode] || {};
+    const prevH = (new Date().getHours() + 23) % 24;
+    const rec = (src.hours || []).find((h) => h && h.h === prevH);
+    const n = rec && rec.n ? rec.n : 0;
+    const hh = String(prevH).padStart(2, '0');
+    if (!n) { show(`AUTO: ${hh}時のデータなし — 現状維持`); return; }
+    const wr = rec.w / rec.n;
+    const desired = wr < 0.5; // 50%以上=順張り / 50%未満=逆張り(50.0%ちょうどは順張り)
+    const pct = (wr * 100).toFixed(1);
+    const label = mode === 'v4' ? '10P' : '6P';
+    show(`AUTO: ${hh}時 ${label} ${rec.w}/${n} = ${pct}% → ${desired ? '逆張り' : '順張り'}（反映=赤バナーで確認）`,
+         desired ? '#ff8888' : '#7fd7a0');
+    if (_autoRevState.desired !== desired || _autoRevState.hour !== prevH) {
+      addLog(`[AUTO逆] ${hh}時 ${label} ${pct}% (${rec.w}/${n}) → ${desired ? '逆張りON' : '順張り(OFF)'}`, 'warn');
+      _autoRevState.desired = desired;
+      _autoRevState.hour = prevH;
+    }
+    try { window.valhalla?.setReverseBet?.(desired); } catch (_) {}
+  } catch (_) {}
+}
+if (window.valhalla && window.valhalla.onHourlyStats) {
+  window.valhalla.onHourlyStats((data) => { evalAutoReverse(data); });
+}
 
 // ── 毎時勝率パネル(時間帯ヒートストリップ) ──────────────────────────
 // master /api/hourly-stats (main.jsが60秒毎にIPC転送) を描画。
