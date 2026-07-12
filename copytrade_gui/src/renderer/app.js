@@ -1839,19 +1839,14 @@ function _renderSetModePanel(ms, kind) {
   const sets = Array.isArray(rawSets) ? rawSets : [];
   const setSize = Number(isB123 ? ms.b123set_set_size : ms.dalembertset_set_size) || 7;
   const nextBet = Number(ms.next_bet) || 0;
-  // 負け越し: ダランベールは level-1 がそのまま「未回収のセット負け越し数」(履歴の深さに
-  // 依存せず常に正しい)。123×セットは step が1-2-3循環で負け越しを表さないため、
-  // セット履歴からの積み上げ(勝ちセットで減・下限0)で出す=履歴が貯まるほど正確。
-  let overshoot;
-  if (isB123) {
-    overshoot = 0;
-    for (const s of sets) {
-      const r = String((s && s.results) || '');
-      const w = (r.match(/O/g) || []).length;
-      overshoot = Math.max(0, overshoot + ((r.length - w) > w ? 1 : -1));
-    }
-  } else {
-    overshoot = level - 1;
+  // 負け越し = SEQ の overshoot と同じ計算: セット確定ごとに (×の数 − 〇の数) を
+  // 足し引きした「未回収の負けハンド数」(下限0・勝ち越しセットで減る)。
+  // レベル(セット単位の昇降)とは独立したハンド単位の指標。履歴セットから積み上げる。
+  let overshoot = 0;
+  for (const s of sets) {
+    const r = String((s && s.results) || '');
+    const w = (r.match(/O/g) || []).length;
+    overshoot = Math.max(0, overshoot + (r.length - w) - w);
   }
   const handNum = sets.length * setSize + marks.length;
   _setSigPanel(
