@@ -260,6 +260,12 @@ class BetManager:
         self.dalembertset_level: int = 1  # 1,2,3,... (= bet倍率)
         self.dalembertset_marks: list[str] = []  # 現セット内の "O"/"X"
 
+        # セット履歴(123×セット / ダランベール×セット共通): SEQ の seq7_sets と同じく
+        # 完了セットの〇×を残し、GUI が全ストリーム・ハンド数・負け越し(セット単位の
+        # 未回収負け越し)を SEQ と同じ見た目で描けるようにする。state に永続化。
+        self.b123set_sets: list[dict] = []        # [{"results":"OXX...", "step_after":int}]
+        self.dalembertset_sets: list[dict] = []   # [{"results":"OXX...", "level_after":int}]
+
         # Kelly(比例) 状態
         self.kelly_edge: float = float(os.getenv("BACOPY_KELLY_EDGE", "0.0061") or 0.0061)
         # 型は seq_shape を流用 (attack/balance/defense)
@@ -495,6 +501,9 @@ class BetManager:
                     self.b123set_step = self.b123set_step + 1 if self.b123set_step < 3 else 1
                 else:                  # セット勝ち越し
                     self.b123set_step = 1
+                self.b123set_sets.append({"results": "".join(self.b123set_marks),
+                                          "step_after": self.b123set_step})
+                self.b123set_sets = self.b123set_sets[-500:]  # 肥大保険
                 self.b123set_marks = []
             self.seq_level = self.b123set_step - 1  # 表示用ミラー(0基準)
 
@@ -509,6 +518,9 @@ class BetManager:
                     self.dalembertset_level += 1
                 else:                  # セット勝ち越し
                     self.dalembertset_level = max(1, self.dalembertset_level - 1)
+                self.dalembertset_sets.append({"results": "".join(self.dalembertset_marks),
+                                               "level_after": self.dalembertset_level})
+                self.dalembertset_sets = self.dalembertset_sets[-500:]  # 肥大保険
                 self.dalembertset_marks = []
             self.seq_level = self.dalembertset_level - 1  # 表示用ミラー(0基準)
 
@@ -585,9 +597,11 @@ class BetManager:
             "martingale_max_bet": self.martingale_max_bet,
             "b123set_step": self.b123set_step if self.mode == "bet123set" else None,
             "b123set_marks": list(self.b123set_marks) if self.mode == "bet123set" else None,
+            "b123set_sets": list(self.b123set_sets) if self.mode == "bet123set" else None,
             "b123set_set_size": self.seq_set_size if self.mode == "bet123set" else None,
             "dalembertset_level": self.dalembertset_level if self.mode == "dalembertset" else None,
             "dalembertset_marks": list(self.dalembertset_marks) if self.mode == "dalembertset" else None,
+            "dalembertset_sets": list(self.dalembertset_sets) if self.mode == "dalembertset" else None,
             "dalembertset_set_size": self.seq_set_size if self.mode == "dalembertset" else None,
             "limit_reached": self.limit_reached,
             "limit_reason": self.limit_reason,
@@ -626,8 +640,10 @@ class BetManager:
                         "b123_prev_won": self.b123_prev_won,
                         "b123set_step": self.b123set_step,
                         "b123set_marks": list(self.b123set_marks),
+                        "b123set_sets": list(self.b123set_sets),
                         "dalembertset_level": self.dalembertset_level,
                         "dalembertset_marks": list(self.dalembertset_marks),
+                        "dalembertset_sets": list(self.dalembertset_sets),
                         "limit_reached": self.limit_reached,
                         "limit_reason": self.limit_reason,
                     },
@@ -680,9 +696,13 @@ class BetManager:
             self.b123set_step = max(1, min(3, int(s.get("b123set_step", 1) or 1)))
             _bm = s.get("b123set_marks", []) or []
             self.b123set_marks = [m for m in _bm if m in ("O", "X")] if isinstance(_bm, list) else []
+            _bs = s.get("b123set_sets", []) or []
+            self.b123set_sets = [x for x in _bs if isinstance(x, dict) and x.get("results")] if isinstance(_bs, list) else []
             self.dalembertset_level = max(1, int(s.get("dalembertset_level", 1) or 1))
             _dm = s.get("dalembertset_marks", []) or []
             self.dalembertset_marks = [m for m in _dm if m in ("O", "X")] if isinstance(_dm, list) else []
+            _ds = s.get("dalembertset_sets", []) or []
+            self.dalembertset_sets = [x for x in _ds if isinstance(x, dict) and x.get("results")] if isinstance(_ds, list) else []
             self.limit_reached = bool(s.get("limit_reached", False))
             self.limit_reason = str(s.get("limit_reason", ""))
             # 設定は復元しない（GUI の値が正）
