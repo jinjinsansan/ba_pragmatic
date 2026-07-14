@@ -21,7 +21,9 @@ from _card_analysis_v1 import NAT_WIN, bucket_nat, load_tables, wr, z_two_prop  
 
 LOG = "/opt/laplace2/dual_line_pragmatic_bot.log"
 DB = "/opt/bacopy/data/bacopy.sqlite3"
-SINCE = "2026-07-14 07:33:00"  # フィード開始(JST)
+# 集計開始時刻(JST)。引数で上書き可: python3 _card_analysis_v2_testB.py "2026-07-15 08:00:00"
+# ※事前登録OOS評価は必ず "2026-07-15 08:00:00" を渡す(集計ロジック・バケツ境界は変更禁止)
+SINCE = sys.argv[1] if len(sys.argv) > 1 else "2026-07-14 07:33:00"
 
 RE_TS = r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)"
 RE_V3 = re.compile(
