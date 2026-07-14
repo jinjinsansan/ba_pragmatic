@@ -256,6 +256,44 @@ def _is_unsupported_table_name(name: str) -> bool:
     )
 
 
+_RECENT_WL_V3_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "dual_line_recent200_v3.json")
+_RECENT_WL_V4_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "dual_line_recent200_v4.json")
+
+
+def _recent_wl_add_and_lines(store_path, result, cap=200):
+    """直近cap手のW/L窓(TIEは窓に入れない)を更新し、テレグラム表示行を返す。
+    返り値: "直近200: 52.5% (105W95L)\\n✅❌…"(ストリームは直近20手) / データ無しは ""。
+    表示専用: 呼び出し側で必ずtryで包む(決済処理を壊さない)。系統(v3/v4)別ファイルで
+    永続化=再起動でも窓が消えない。合算禁止(同ハンド二重配信が偽の波を作るため)。"""
+    import json as _json
+    items = []
+    try:
+        with open(store_path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        if isinstance(data, list):
+            items = [c for c in data if c in ("W", "L")]
+    except Exception:
+        pass
+    mark = "W" if result == "WIN" else ("L" if result == "LOSE" else "")
+    if mark:
+        items.append(mark)
+    items = items[-int(cap):]
+    if mark:
+        try:
+            with open(store_path, "w", encoding="utf-8") as f:
+                _json.dump(items, f)
+        except Exception:
+            pass
+    n = len(items)
+    if not n:
+        return ""
+    w = items.count("W")
+    stream = "".join("✅" if x == "W" else "❌" for x in items[-20:])
+    return "直近%d: %.1f%% (%dW%dL)\n%s" % (int(cap), w * 100.0 / n, w, n - w, stream)
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -2748,6 +2786,11 @@ class DualLinePragmaticBot(cp.Collector):
             f"({self.wins}W/{self.losses}L/{self.ties}T {wr:.1f}%)"
         )
 
+        _recent_line = ""
+        try:
+            _recent_line = _recent_wl_add_and_lines(_RECENT_WL_V3_PATH, result)
+        except Exception:
+            _recent_line = ""
         if self.notify_resolution and (result != "TIE" or self.notify_tie):
             n_nt = self.wins + self.losses
             wr = self.wins / n_nt * 100 if n_nt else 0
@@ -2759,6 +2802,7 @@ class DualLinePragmaticBot(cp.Collector):
                 f"Pred: {side} → Got: {outcome}\n"
                 f"W/L/T: {self.wins}/{self.losses}/{self.ties} ({wr:.1f}%)\n"
                 f"signals: {self.total_signals} resolved: {self.total_resolved}"
+                + (("\n" + _recent_line) if _recent_line else "")
             )
 
         # resolution 後も即座に state 保存（クラッシュ時のデータ消失防止）
