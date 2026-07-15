@@ -249,10 +249,11 @@ def _is_unsupported_table_name(name: str) -> bool:
         or "bcadigitalsqz" in n
         or "seotda" in n
         or "sic bac" in n
-        # Mega Baccarat / Big Small Baccarat: GUI flash is reliably slow on
+        # Mega / Big Small / Amazing Baccarat: GUI flash is reliably slow on
         # these tiles (special lobby layout) -> excluded from NOW entirely.
         or "mega baccarat" in n
         or "big small" in n
+        or "amazing baccarat" in n
     )
 
 
