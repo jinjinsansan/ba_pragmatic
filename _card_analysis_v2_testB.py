@@ -72,7 +72,8 @@ def main():
     # 卓名 → tb (tn充足行から。フィードは同一tbで名が揺れない前提)
     name2tb = {}
     import json
-    for line in open("/opt/laplace2/card_feed.jsonl", encoding="utf-8"):
+    import glob as _glob, itertools as _it
+    for line in _it.chain(*[open(x, encoding="utf-8") for x in sorted(_glob.glob("/opt/laplace2/card_feed.jsonl*"))]):
         try:
             d = json.loads(line)
         except Exception:

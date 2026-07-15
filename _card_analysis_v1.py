@@ -56,8 +56,11 @@ def card_val(c):
 def load_tables():
     tables = collections.defaultdict(list)
     score_ok = score_ng = 0
-    with open(FEED, encoding="utf-8") as f:
-        for line in f:
+    # logrotate対応: card_feed.jsonl-YYYYMMDD (rotate 21) も読む。各卓ts順ソート済なのでファイル順不問
+    import glob as _glob, itertools as _it
+    _fs = [open(x, encoding="utf-8") for x in sorted(_glob.glob(FEED + "*"))]
+    if True:
+        for line in _it.chain(*_fs):
             try:
                 d = json.loads(line)
             except Exception:
