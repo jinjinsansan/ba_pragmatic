@@ -1050,6 +1050,15 @@ function buildSpawnSpec(config) {
       if (kb > 0) childEnv.BACOPY_KELLY_BANKROLL = String(kb);
     }
 
+    // フィボグリッド: 利確ライン(C-G)/損切りライン(行数)。engine が env を読む。
+    // 開始額は --money-unit (app.js が fib_unit を money_unit に載せる)。
+    if (config && config.money_mode === 'fibgrid') {
+      const fpc = String(config.fib_profit_col || 'C').toUpperCase();
+      childEnv.BACOPY_FIBGRID_PROFIT_COL = ['C', 'D', 'E', 'F', 'G'].includes(fpc) ? fpc : 'C';
+      const fcr = parseInt(config.fib_cap_rows, 10);
+      childEnv.BACOPY_FIBGRID_CAP_ROWS = String((fcr >= 4 && fcr <= 28) ? fcr : 6);
+    }
+
     // ── プラットフォーム切替 (Stake / hh88) ──────────────────────────────
     // 排他: GUI は常に片側のみ(オーナー指示・Pragmatic の異変検知回避)。既定 stake で
     // 従来挙動を一切変えない。hh88 は同一 Pragmatic バックエンドだが CDP注入WSブリッジ
@@ -1109,7 +1118,12 @@ function buildSpawnSpec(config) {
   if (config && config.allow_tie) args.push('--allow-tie');
   if (config && config.assume_bc_012) args.push('--assume-bc-012');
   if (config && config.bet_mode) args.push('--bet-mode', String(config.bet_mode));
-  args.push('--chip-base', String(chipBase));
+  // エンジンの単位解決は --chip-base が --money-unit より優先される(bot 7489)。
+  // fibgrid の単位は開始額(=config.money_unit に app.js が fib_unit を載せる)なので、
+  // chip-base にも開始額を渡す(CHIP BASE $10 が $0.2 を上書きする事故の恒久修正)。
+  const fibUnitOverride = (config && config.money_mode === 'fibgrid' && parseFloat(config.money_unit) > 0)
+    ? parseFloat(config.money_unit) : null;
+  args.push('--chip-base', String(fibUnitOverride !== null ? fibUnitOverride : chipBase));
 
   const profitTarget = (config && typeof config.profit_target === 'number') ? config.profit_target : 50;
   args.push('--profit-target', String(profitTarget));

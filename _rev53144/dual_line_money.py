@@ -152,6 +152,7 @@ BET_MODES = {
     "bet123set": "1-2-3 per N-hand set (set-level 1/2/3, faithful 1-2-3 cycle)",
     "dalembertset": "D'Alembert per N-hand set (+1 unit on losing set, -1 on winning set)",
     "kelly": "Kelly proportional (bet = f x bankroll)",
+    "fibgrid": "Fibonacci 2D grid (win=right/lose=down, profit col C-G + stop-loss row)",
 }
 ALLOWED_MODES = set(BET_MODES.keys())
 
@@ -167,6 +168,41 @@ BANKER_COMMISSION = 0.95
 KELLY_PAYOUT = 0.97
 KELLY_CHIP = 0.2
 KELLY_SHAPE_MULT = {"attack": 1.0, "balance": 0.5, "defense": 0.25}
+
+# ── フィボグリッド(2次元)モード ────────────────────────────────────────
+# トラッカー.html(発案者システム)の忠実移植+損切り行(当社追加)。
+# 起点B4・勝ち→右(列+1)/負け→下(行+1)・セル値×unit=BET額。
+# 利確列到達後: 1勝目 or 1勝1敗で起点リセット(利確)。2連敗→利確列最上段/
+# 3連敗→2個上/4連敗以上→1個上へ移動し、勝敗同数(トントン)まで続行。
+# 損切り行: 許容行(cap_rows)を負けで超えたら損失確定して起点リセット。
+# BT検証=`_bt_grid_fib_safe.py`+`FIB_GRID_SAFE_BT_2026-07-17.md`(TIE=押し)。
+# 設定: env BACOPY_FIBGRID_PROFIT_COL(C-G・既定C) / BACOPY_FIBGRID_CAP_ROWS(既定6)。
+# 開始額は unit(--money-unit)で比例スケール(セル値は$1基準ユニット)。
+FIBGRID_COLS = ["B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P"]
+FIBGRID_ROW_START = 4
+FIBGRID_GRID = [[1,None,None,None,None,None,None,None,None,None,None,None,None,None,None],[1,2,None,None,None,None,None,None,None,None,None,None,None,None,None],[2,2,3,None,None,None,None,None,None,None,None,None,None,None,None],[3,4,3,4,None,None,None,None,None,None,None,None,None,None,None],[5,6,7,4,5,None,None,None,None,None,None,None,None,None,None],[8,10,10,8,5,6,None,None,None,None,None,None,None,None,None],[13,16,17,12,11,6,7,None,None,None,None,None,None,None,None],[21,26,27,20,16,16,7,8,None,None,None,None,None,None,None],[34,42,44,32,27,23,15,8,9,None,None,None,None,None,None],[55,68,71,52,43,39,22,17,9,10,None,None,None,None,None],[89,110,115,84,70,62,39,30,26,10,11,None,None,None,None],[144,178,186,136,113,101,61,56,41,36,11,12,None,None,None],[233,288,301,220,183,163,101,91,82,47,48,12,13,None,None],[377,466,487,356,296,264,163,148,138,84,60,61,13,14,None],[610,754,788,576,479,427,264,239,228,132,131,74,75,14,15],[987,1220,1275,931,775,691,427,387,371,215,206,132,89,90,15],[1597,1974,2062,1507,1254,1118,691,626,602,348,337,206,221,106,107],[2584,3194,3337,2438,2030,1809,1118,1013,973,563,543,417,310,328,114],[4181,5165,5399,3945,3284,2927,1809,1639,1575,910,880,711,638,442,443],[6765,8362,8736,6383,5314,4736,2927,2652,2548,1473,1423,1254,1349,752,770],[10946,13511,14135,10328,8598,7663,4736,4300,4123,2383,2303,1965,1987,2101,1221],[17711,21892,22871,16711,13912,12399,7663,6951,6671,3856,3726,3560,3316,3350,3471],[28657,35403,36900,27039,22510,20062,12399,11251,10794,6266,6029,5525,5540,5453,5521],[46368,57295,59771,43750,36422,32461,20062,18202,17465,10102,9755,9075,8850,8520,8630],[75025,92698,96671,70789,58932,52523,32461,29453,28259,16310,15784,14960,14410,14300,13600],[121393,150005,156442,114539,95354,84984,52523,47666,45724,26405,25539,24071,23190,22488,22370],[196418,242811,253113,185328,154286,137507,84984,77119,73983,42715,41323,39031,37600,36600,36500],[317811,393000,399000,299867,249029,222137,137507,125414,120000,69100,66810,63122,60778,59176,57500]]
+FIBGRID_TOP_ROW = {"B": 4, "C": 5, "D": 6, "E": 7, "F": 8, "G": 9, "H": 10, "I": 11,
+                   "J": 12, "K": 13, "L": 14, "M": 15, "N": 16, "O": 17, "P": 18}
+FIBGRID_PROFIT_COLS = ("C", "D", "E", "F", "G")
+
+
+def _fibgrid_val(col_idx: int, row: int):
+    ri = row - FIBGRID_ROW_START
+    if ri < 0 or ri >= len(FIBGRID_GRID):
+        return None
+    if col_idx < 0 or col_idx >= len(FIBGRID_COLS):
+        return None
+    return FIBGRID_GRID[ri][col_idx]
+
+
+def fibgrid_max_bet_units(cap_rows: int) -> int:
+    """許容行内の最大セル値(unit倍率) — 起動ログ/GUI表示用。"""
+    best = 0
+    for ri in range(min(int(cap_rows), len(FIBGRID_GRID))):
+        for v in FIBGRID_GRID[ri]:
+            if v:
+                best = max(best, v)
+    return best
 
 
 # ── BetManager ────────────────────────────────────────────────────────
@@ -287,6 +323,35 @@ class BetManager:
             except Exception:
                 pass
 
+        # フィボグリッド 状態 (mode="fibgrid")
+        # 設定は env が正(GUIプルダウン→childEnv)。state からは位置のみ復元。
+        _fpc = (os.getenv("BACOPY_FIBGRID_PROFIT_COL", "") or "C").strip().upper()
+        self.fib_profit_col: str = _fpc if _fpc in FIBGRID_PROFIT_COLS else "C"
+        try:
+            _fcr = int(float(os.getenv("BACOPY_FIBGRID_CAP_ROWS", "6") or 6))
+        except Exception:
+            _fcr = 6
+        self.fib_cap_rows: int = max(4, min(len(FIBGRID_GRID), _fcr))
+        self.fib_cap_row: int = FIBGRID_ROW_START + self.fib_cap_rows - 1
+        self.fib_col: str = "B"
+        self.fib_row: int = FIBGRID_ROW_START
+        self.fib_in_profit: bool = False
+        self.fib_w: int = 0
+        self.fib_l: int = 0
+        self.fib_loss_streak: int = 0
+        self.fib_ever2: bool = False
+        self.fib_cycle_pnl: float = 0.0
+        self.fib_takes: int = 0   # 利確リセット回数(1勝目/1勝1敗トントン)
+        self.fib_stops: int = 0   # 損切りリセット回数(損切り行超え)
+        if self.mode == "fibgrid":
+            try:
+                logger.info(
+                    f"[FIBGRID] profit_col={self.fib_profit_col} cap_rows={self.fib_cap_rows} "
+                    f"unit=${self.unit} max_bet=${fibgrid_max_bet_units(self.fib_cap_rows) * self.unit:.2f}"
+                )
+            except Exception:
+                pass
+
         # 前回のベット額（結果反映まで保持）
         self._last_bet_amount: float = 0.0
 
@@ -398,6 +463,16 @@ class BetManager:
                 amount = KELLY_CHIP
             if amount > bank:
                 amount = bank
+            if self.loss_cut > 0:
+                remaining_loss = self.loss_cut + self.session_pnl
+                if remaining_loss <= 0:
+                    return 0.0
+                amount = min(amount, remaining_loss)
+            return max(amount, 0.0)
+        elif self.mode == "fibgrid":
+            # フィボグリッド: 現在セル値 × unit。loss_cut残額を超えるBETは行わない。
+            v = _fibgrid_val(FIBGRID_COLS.index(self.fib_col), self.fib_row)
+            amount = (v or 0) * self.unit
             if self.loss_cut > 0:
                 remaining_loss = self.loss_cut + self.session_pnl
                 if remaining_loss <= 0:
@@ -524,12 +599,92 @@ class BetManager:
                 self.dalembertset_marks = []
             self.seq_level = self.dalembertset_level - 1  # 表示用ミラー(0基準)
 
+        # フィボグリッド: 位置更新(トラッカーHTML仕様・BT `_bt_grid_fib_safe.py` と同一ロジック)
+        if self.mode == "fibgrid":
+            _comm = BANKER_COMMISSION if str(side).upper() in ("B", "BANKER") else 1.0
+            self.fib_cycle_pnl += (amount * _comm) if won else (-amount)
+            if not self.fib_in_profit:
+                if won:
+                    _ci = FIBGRID_COLS.index(self.fib_col)
+                    if _fibgrid_val(_ci + 1, self.fib_row) is not None:
+                        self.fib_col = FIBGRID_COLS[_ci + 1]
+                else:
+                    if _fibgrid_val(FIBGRID_COLS.index(self.fib_col), self.fib_row + 1) is not None:
+                        self.fib_row += 1
+                if (not self.fib_in_profit) and self.fib_col == self.fib_profit_col:
+                    self.fib_in_profit = True
+                    self.fib_w = self.fib_l = self.fib_loss_streak = 0
+                    self.fib_ever2 = False
+            else:
+                if won:
+                    self.fib_w += 1
+                    self.fib_loss_streak = 0
+                else:
+                    self.fib_l += 1
+                    self.fib_loss_streak += 1
+                    if _fibgrid_val(FIBGRID_COLS.index(self.fib_col), self.fib_row + 1) is not None:
+                        self.fib_row += 1
+                    _top = FIBGRID_TOP_ROW[self.fib_profit_col]
+                    if self.fib_loss_streak == 2:
+                        self.fib_row = _top
+                        self.fib_ever2 = True
+                    elif self.fib_loss_streak == 3:
+                        self.fib_row = max(_top, self.fib_row - 2)
+                        self.fib_ever2 = True
+                    elif self.fib_loss_streak >= 4:
+                        self.fib_row = max(_top, self.fib_row - 1)
+                        self.fib_ever2 = True
+                # ターン終了(利確)判定: 2連敗未経験=1勝目 or 1勝1敗 / 経験後=勝敗同数(最後が勝ち)
+                if not self.fib_ever2:
+                    if self.fib_w == 1 and self.fib_l in (0, 1):
+                        self._fibgrid_end_turn(stop_loss=False)
+                else:
+                    if self.fib_w > 0 and self.fib_w == self.fib_l and self.fib_loss_streak == 0:
+                        self._fibgrid_end_turn(stop_loss=False)
+            # 損切り行: 許容行を(負けで)超えたら損失確定して起点リセット
+            if self.fib_row > self.fib_cap_row:
+                self._fibgrid_end_turn(stop_loss=True)
+
         # 利確 / 損切判定
         self._check_limits()
 
         # state 保存
         if self.state_path:
             self._save_state()
+
+    def _fibgrid_wins_to_take(self) -> int:
+        """利確確定までの残り最短勝ち数(GUI進行表示用)。
+        通常時 = 利確列までの残り列数 + 利確モードでの1勝。
+        利確モード中 = 1勝(2連敗経験後は勝敗同数に戻すまでの必要勝ち数)。"""
+        if not self.fib_in_profit:
+            return (FIBGRID_COLS.index(self.fib_profit_col) - FIBGRID_COLS.index(self.fib_col)) + 1
+        if not self.fib_ever2:
+            return 1
+        return max(1, self.fib_l - self.fib_w)
+
+    def _fibgrid_end_turn(self, stop_loss: bool = False) -> None:
+        """フィボグリッド: サイクル終了(利確 or 損切り)→起点B4へリセット。"""
+        try:
+            if stop_loss:
+                self.fib_stops += 1
+                logger.info(
+                    f"[FIBGRID] STOP-LOSS reset: cycle_pnl=${self.fib_cycle_pnl:+.2f} "
+                    f"(stops={self.fib_stops} takes={self.fib_takes})"
+                )
+            else:
+                self.fib_takes += 1
+                logger.info(
+                    f"[FIBGRID] TAKE-PROFIT reset: cycle_pnl=${self.fib_cycle_pnl:+.2f} "
+                    f"(takes={self.fib_takes} stops={self.fib_stops})"
+                )
+        except Exception:
+            pass
+        self.fib_cycle_pnl = 0.0
+        self.fib_col = "B"
+        self.fib_row = FIBGRID_ROW_START
+        self.fib_in_profit = False
+        self.fib_w = self.fib_l = self.fib_loss_streak = 0
+        self.fib_ever2 = False
 
     def _check_limits(self) -> None:
         if self.profit_stop > 0 and self.session_pnl >= self.profit_stop:
@@ -559,6 +714,12 @@ class BetManager:
         self.loss_count = 0
         self.b123_step = 0
         self.b123_prev_won = None
+        self.fib_cycle_pnl = 0.0
+        self.fib_col = "B"
+        self.fib_row = FIBGRID_ROW_START
+        self.fib_in_profit = False
+        self.fib_w = self.fib_l = self.fib_loss_streak = 0
+        self.fib_ever2 = False
         self.limit_reached = False
         self.limit_reason = ""
         logger.info("[money] session reset (restart mode)")
@@ -610,6 +771,20 @@ class BetManager:
             "kelly_bankroll": (round(self._kelly_live_bankroll, 2) if self._kelly_live_bankroll > 0
                                else round(self.kelly_bankroll_init + self.session_pnl, 2)) if self.mode == "kelly" else None,
             "kelly_edge": self.kelly_edge if self.mode == "kelly" else None,
+            "fibgrid": {
+                "profit_col": self.fib_profit_col,
+                "cap_rows": self.fib_cap_rows,
+                "col": self.fib_col,
+                "row": self.fib_row,
+                "row_depth": self.fib_row - FIBGRID_ROW_START + 1,
+                "rows_left": max(0, self.fib_cap_row - self.fib_row),
+                "in_profit": self.fib_in_profit,
+                "cycle_pnl": round(self.fib_cycle_pnl, 2),
+                "takes": self.fib_takes,
+                "stops": self.fib_stops,
+                "max_bet": round(fibgrid_max_bet_units(self.fib_cap_rows) * self.unit, 2),
+                "wins_to_take": self._fibgrid_wins_to_take(),
+            } if self.mode == "fibgrid" else None,
         }
 
     # ── 状態保存 ────────────────────────────────────────────────
@@ -644,6 +819,18 @@ class BetManager:
                         "dalembertset_level": self.dalembertset_level,
                         "dalembertset_marks": list(self.dalembertset_marks),
                         "dalembertset_sets": list(self.dalembertset_sets),
+                        "fib_col": self.fib_col,
+                        "fib_row": self.fib_row,
+                        "fib_in_profit": self.fib_in_profit,
+                        "fib_w": self.fib_w,
+                        "fib_l": self.fib_l,
+                        "fib_loss_streak": self.fib_loss_streak,
+                        "fib_ever2": self.fib_ever2,
+                        "fib_cycle_pnl": round(self.fib_cycle_pnl, 4),
+                        "fib_takes": self.fib_takes,
+                        "fib_stops": self.fib_stops,
+                        "fib_profit_col": self.fib_profit_col,
+                        "fib_cap_rows": self.fib_cap_rows,
                         "limit_reached": self.limit_reached,
                         "limit_reason": self.limit_reason,
                     },
@@ -703,6 +890,32 @@ class BetManager:
             self.dalembertset_marks = [m for m in _dm if m in ("O", "X")] if isinstance(_dm, list) else []
             _ds = s.get("dalembertset_sets", []) or []
             self.dalembertset_sets = [x for x in _ds if isinstance(x, dict) and x.get("results")] if isinstance(_ds, list) else []
+            # フィボグリッド: 設定(利確列/損切り行)が前回保存時と同じ場合のみ位置を復元。
+            # 変わっていたら進行中サイクルを破棄して起点から(累計 takes/stops は引き継ぐ)。
+            self.fib_takes = max(0, int(s.get("fib_takes", 0) or 0))
+            self.fib_stops = max(0, int(s.get("fib_stops", 0) or 0))
+            _saved_pc = str(s.get("fib_profit_col", "") or "")
+            _saved_cap = int(s.get("fib_cap_rows", 0) or 0)
+            if _saved_pc == self.fib_profit_col and _saved_cap == self.fib_cap_rows:
+                _fc = str(s.get("fib_col", "B") or "B")
+                _fr = int(s.get("fib_row", FIBGRID_ROW_START) or FIBGRID_ROW_START)
+                if (_fc in FIBGRID_COLS
+                        and FIBGRID_COLS.index(_fc) <= FIBGRID_COLS.index(self.fib_profit_col)
+                        and FIBGRID_ROW_START <= _fr <= self.fib_cap_row
+                        and _fibgrid_val(FIBGRID_COLS.index(_fc), _fr) is not None):
+                    self.fib_col = _fc
+                    self.fib_row = _fr
+                    self.fib_in_profit = bool(s.get("fib_in_profit", False))
+                    self.fib_w = max(0, int(s.get("fib_w", 0) or 0))
+                    self.fib_l = max(0, int(s.get("fib_l", 0) or 0))
+                    self.fib_loss_streak = max(0, int(s.get("fib_loss_streak", 0) or 0))
+                    self.fib_ever2 = bool(s.get("fib_ever2", False))
+                    self.fib_cycle_pnl = float(s.get("fib_cycle_pnl", 0.0) or 0.0)
+            elif self.mode == "fibgrid" and _saved_pc:
+                logger.info(
+                    f"[FIBGRID] config changed ({_saved_pc}/cap{_saved_cap} -> "
+                    f"{self.fib_profit_col}/cap{self.fib_cap_rows}): discard in-progress cycle"
+                )
             self.limit_reached = bool(s.get("limit_reached", False))
             self.limit_reason = str(s.get("limit_reason", ""))
             # 設定は復元しない（GUI の値が正）

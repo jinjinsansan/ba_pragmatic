@@ -442,6 +442,7 @@
                 <option value="kelly">比例（ケリー基準）</option>
                 <option value="b123set">1-2-3×セット（7ハンドで1-2-3・破滅しない）</option>
                 <option value="dalset">ダランベール×セット（7ハンドで±1ユニット）</option>
+                <option value="fibgrid">フィボグリッド（2次元・利確/損切りライン選択）</option>
                 <option value="other">フラット / マーチンゲール / ダランベール</option>
               </select>
               <div id="b123setNote" style="display:none; font-size:11px; color:var(--text-muted); margin-top:3px;">1-2-3打法の上げ方/戻り方を<b>Nハンド(=ターン制)=1セット</b>単位で適用。セット内は固定額。<b>負け越し→1→2→3</b>(step3で更に負け越し→1へ一巡)・<b>勝ち越し→1へ戻す</b>。最大3単位＝<b>絶対に破滅しない</b>。</div>
@@ -481,6 +482,43 @@
               <label>元本（残高の基準 $／ライブ残高が取れれば自動上書き）</label>
               <input type="number" id="inputKellyBankroll" value="1000" min="10" step="10">
               <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">比例(ケリー)＝BET=残高×f。残高に比例するので<b>ゼロにならない＝破滅しない</b>・勝てば複利で増える。エッジ確実な6パターンで使うこと（v4では効かない）。攻撃型はDDが大きい（資産が一時7割減も）ので、まず守備型推奨。</div>
+            </div>
+            <div class="form-group" id="fibgridGroup" style="display:none;">
+              <label>フィボグリッド設定</label>
+              <div style="display:flex; gap:8px;">
+                <div style="flex:1.2;">
+                  <label style="font-size:11px; color:var(--text-muted);">利確ライン</label>
+                  <select id="inputFibProfitCol">
+                    <option value="C">C（最短2勝で利確・発案者標準）</option>
+                    <option value="D">D（最短3勝）</option>
+                    <option value="E">E（最短4勝）</option>
+                    <option value="F">F（最短5勝）</option>
+                    <option value="G">G（最短6勝・原案）</option>
+                  </select>
+                </div>
+                <div style="flex:1.2;">
+                  <label style="font-size:11px; color:var(--text-muted);">損切りライン</label>
+                  <select id="inputFibCapRows">
+                    <option value="6">6行（最安全）</option>
+                    <option value="8">8行</option>
+                    <option value="10">10行</option>
+                    <option value="12">12行</option>
+                    <option value="14">14行</option>
+                    <option value="16">16行（元本大）</option>
+                  </select>
+                </div>
+                <div style="flex:0.8;">
+                  <label style="font-size:11px; color:var(--text-muted);">開始額</label>
+                  <select id="inputFibUnit">
+                    <option value="0.2">$0.2</option>
+                    <option value="0.6">$0.6</option>
+                    <option value="1">$1</option>
+                    <option value="2">$2</option>
+                  </select>
+                </div>
+              </div>
+              <div id="fibgridHint" style="font-size:12px; color:#88bbff; margin-top:4px;"></div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">2次元グリッド（勝ち→右／負け→下・トラッカー式）。<b>利確ライン到達後の処理はどの列でも同一ルール</b>（1勝目 or 1勝1敗→起点リセット／2連敗→列最上段で続行）。列で変わるのは<b>起点からの距離＝利確までに必要な勝ち数</b>だけ。<b style="color:#ff8888;">損切りラインを負けで超えたら損失確定→起点リセット</b>（安全弁）。損切りを深くするほど発動は稀になるが1回が大きく、必要元本が増える。上の損切り($)設定も全モード共通で併用可。</div>
             </div>
             <div class="form-group" id="seqTurnsGroup">
               <label>ターン制（セット長）</label>
@@ -538,6 +576,7 @@
               <option value="bet123">bet123</option>
               <option value="bet123set">bet123set</option>
               <option value="dalembertset">dalembertset</option>
+              <option value="fibgrid">fibgrid</option>
             </select>
             <!-- LIVE Mode は撤去: 受け子は常に実BET。ドライランは管理者用 .env
                  (BACOPY_DUAL_DRYRUN=1) のみ。チェック忘れで賭けない事故を防ぐ。

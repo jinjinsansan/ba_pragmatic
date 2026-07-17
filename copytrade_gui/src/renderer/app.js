@@ -479,7 +479,11 @@ async function startBotFlow({ auto = false } = {}) {
     live: isDLAssist ? true : (settings.dual_live || false),
     // 自動フラットBET ON時は money mode を flat に強制(自動×SEQ=破産)。
     money_mode: settings.dga_auto_bet ? 'flat' : (settings.dual_money_mode || 'flat'),
-    money_unit: settings.dual_unit || 100,
+    // フィボグリッドは専用の開始額(unit=グリッドセル値の倍率)を使う
+    money_unit: (!settings.dga_auto_bet && settings.dual_money_mode === 'fibgrid')
+      ? (settings.fib_unit || 0.2) : (settings.dual_unit || 100),
+    fib_profit_col: settings.fib_profit_col || 'C',
+    fib_cap_rows: settings.fib_cap_rows || 6,
     seq_turns: settings.seq_turns === 5 ? 5 : 7,
     dual_mode: settings.dual_mode || 'v3',
     safety_mode: !!settings.safety_mode,
@@ -785,6 +789,9 @@ const DEFAULT_SETTINGS = {
   platform: 'stake',
   seq_shape: 'attack',
   kelly_bankroll: 1000,
+  fib_profit_col: 'C',
+  fib_cap_rows: 6,
+  fib_unit: 0.2,
   dual_live: false,
   dual_on_limit: 'stop',
   manual_assist_auto_click: false,
@@ -855,6 +862,9 @@ setTimeout(() => {
   // MONEY MODE: SEQ / 非SEQ の二段ゲート
   $('#inputMoneyType')?.addEventListener('change', () => { _applyMoneyTypeVisibility(); _commitMoneyMode(); });
   $('#inputSeqVariant')?.addEventListener('change', () => { _commitMoneyMode(); _applyMoneyTypeVisibility(); });
+  $('#inputFibProfitCol')?.addEventListener('change', _updateFibgridHint);
+  $('#inputFibCapRows')?.addEventListener('change', _updateFibgridHint);
+  $('#inputFibUnit')?.addEventListener('change', _updateFibgridHint);
   $('#inputFlatVariant')?.addEventListener('change', _commitMoneyMode);
   // 逆張り(reverse): ライブ stdin で即時 ON/OFF。★設定保存しない=非永続(再起動でOFF)。
   // ★バナーは楽観表示しない=エンジンへ送るだけ。点灯はエンジンの reverse_status 確定で行う
@@ -900,6 +910,28 @@ setTimeout(() => {
   });
 }, 100);
 
+// フィボグリッド: 損切りライン(cap)ごとの最大BET(unit倍率・グリッドから厳密値)と、
+// (利確列×cap)ごとの推奨元本($0.2基準・不調49%×5000手MCのp99DD×1.2)。
+// 出典=`FIB_GRID_SAFE_BT_2026-07-17.md` 30組み合わせマトリクスBT。開始額で比例スケール。
+const FIBGRID_MAXBET_UNITS = { 6: 10, 8: 27, 10: 71, 12: 186, 14: 487, 16: 1275 };
+const FIBGRID_BANKROLL_02 = {
+  C6: 210, C8: 260, C10: 300, C12: 320, C14: 390, C16: 550,
+  D6: 270, D8: 380, D10: 470, D12: 550, D14: 690, D16: 1100,
+  E6: 310, E8: 460, E10: 590, E12: 720, E14: 860, E16: 1400,
+  F6: 310, F8: 480, F10: 700, F12: 910, F14: 1130, F16: 1660,
+  G6: 320, G8: 520, G10: 850, G12: 1130, G14: 1580, G16: 2590,
+};
+function _updateFibgridHint() {
+  const pc = $('#inputFibProfitCol')?.value || 'C';
+  const cap = parseInt($('#inputFibCapRows')?.value || '6', 10);
+  const unit = parseFloat($('#inputFibUnit')?.value || '0.2');
+  const scale = unit / 0.2;
+  const mb = (FIBGRID_MAXBET_UNITS[cap] || 10) * unit;
+  const bk = Math.round((FIBGRID_BANKROLL_02[pc + String(cap)] || 210) * scale);
+  const el = $('#fibgridHint');
+  if (el) el.textContent = `▶ この設定: 最大BET $${mb.toFixed(2)} ／ 推奨元本 $${bk}〜`;
+}
+
 // MONEY MODE 二段ゲート: 「SEQ」選択時はスモールSEQ(0.2/1/3/6)、非SEQ時は
 // フラット/マーチン/ダランベール＋ユニット額入力。確定値は隠し select
 // #inputDualMoneyMode に集約し、保存/読込ロジックを壊さない。
@@ -907,7 +939,10 @@ function _applyMoneyTypeVisibility() {
   const t = $('#inputMoneyType')?.value || 'seq';
   const seq = t === 'seq', kelly = t === 'kelly', other = t === 'other';
   const b123set = t === 'b123set', dalset = t === 'dalset';
+  const fibgrid = t === 'fibgrid';
   const setmode = b123set || dalset;  // ×セット系(ターン制+ユニットを共有)
+  if ($('#fibgridGroup')) $('#fibgridGroup').style.display = fibgrid ? '' : 'none';
+  if (fibgrid) _updateFibgridHint();
   if ($('#seqVariantGroup')) $('#seqVariantGroup').style.display = seq ? '' : 'none';
   // ターン制(セット長 5/7)は SEQ と ×セット系 で使う
   if ($('#seqTurnsGroup')) $('#seqTurnsGroup').style.display = (seq || setmode) ? '' : 'none';
@@ -930,6 +965,7 @@ function _commitMoneyMode() {
   else if (t === 'kelly') val = 'kelly';
   else if (t === 'b123set') val = 'bet123set';
   else if (t === 'dalset') val = 'dalembertset';
+  else if (t === 'fibgrid') val = 'fibgrid';
   else val = ($('#inputFlatVariant')?.value || 'flat');
   if ($('#inputDualMoneyMode')) $('#inputDualMoneyMode').value = val;
 }
@@ -939,10 +975,11 @@ function _loadMoneyModeUI(mode) {
   const isKelly = m === 'kelly';
   const isB123set = m === 'bet123set';
   const isDalset = m === 'dalembertset';
+  const isFibgrid = m === 'fibgrid';
   if ($('#inputMoneyType')) $('#inputMoneyType').value = isKelly ? 'kelly'
-    : (isSeq ? 'seq' : (isB123set ? 'b123set' : (isDalset ? 'dalset' : 'other')));
+    : (isSeq ? 'seq' : (isB123set ? 'b123set' : (isDalset ? 'dalset' : (isFibgrid ? 'fibgrid' : 'other'))));
   if (isSeq) { if ($('#inputSeqVariant')) $('#inputSeqVariant').value = m; }
-  else if (!isKelly && !isB123set && !isDalset) { if ($('#inputFlatVariant')) $('#inputFlatVariant').value = m; }
+  else if (!isKelly && !isB123set && !isDalset && !isFibgrid) { if ($('#inputFlatVariant')) $('#inputFlatVariant').value = m; }
   if ($('#inputDualMoneyMode')) $('#inputDualMoneyMode').value = m;
   _applyMoneyTypeVisibility();
 }
@@ -1236,6 +1273,10 @@ $('#btnSettings')?.addEventListener('click', async () => {
   if ($('#inputSeqTurns')) $('#inputSeqTurns').value = String(s.seq_turns === 5 ? 5 : 7);
   if ($('#inputSeqShape')) $('#inputSeqShape').value = (['balance','defense'].includes(s.seq_shape) ? s.seq_shape : 'attack');
   if ($('#inputKellyBankroll') && s.kelly_bankroll) $('#inputKellyBankroll').value = s.kelly_bankroll;
+  if ($('#inputFibProfitCol')) $('#inputFibProfitCol').value = (['C','D','E','F','G'].includes(s.fib_profit_col) ? s.fib_profit_col : 'C');
+  if ($('#inputFibCapRows')) $('#inputFibCapRows').value = String([6,8,10,12,14,16].includes(Number(s.fib_cap_rows)) ? Number(s.fib_cap_rows) : 6);
+  if ($('#inputFibUnit')) $('#inputFibUnit').value = String([0.2,0.6,1,2].includes(Number(s.fib_unit)) ? Number(s.fib_unit) : 0.2);
+  _updateFibgridHint();
   if ($('#inputPlatform')) $('#inputPlatform').value = (s.platform === 'hh88') ? 'hh88' : 'stake';
   if ($('#inputSafetyMode')) $('#inputSafetyMode').value = s.safety_mode ? 'on' : 'off';
   // hh88 選択時のみ URL コピー行を表示し、コピーボタン/切替を配線(冪等)。
@@ -1438,6 +1479,9 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     seq_turns: parseInt($('#inputSeqTurns')?.value || '7', 10),
     seq_shape: $('#inputSeqShape')?.value || 'attack',
     kelly_bankroll: parseFloat($('#inputKellyBankroll')?.value || 1000),
+    fib_profit_col: $('#inputFibProfitCol')?.value || 'C',
+    fib_cap_rows: parseInt($('#inputFibCapRows')?.value || '6', 10),
+    fib_unit: parseFloat($('#inputFibUnit')?.value || '0.2'),
     dual_mode: $('#inputDualMode')?.value || 'v3',
     safety_mode: $('#inputSafetyMode')?.value === 'on',
     platform: $('#inputPlatform')?.value || 'stake',
@@ -1867,6 +1911,41 @@ function renderBet123SetPanel(ms) { _renderSetModePanel(ms, 'bet123set'); }
 
 function renderDalembertSetPanel(ms) { _renderSetModePanel(ms, 'dalembertset'); }
 
+// フィボグリッド: 現在位置(列+行)・NEXT・損切りまでの残り行・利確/損切り回数を表示。
+// 「あと何行で損切りか」を常時見せるのが眼目(頻繁な小損切りは正常運転)。
+function renderFibgridPanel(ms) {
+  const fg = (ms && typeof ms.fibgrid === 'object' && ms.fibgrid) ? ms.fibgrid : {};
+  const col = String(fg.col || 'B');
+  const row = Number(fg.row) || 4;
+  const rowsLeft = Math.max(0, Number(fg.rows_left) || 0);
+  const takes = Number(fg.takes) || 0;
+  const stops = Number(fg.stops) || 0;
+  const cyclePnl = Number(fg.cycle_pnl) || 0;
+  const nextBet = Number(ms.next_bet) || 0;
+  const inProfit = !!fg.in_profit;
+  const winsToTake = Number.isFinite(Number(fg.wins_to_take)) ? Number(fg.wins_to_take) : null;
+  _setSigPanel(
+    'FIB-GRID',
+    ['位置', 'NEXT $', '利確迄', '損切迄'],
+    `利確${fg.profit_col || '?'}列・損切${fg.cap_rows || '?'}行（勝→右／負→下・最大BET $${Number(fg.max_bet || 0).toFixed(2)}）`
+  );
+  const sc = $('#sigCycle'); if (sc) { sc.textContent = col + row + (inProfit ? '★' : ''); sc.style.color = inProfit ? '#ffd257' : ''; }
+  const sr = $('#sigRatio'); if (sr) sr.textContent = _fmtAmt(nextBet);
+  const sd = $('#sigDrift'); if (sd) { sd.textContent = winsToTake === null ? '—' : `あと${winsToTake}勝`; sd.style.color = winsToTake === 1 ? '#ffd257' : '#7fd4a0'; }
+  const srd = $('#sigRound'); if (srd) { srd.textContent = `あと${rowsLeft}行`; srd.style.color = rowsLeft <= 1 ? '#ff3366' : (rowsLeft <= 3 ? '#e0a060' : '#00ff88'); }
+  const el = $('#sigStream');
+  if (el) {
+    el.innerHTML = '';
+    const span = document.createElement('span');
+    span.textContent = `サイクルPnL ${cyclePnl >= 0 ? '+' : ''}$${cyclePnl.toFixed(2)}`
+      + (inProfit ? '　|　★利確モード（1勝 or トントンで確定）' : `　|　利確ライン${fg.profit_col || '?'}まであと${winsToTake === null ? '?' : Math.max(0, winsToTake - 1)}列`)
+      + `　|　利確${takes}回・損切${stops}回　|　セッションPnL ${Number(ms.session_pnl) >= 0 ? '+' : ''}$${Number(ms.session_pnl || 0).toFixed(2)}`;
+    span.style.color = '#9fb4c8';
+    span.style.fontSize = '12px';
+    el.appendChild(span);
+  }
+}
+
 function applyMoneyStatusToSignalPanel(ms) {
   if (!ms || typeof ms !== 'object') return;
   updateNextBetCard(ms);
@@ -1881,6 +1960,10 @@ function applyMoneyStatusToSignalPanel(ms) {
   }
   if (mode === 'dalembertset') {
     renderDalembertSetPanel(ms);
+    return;
+  }
+  if (mode === 'fibgrid') {
+    renderFibgridPanel(ms);
     return;
   }
   if (mode === 'martingale' || mode === 'dalembert' || mode === 'bet123') {
