@@ -254,6 +254,11 @@ def _is_unsupported_table_name(name: str) -> bool:
         or "mega baccarat" in n
         or "big small" in n
         or "amazing baccarat" in n
+        # Baccarat 3: GUI flash too slow to bet in time -> excluded from NOW.
+        # Prefix match, not substring: "baccarat 3" in n would also hit
+        # Chinese/Japanese Speed Baccarat 3 (callers pass name-first strings).
+        or n == "baccarat 3"
+        or n.startswith("baccarat 3 ")
     )
 
 
