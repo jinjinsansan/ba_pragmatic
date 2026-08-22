@@ -225,7 +225,10 @@ function main() {
     // human-eyes manual betting; the engine only sizes bets + tracks SEQ + bills.
     BACOPY_BROWSER: 'chrome_attach',
     BACOPY_CHROME_CDP_URL: 'http://127.0.0.1:9222',
-    BACOPY_LOBBY_URL: 'https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat',
+    // ロビー直リンクは Chrome 冷間起動で "Failed to start third party session" が
+    // 必発する(2026-07-13 全受け子共通と確定)ため casino/home から入る。
+    BACOPY_LOBBY_URL: 'https://stake.com/ja/casino/home',
+    BACOPY_MULTI_DEADLOCK_RELOAD_ENABLE: '0',
     BACOPY_MANUAL_NO_AUTOCLICK: '1',
     BACOPY_ASSIST_FOCUS_HOLD_SEC: '80',
     BACOPY_NOW_LOCK_MAX_SEC: '80',
