@@ -1,0 +1,57 @@
+{
+  "user_id": "vps-test",
+  "chip_base": 1.0,
+  "profit_stop": 50,
+  "loss_cut": 200,
+  "sets": [
+    {
+      "set_index": 1,
+      "results": "OXXOXOX",
+      "wins": 3,
+      "losses": 4,
+      "overshoot": 1,
+      "slashed": false,
+      "used_unit_idx": 0,
+      "next_unit_idx": 1,
+      "set_profit": -1,
+      "cumulative_profit": -1
+    },
+    {
+      "set_index": 2,
+      "results": "OXOOXXX",
+      "wins": 3,
+      "losses": 4,
+      "overshoot": 2,
+      "slashed": true,
+      "used_unit_idx": 1,
+      "next_unit_idx": 2,
+      "set_profit": -2,
+      "cumulative_profit": -3
+    },
+    {
+      "set_index": 3,
+      "results": "XXOXOOO",
+      "wins": 4,
+      "losses": 3,
+      "overshoot": 1,
+      "slashed": false,
+      "used_unit_idx": 2,
+      "next_unit_idx": 1,
+      "set_profit": 3,
+      "cumulative_profit": 0
+    }
+  ],
+  "current_turns": [
+    "X",
+    "O"
+  ],
+  "total_o": 11,
+  "total_x": 12,
+  "session_count": 0,
+  "total_bets": 27,
+  "total_wins": 11,
+  "total_losses": 12,
+  "total_ties": 4,
+  "created_at": "2026-04-05T15:06:44.771719Z",
+  "updated_at": "2026-04-05T15:09:03.015545Z"
+}

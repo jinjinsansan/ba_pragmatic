@@ -1,0 +1,69 @@
+{
+  "updated_at": "2026-08-22T08:19:27.114865Z",
+  "patterns": [
+    "bline|telecho|B",
+    "niconico|dragon|B",
+    "niconico|nikoichi|B",
+    "niconico|nikoichi|P",
+    "sansan|telecho|P",
+    "telecho|nikoichi|B",
+    "telecho|nikoichi|P",
+    "telecho|telecho|B"
+  ],
+  "signals": 35888,
+  "resolved": 35856,
+  "wins": 16433,
+  "losses": 16009,
+  "ties": 3414,
+  "pnl": -274.20000000011015,
+  "per_pattern": {
+    "telecho|telecho|B": {
+      "bets": 5210,
+      "wins": 2389,
+      "losses": 2316,
+      "ties": 505
+    },
+    "bline|telecho|B": {
+      "bets": 9791,
+      "wins": 4517,
+      "losses": 4369,
+      "ties": 905
+    },
+    "niconico|dragon|B": {
+      "bets": 2690,
+      "wins": 1236,
+      "losses": 1210,
+      "ties": 244
+    },
+    "sansan|telecho|P": {
+      "bets": 396,
+      "wins": 178,
+      "losses": 189,
+      "ties": 29
+    },
+    "telecho|nikoichi|B": {
+      "bets": 2738,
+      "wins": 1298,
+      "losses": 1175,
+      "ties": 265
+    },
+    "telecho|nikoichi|P": {
+      "bets": 2777,
+      "wins": 1244,
+      "losses": 1259,
+      "ties": 274
+    },
+    "niconico|nikoichi|B": {
+      "bets": 845,
+      "wins": 378,
+      "losses": 382,
+      "ties": 85
+    },
+    "niconico|nikoichi|P": {
+      "bets": 884,
+      "wins": 406,
+      "losses": 385,
+      "ties": 93
+    }
+  }
+}

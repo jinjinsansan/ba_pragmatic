@@ -1,0 +1,43 @@
+{
+  "name": "valhalla-ii",
+  "version": "0.1.0",
+  "description": "Valhalla II — Automated Trading Bot",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder"
+  },
+  "author": "",
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "electron": "^41.1.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.valhalla2.bot",
+    "productName": "Valhalla II",
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "directories": {
+      "output": "dist"
+    },
+    "extraResources": [
+      {
+        "from": "../marubatsu_bet.py",
+        "to": "agent/"
+      },
+      {
+        "from": "../marubatsu_strategy.py",
+        "to": "agent/"
+      },
+      {
+        "from": "../executor.py",
+        "to": "agent/"
+      }
+    ]
+  }
+}

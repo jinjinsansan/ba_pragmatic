@@ -1,0 +1,18 @@
+{
+  "mode": "flat",
+  "unit": 100.0,
+  "profit_stop": 0.0,
+  "loss_cut": 0.0,
+  "on_limit": "stop",
+  "session_pnl": -7245.0,
+  "total_bets": 20785,
+  "total_wins": 9515,
+  "total_losses": 9308,
+  "total_ties": 1962,
+  "seq_level": 0,
+  "seq7_sets": [],
+  "seq7_current_turns": [],
+  "loss_count": 0,
+  "limit_reached": false,
+  "limit_reason": ""
+}

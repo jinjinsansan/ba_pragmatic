@@ -1,0 +1,19 @@
+[Unit]
+Description=LAPLACE2 Pragmatic Play Baccarat Data Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=laplace
+Group=laplace
+WorkingDirectory=/opt/laplace2
+ExecStart=/usr/bin/xvfb-run -a /opt/laplace2/.venv/bin/python /opt/laplace2/collector_pragmatic.py --headless
+Restart=always
+RestartSec=30
+StandardOutput=append:/opt/laplace2/collector_pragmatic.log
+StandardError=append:/opt/laplace2/collector_pragmatic.log
+Environment=DISPLAY=:99
+
+[Install]
+WantedBy=multi-user.target

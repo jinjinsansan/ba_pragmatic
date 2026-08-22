@@ -1,0 +1,81 @@
+2026-04-15 03:44:28,998 [httpx] INFO: HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 400 Bad Request"
+2026-04-15 03:44:28,998 [baccarat.ai_vision] WARNING: [ai_vision:shuffle] API call failed: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Ca4A7soBgZiCKVog8ShbU'}
+2026-04-15 03:44:28,999 [baccarat.executor] INFO: $1 BANKER BETします
+2026-04-15 03:44:28,999 [baccarat.executor] INFO: チップ計画: [(1, 1)] (1クリック)
+2026-04-15 03:44:29,713 [baccarat.executor] INFO: チップ$1選択OK
+2026-04-15 03:44:35,007 [baccarat.executor] WARNING: BET受理確認タイムアウト ? クリック成功のため受理とみなす
+2026-04-15 03:44:35,007 [baccarat.executor] INFO: 結果を待っています...
+2026-04-15 03:44:35,010 [baccarat.game_ws] INFO: WS: CLIENT_PRESSED_ON_BETS_OUT_OF_BETTING_TIME status=
+2026-04-15 03:44:35,093 [baccarat.executor] INFO: ディーリング中...
+2026-04-15 03:44:48,227 [baccarat.scraper] INFO: WebSocket接続検出: wss://toka-mdp-e01.egcvi.com/app/30/thaim3_bs_hd/websocketstream2?vc=h264&ac=opus&videoSessionId=tvbdokjnl43arjcl-tvbdok
+2026-04-15 03:44:48,840 [baccarat.game_ws] INFO: WS: CLIENT_BET_ACCEPTED status=Betting
+2026-04-15 03:44:49,434 [baccarat.executor] INFO: ビーズロード結果検出: PLAYER (diff='P')
+2026-04-15 03:44:49,736 [baccarat.executor] INFO: 残高変化: $4663.37 → $4663.37 (差$+0.00, BET$1)
+2026-04-15 03:44:49,736 [baccarat.executor] WARNING: 残高変化なし AND BET後Settled未受信 (settled_seen=False, status=Betting) ? BET未受理 (Tie誤判定を回避)
+2026-04-15 03:44:49,841 [baccarat.executor] INFO: 結果検出: PLAYER (ws=None, bal=None, dom=None) 残高: $4663.37
+2026-04-15 03:44:49,841 [baccarat.marubatsu_bet] INFO: 結果: PLAYER → ? (残高$4663.37)
+2026-04-15 03:44:51,602 [baccarat.game_ws] INFO: BETフェーズを待機中...
+2026-04-15 03:44:51,602 [baccarat.game_ws] INFO: BETフェーズ開始 (WS検出)
+2026-04-15 03:44:51,602 [baccarat.marubatsu_bet] INFO: BET: $1 BANKER (SEQ[0]=1, Set#1 Turn2/5)
+2026-04-15 03:44:52,246 [httpx] INFO: HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 400 Bad Request"
+2026-04-15 03:44:52,247 [baccarat.ai_vision] WARNING: [ai_vision:shuffle] API call failed: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Ca4A9bcADsr3i1voBXsiH'}
+2026-04-15 03:44:52,247 [baccarat.executor] INFO: $1 BANKER BETします
+2026-04-15 03:44:52,247 [baccarat.executor] INFO: チップ計画: [(1, 1)] (1クリック)
+2026-04-15 03:44:53,258 [baccarat.executor] INFO: チップ$1選択OK
+2026-04-15 03:44:58,553 [baccarat.executor] WARNING: BET受理確認タイムアウト ? クリック成功のため受理とみなす
+2026-04-15 03:44:58,554 [baccarat.executor] INFO: 結果を待っています...
+2026-04-15 03:44:58,561 [baccarat.game_ws] INFO: WS: CLIENT_BET_CHIP status=
+2026-04-15 03:44:58,593 [baccarat.game_ws] INFO: WS: CLIENT_BALANCE_UPDATED status=
+2026-04-15 03:44:58,594 [baccarat.game_ws] INFO: WS: CLIENT_BET_ACCEPTED status=Accepted
+2026-04-15 03:44:58,665 [baccarat.executor] INFO: ディーリング中...
+2026-04-15 03:45:03,618 [baccarat.game_ws] INFO: WS: CLIENT_BET_ACCEPTED status=Settled
+2026-04-15 03:45:03,618 [baccarat.game_ws] INFO: Settled confirmed={'Banker': 1} balance=4662.37
+2026-04-15 03:45:04,996 [baccarat.game_ws] INFO: WS: CLIENT_BET_ACCEPTED status=Settled
+2026-04-15 03:45:04,997 [baccarat.game_ws] INFO: Settled confirmed={'Banker': 1} balance=4662.37
+2026-04-15 03:45:12,269 [baccarat.game_ws] INFO: WS: CLIENT_BALANCE_UPDATED status=
+2026-04-15 03:45:12,271 [baccarat.game_ws] INFO: WS: CLIENT_BET_ACCEPTED status=Betting
+2026-04-15 03:45:12,810 [baccarat.executor] INFO: ビーズロード結果検出: PLAYER (diff='P')
+2026-04-15 03:45:13,111 [baccarat.executor] INFO: 残高変化: $4663.37 → $4662.37 (差$-1.00, BET$1)
+2026-04-15 03:45:13,192 [baccarat.executor] INFO: 結果検出: PLAYER (ws=None, bal=banker, dom=None) 残高: $4662.37
+2026-04-15 03:45:13,192 [baccarat.marubatsu_bet] INFO: 結果: PLAYER → ? (残高$4662.37)
+2026-04-15 03:45:14,405 [valhalla.agent] INFO: [pnl] session_open_balance initialized: $4662.37
+2026-04-15 03:45:14,406 [valhalla.agent] INFO: [pnl] daily_open initialized: $4662.37 (2026-04-15)
+2026-04-15 03:45:15,079 [baccarat.game_ws] INFO: BETフェーズを待機中...
+2026-04-15 03:45:15,079 [baccarat.game_ws] INFO: BETフェーズ開始 (WS検出)
+2026-04-15 03:45:15,080 [baccarat.marubatsu_bet] INFO: BET: $1 BANKER (SEQ[0]=1, Set#1 Turn3/5)
+2026-04-15 03:45:15,906 [httpx] INFO: HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 400 Bad Request"
+2026-04-15 03:45:15,907 [baccarat.ai_vision] WARNING: [ai_vision:shuffle] API call failed: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Ca4ABLcpUDSMrgeYecgEQ'}
+2026-04-15 03:45:15,907 [baccarat.executor] INFO: $1 BANKER BETします
+2026-04-15 03:45:15,907 [baccarat.executor] INFO: チップ計画: [(1, 1)] (1クリック)
+2026-04-15 03:45:16,907 [baccarat.executor] INFO: チップ$1選択OK
+2026-04-15 03:45:22,187 [baccarat.executor] WARNING: BET受理確認タイムアウト ? クリック成功のため受理とみなす
+2026-04-15 03:45:22,188 [baccarat.executor] INFO: 結果を待っています...
+2026-04-15 03:45:22,194 [baccarat.game_ws] INFO: WS: CLIENT_BET_CHIP status=
+2026-04-15 03:45:22,239 [baccarat.game_ws] INFO: WS: CLIENT_BALANCE_UPDATED status=
+2026-04-15 03:45:22,240 [baccarat.game_ws] INFO: WS: CLIENT_BET_ACCEPTED status=Accepted
+2026-04-15 03:45:22,297 [baccarat.executor] INFO: ディーリング中...
+2026-04-15 03:45:28,525 [valhalla.agent] INFO: [hb] alive mode=counter
+2026-04-15 03:45:32,917 [baccarat.game_ws] INFO: WS: CLIENT_BET_ACCEPTED status=Settled
+2026-04-15 03:45:32,917 [baccarat.game_ws] INFO: Settled confirmed={'Banker': 1} balance=4661.37
+2026-04-15 03:45:34,498 [baccarat.game_ws] INFO: WS: CLIENT_BET_ACCEPTED status=Settled
+2026-04-15 03:45:34,498 [baccarat.game_ws] INFO: Settled confirmed={'Banker': 1} balance=4661.37
+2026-04-15 03:45:39,379 [baccarat.game_ws] INFO: WS: CLIENT_BALANCE_UPDATED status=
+2026-04-15 03:45:39,379 [baccarat.game_ws] INFO: WS: CLIENT_BET_ACCEPTED status=Betting
+2026-04-15 03:45:39,916 [baccarat.executor] INFO: ビーズロード結果検出: PLAYER (diff='P')
+2026-04-15 03:45:40,216 [baccarat.executor] INFO: 残高変化: $4662.37 → $4661.37 (差$-1.00, BET$1)
+2026-04-15 03:45:40,316 [baccarat.executor] INFO: 結果検出: PLAYER (ws=None, bal=banker, dom=None) 残高: $4661.37
+2026-04-15 03:45:40,316 [baccarat.marubatsu_bet] INFO: 結果: PLAYER → ? (残高$4661.37)
+2026-04-15 03:45:41,514 [baccarat.scraper] INFO: WebSocket接続検出: wss://toka-mdp-e01.egcvi.com/app/30/thaim3_bs_hd/websocketstream2?vc=h264&ac=opus&videoSessionId=tvbdokjnl43arjcl-tvbdok
+2026-04-15 03:45:42,042 [baccarat.game_ws] INFO: BETフェーズを待機中...
+2026-04-15 03:45:42,043 [baccarat.game_ws] INFO: BETフェーズ開始 (WS検出)
+2026-04-15 03:45:42,043 [baccarat.marubatsu_bet] INFO: BET: $1 BANKER (SEQ[0]=1, Set#1 Turn4/5)
+2026-04-15 03:45:42,835 [httpx] INFO: HTTP Request: POST https://api.anthropic.com/v1/messages "HTTP/1.1 400 Bad Request"
+2026-04-15 03:45:42,836 [baccarat.ai_vision] WARNING: [ai_vision:shuffle] API call failed: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Ca4ADKi3qdxoh9rDmJQEn'}
+2026-04-15 03:45:42,836 [baccarat.executor] INFO: $1 BANKER BETします
+2026-04-15 03:45:42,837 [baccarat.executor] INFO: チップ計画: [(1, 1)] (1クリック)
+2026-04-15 03:45:43,866 [baccarat.executor] INFO: チップ$1選択OK
+2026-04-15 03:45:49,123 [baccarat.executor] WARNING: BET受理確認タイムアウト ? クリック成功のため受理とみなす
+2026-04-15 03:45:49,124 [baccarat.executor] INFO: 結果を待っています...
+2026-04-15 03:45:49,131 [baccarat.game_ws] INFO: WS: CLIENT_BET_CHIP status=
+2026-04-15 03:45:49,195 [baccarat.game_ws] INFO: WS: CLIENT_BALANCE_UPDATED status=
+2026-04-15 03:45:49,195 [baccarat.game_ws] INFO: WS: CLIENT_BET_ACCEPTED status=Accepted

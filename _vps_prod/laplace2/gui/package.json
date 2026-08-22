@@ -1,0 +1,63 @@
+{
+  "name": "laplace2-gui",
+  "version": "2.0.0",
+  "description": "LAPLACE2 — Pragmatic Play Baccarat Strategy Client (GUI)",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "npm run prepare:default && electron-builder --dir --config.win.signAndEditExecutable=false",
+    "build:installer": "npm run prepare:default && electron-builder --win nsis --config.win.signAndEditExecutable=false",
+    "prepare:default": "node scripts/prepare-user-build.js --default",
+    "publish": "electron-builder --win nsis --publish=always --config.win.signAndEditExecutable=false",
+    "build:prod": "node scripts/build-prod.js && electron-builder --dir --config.win.signAndEditExecutable=false --config.files=\"src_prod/**/*\" --config.directories.output=dist_prod",
+    "prepare:user": "node scripts/prepare-user-build.js",
+    "build:user": "node scripts/build-prod.js && electron-builder --win nsis --config.win.signAndEditExecutable=false --config.files=\"src_prod/**/*\" --config.directories.output=dist_user"
+  },
+  "author": "",
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "electron": "^41.1.1",
+    "electron-builder": "^25.1.8",
+    "reflect-metadata": "^0.2.2"
+  },
+  "build": {
+    "appId": "ai.laplace2.client",
+    "productName": "LAPLACE2",
+    "asar": true,
+    "compression": "store",
+    "win": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "../builds/exe/laplace_client_unbranded",
+        "to": "engine"
+      },
+      {
+        "from": "build_staging",
+        "to": ".",
+        "filter": ["**/*", "!build_meta.json"]
+      }
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "user_id": "goldbenchan@gmail.com",
+  "chip_base": 1.0,
+  "profit_stop": 30,
+  "loss_cut": 6000,
+  "sets": [],
+  "current_turns": [],
+  "total_o": 0,
+  "total_x": 0,
+  "session_count": 0,
+  "total_bets": 7,
+  "total_wins": 0,
+  "total_losses": 0,
+  "total_ties": 7,
+  "created_at": "2026-04-14T16:53:36.438442Z",
+  "updated_at": "2026-04-14T16:57:01.090084Z"
+}

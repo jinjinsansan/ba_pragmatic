@@ -1,0 +1,21 @@
+{
+  "users": {
+    "testuser": {
+      "user_id": "testuser",
+      "bot_price": 1000.0,
+      "bot_paid": false,
+      "balance": 0.0,
+      "total_charged": 0.0,
+      "profit_share_rate": 0.2,
+      "carry_loss": 0.0,
+      "is_free": false,
+      "password": "test123",
+      "grace_deadline": null,
+      "suspended": false,
+      "charges": [],
+      "deductions": [],
+      "created_at": "2026-04-06T11:52:42.210623+09:00",
+      "updated_at": "2026-04-06T11:52:42.210636+09:00"
+    }
+  }
+}

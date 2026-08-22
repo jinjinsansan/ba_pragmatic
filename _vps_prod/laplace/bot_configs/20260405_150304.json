@@ -1,0 +1,10 @@
+{
+  "user_id": "vps-test",
+  "target_table_name": "Japanese Speed Baccarat A",
+  "dry_run": true,
+  "chip_base": 1.0,
+  "profit_stop": 50,
+  "loss_cut": 200,
+  "resume_session": false,
+  "run_id": "20260405_150304"
+}

@@ -1,0 +1,23 @@
+[Unit]
+Description=LAPLACE2 Pragmatic Play Data Collector (WS monitoring)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=laplace
+Group=laplace
+WorkingDirectory=/opt/laplace2/monitor
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONIOENCODING=utf-8"
+ExecStart=/opt/laplace/.venv/bin/python /opt/laplace2/monitor/run_pragmatic_collector.py
+Restart=always
+RestartSec=15
+StandardOutput=append:/opt/laplace2/monitor/pragmatic_collector_stdout.log
+StandardError=append:/opt/laplace2/monitor/pragmatic_collector_stdout.log
+KillSignal=SIGTERM
+TimeoutStopSec=30
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
