@@ -89,6 +89,26 @@ Stakeログイン不要・**ブラウザ不要**)に切り替え済み。
 - SEQ の `loss_cut=0` は **user04 全損の直接原因**。ゼロで配るな
 - 受け子ごとの `bc` BETコード違い(Banker10/Player11)は env 化済み
 
+### 3-4. `.gitignore` の `_*.py` が保全を取りこぼす
+
+`.gitignore:46` に **`_*.py`** ルールがある。`_` 始まりのファイルを全て除外するため、
+`git add _vps_prod` では **240本中209本しか入らなかった**(2026-08-22に発覚→`git add -f` で解決)。
+
+取りこぼしていたのは全て稼働中のスクリプトだった:
+- `_vps_block_watch.py` … ★root crontab に登録 (`17 * * * *`)
+- `_card_analysis_v2_testB.py` … ★毎朝の定例「カード判定して」で使用
+- `_now_density_prereg_watch.py` … NOW密度の事前登録監視
+- `_card_*.py` 8本 / `_bt_*.py` 7本 / `_v4_*.py` 4本 ほか
+
+このリポジトリはルート直下も `_bt_*.py` `_card_*.py` だらけなので、
+**今後 `_vps_prod` 以外を保全する時も同じ罠を踏む**。`git status` に出ないので気付けない。
+確認方法:
+```bash
+find <dir> -type f | wc -l          # 作業ツリー
+git ls-files <dir> | wc -l          # git追跡  → 一致しなければ取りこぼし
+```
+なお金庫の `code/_vps_code.tar.gz` は git ではなく `find` で作ったので **最初から240本全て**入っている。
+
 ### 3-4. 未コミットのまま止めた作業
 
 ブランチ `feat/engine-heartbeat` に **SEQ任意開始額**の実装が未コミットで残っている
@@ -188,7 +208,9 @@ sha256sum -c SHA256SUMS.txt      # → 27件すべて OK になること
       - ⚠️ メールアドレスを含むため **git禁止**。金庫のみ
 - [ ] **B: バックアップHDDへのミラー** — オーナー指示により後日。`V:` 単独では二重化になっていない。
       `C:\Users\USER\bin\backup_vault.ps1` の流儀に合わせる(★node_modules を絶対に含めない)
-- [ ] **`_vps_prod/` と本ファイルの git commit** — 作業ツリーには存在するが未コミット
+- [x] **`_vps_prod/` と本ファイルの git commit + push** — 完了 (`d1057b0` + `2e2bacc`)。
+      240/240 ファイルが `origin/feat/engine-heartbeat` に反映済み。
+      秘密情報スキャン実施済み=漏洩0件(`TR7NH...` は USDT-TRC20 の公式コントラクトで秘密ではない)
 - [ ] **課金の最終精算** — Supabase 台帳の締め(オーナー判断)
 - [ ] **解約実行** — ★上記が完了・検証されてから
 
