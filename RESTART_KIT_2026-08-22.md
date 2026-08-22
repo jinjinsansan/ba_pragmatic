@@ -163,12 +163,82 @@ root crontab (8本):
 @reboot       run_dual_line_bot.sh      ← シグナルbot本体
 ```
 
+★**crontab は root だけではない。`laplace` ユーザーにも4本ある**(2026-08-22に発覚)。
+`crontab -l` だけ見ると取りこぼす。復元時は両方戻すこと。
+
+laplace crontab (4本):
+```
+0 6    * * *  auto_update_tables.py      (cd /opt/laplace・LAPLACE_API_KEY を行内に持つ)
+*      * * * *  run_crypto_poller.sh     ← 毎分。.env.crypto を毎回 source する
+5 10   * * *  dow_winrate_report.py
+*/10   * * * *  run_wallet_watch.sh      ← bafather.uk /api/cron/wallet-watch を叩くだけ
+```
+両方の完全な内容は金庫 `secrets/crontab_ALL_USERS.txt`。
+
 ### 4-3. 検証コマンド
 
 ```bash
 cd V:/_ARCHIVE_BACOPY_SHUTDOWN_20260822/data
 sha256sum -c SHA256SUMS.txt      # → 27件すべて OK になること
 ```
+
+---
+
+## 4-4. ★停止時にロックダウンを掛けてある — 復旧しないと何も動かない
+
+2026-08-22 19:34、解約前の措置として**全ユーザー + 全Telegramチャンネル**をロックした。
+**サーバーを復元しただけでは配信もBETも再開しない。**以下を戻すこと。
+
+### (a) Supabase — 全13アカウント `bot_paid=false`
+
+ロック前は9名が `true` だった(`black0213black` / `sarah_ttotto` / `milliongold999` /
+`hikata11462662` / `lselfloveself` / `hiroyuki2626123` / `shojihashimoto0922` /
+`masakatsu.ogawa` / `skjpcoltd`)。
+
+```bash
+python _billing_lockdown.py --restore _billing_lockdown_backup_20260822_193406.json
+```
+バックアップJSONは repo直下。★`--all` フラグは 2026-08-22 に追加したもので、
+KEEP(過去の部分ロックダウン用の許可リスト)を無効化して全員を止める。
+
+⚠️ **解除してもエンジンは自動再始動しない。** `bot_paid=true` に戻ると GUI の
+ライセンス表示が戻って START が押せるようになるだけ。各受け子の手動START操作が要る。
+
+### (b) Telegram — 全宛先を空文字にしてある
+
+`_tg_lockdown.sh lock` は**使っていない**(あれはミラーchへ付け替える実装で、
+今回の「全停止」には合わない)。`.env` を直接空にした。
+
+| ファイル | 空にした変数 |
+|---|---|
+| `/opt/laplace2/.env` | `TELEGRAM_CHAT_ID` `DUAL_LINE_CHAT_ID` `DUAL_LINE_RESULT_CHAT_ID` `DUAL_LINE_EXTRA_CHAT_IDS` `WINRATE_CHAT_ID` |
+| `/opt/bacopy/.env` | `DUAL_LINE_RESULT_CHAT_ID` |
+| `/opt/laplace/.env` | `TELEGRAM_CHAT_ID` `ADMIN_CHAT_ID` |
+| `/opt/laplace2/.env.crypto` | `PAYMENTS_TELEGRAM_CHAT_ID` |
+
+復旧は `*.bak_tgfullstop_20260822_*` から戻す(4ファイルとも同名規則でバックアップ済み)。
+★これらのバックアップは**VPS上にしかない**。解約前に金庫へ回収すること。
+なお金庫 `secrets/_vps_secrets.tar.gz` には**ロック前**の `.env` が入っているので、
+そちらから復元しても同じ結果になる(こちらの方が確実)。
+
+### (c) ロック時に分かった実装上の罠
+
+- `hourly_report.py` の宛先は `WINRATE_CHAT_ID` → `DUAL_LINE_CHAT_ID` → `TELEGRAM_CHAT_ID`
+  の**フォールバック**。1つでも値が残っていると配信が続く
+- `_send_telegram` はメインの chat_id が空だとミラーにも送らない実装。
+  だから「全部空」で完全停止になる
+- 全宛先が空なら `hourly_report.py` は `dry` モードに落ちるだけでクラッシュしない
+- ハードコードされた chat_id は VPS 上に存在しない(全スクリプト走査で確認)
+
+### (d) bot の再起動方法(★事故防止)
+
+```bash
+ps -eo pid,ppid,etime,cmd --no-headers | grep dual_line_pragmatic_bot   # PIDを目視
+kill <その python の PID>        # wrapper が約20秒で再起動する
+```
+★**`pgrep` / `pkill -f` を ssh 越しに使ってはいけない。** パターンが ssh の
+`bash -c` 引数自身にマッチして**自セッションを殺す**(2026-08-17に実際に発生)。
+`[c]` の括弧トリックを付けても、ssh の引数に文字列が入る限り危険。
 
 ---
 
@@ -206,8 +276,29 @@ sha256sum -c SHA256SUMS.txt      # → 27件すべて OK になること
       - ⚠️ **パスワードハッシュは返らない**(Supabase側で秘匿)。再開時はユーザー再作成が必要
       - ⚠️ `invite_codes` テーブルは**存在しなかった** = 8/17のマイグレーションSQLは未適用のまま停止した
       - ⚠️ メールアドレスを含むため **git禁止**。金庫のみ
-- [ ] **B: バックアップHDDへのミラー** — オーナー指示により後日。`V:` 単独では二重化になっていない。
-      `C:\Users\USER\bin\backup_vault.ps1` の流儀に合わせる(★node_modules を絶対に含めない)
+- [ ] **B: バックアップHDDへのミラー** — オーナー指示により後日(2026-08-22時点で未了)。
+
+      **★これが残っている間のリスク**: コードは 作業ツリー / V: / GitHub の三重化済みだが、
+      **`data/` 440MB・`secrets/`・`supabase/` は V: の1箇所にしか無い**
+      (メールアドレスと実キーを含むため GitHub に上げられない)。
+      しかも V: は 2026-07-31 に **HDD過熱でUSB脱落→マウント破損**を起こした実績がある。
+
+      **やり方は2通り。急ぐなら (a) だけでもリスクは消える:**
+
+      **(a) アーカイブ442MBだけコピー(数十秒・低負荷)**
+      B: をマウントして `V:\_ARCHIVE_BACOPY_SHUTDOWN_20260822\` を手動コピーし、
+      各 `SHA256SUMS.txt` で照合するだけ。静的で検証済みのファイル群なので
+      他セッションが動いていてもロック競合が起きない。
+
+      **(b) フル同期 `C:\Users\USER\bin\backup_vault.ps1`(525GB・長時間)**
+      前提: V: / W: / B: が全てマウント済み。node_modules 等の除外はスクリプト内蔵済み
+      (★除外なしだと9時間で798GB=2.3倍に膨れて終わらない)。
+      注意点:
+      - `robocopy /MIR` = **削除も同期する**。実行中にV:側で消したものはB:からも消える
+      - `/MT:32` の高負荷 + V: の過熱歴 → **他の作業と同時に走らせない方がよい**
+      - `/R:1 /W:1` なので、他プロセスが掴んでいるファイルは1秒で諦めてスキップされる
+      - 終了コード 8 以上が失敗。ログは `%TEMP%\backup_vault_*.log`
+      - **終わったら B: をアンマウント**(常時マウントはランサムウェア・誤操作がバックアップまで届く)
 - [x] **`_vps_prod/` と本ファイルの git commit + push** — 完了 (`d1057b0` + `2e2bacc`)。
       240/240 ファイルが `origin/feat/engine-heartbeat` に反映済み。
       秘密情報スキャン実施済み=漏洩0件(`TR7NH...` は USDT-TRC20 の公式コントラクトで秘密ではない)
