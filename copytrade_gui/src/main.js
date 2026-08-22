@@ -1043,6 +1043,11 @@ function buildSpawnSpec(config) {
     const seqShape = String((config && config.seq_shape) || 'attack').toLowerCase();
     childEnv.BACOPY_SEQ_SHAPE = (seqShape === 'balance' || seqShape === 'defense') ? seqShape : 'attack';
 
+    // SEQ 開始額(任意入力・2026-08-05): smallcustom/playercustom で $1基準の階段に
+    // 掛ける倍率になる。エンジン側でも $0.2刻みに丸める(二重ガード)。
+    const seqStart = parseFloat((config && config.seq_start) || 1);
+    childEnv.BACOPY_SEQ_START = String(seqStart > 0 ? seqStart : 1);
+
     // Kelly(比例)モード: 残高基準(フォールバック元本)。ライブ残高が取れれば engine が上書き。
     // 型(攻撃/バランス/守備)は BACOPY_SEQ_SHAPE を流用(上で設定済み)。
     if (config && config.kelly_bankroll) {

@@ -788,6 +788,7 @@ const DEFAULT_SETTINGS = {
   safety_mode: false,
   platform: 'stake',
   seq_shape: 'attack',
+  seq_start: 1,
   kelly_bankroll: 1000,
   fib_profit_col: 'C',
   fib_cap_rows: 6,
@@ -862,6 +863,14 @@ setTimeout(() => {
   // MONEY MODE: SEQ / 非SEQ の二段ゲート
   $('#inputMoneyType')?.addEventListener('change', () => { _applyMoneyTypeVisibility(); _commitMoneyMode(); });
   $('#inputSeqVariant')?.addEventListener('change', () => { _commitMoneyMode(); _applyMoneyTypeVisibility(); });
+  // 開始額の自由入力: 入力のたびに階段プレビューを更新。フォーカスを外した時に
+  // $0.2刻みへ丸めた値を欄にも反映する(保存値と表示を一致させる)。
+  $('#inputSeqStart')?.addEventListener('input', _updateSeqPreview);
+  $('#inputSeqStart')?.addEventListener('change', function () {
+    this.value = String(seqQuantizeStart(this.value));
+    _updateSeqPreview();
+  });
+  $('#inputSeqShape')?.addEventListener('change', _updateSeqPreview);
   $('#inputFibProfitCol')?.addEventListener('change', _updateFibgridHint);
   $('#inputFibCapRows')?.addEventListener('change', _updateFibgridHint);
   $('#inputFibUnit')?.addEventListener('change', _updateFibgridHint);
@@ -951,6 +960,9 @@ function _applyMoneyTypeVisibility() {
   const isPlayerSeq = seq && (($('#inputSeqVariant')?.value || '').indexOf('player') === 0);
   if ($('#seqShapeGroup')) $('#seqShapeGroup').style.display = ((seq && !isPlayerSeq) || kelly) ? '' : 'none';
   if ($('#player1Note')) $('#player1Note').style.display = isPlayerSeq ? '' : 'none';
+  // 開始額の自由入力 (2026-08-05): SEQ選択時のみ表示し、階段プレビューを出す
+  if ($('#seqStartGroup')) $('#seqStartGroup').style.display = seq ? '' : 'none';
+  if (seq) _updateSeqPreview();
   if ($('#kellyBankrollGroup')) $('#kellyBankrollGroup').style.display = kelly ? '' : 'none';
   if ($('#flatVariantGroup')) $('#flatVariantGroup').style.display = other ? '' : 'none';
   // ユニット額入力は フラット系 と ×セット系 で使う
@@ -958,10 +970,57 @@ function _applyMoneyTypeVisibility() {
   if ($('#b123setNote')) $('#b123setNote').style.display = b123set ? '' : 'none';
   if ($('#dalsetNote')) $('#dalsetNote').style.display = dalset ? '' : 'none';
 }
+// ── SEQ 階段プレビュー (2026-08-05) ──────────────────────────────────
+// エンジン (dual_line_money.py) の $1基準配列と同じ値。開始額を掛けて表示する。
+// 変更時は両方を必ず揃えること。
+const SEQ_BASE_ATTACK = [1, 2, 4, 6, 8, 10, 13, 16, 19, 23, 28, 32, 37, 43,
+  48, 55, 63, 73, 85, 100, 120, 140, 167, 200, 233, 267, 300, 333];
+const SEQ_SHAPE_BALANCE = [1, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 27, 33, 40, 48, 58, 70, 84,
+  100, 115, 130, 145, 160, 175, 190, 205, 220, 235, 250];
+const SEQ_SHAPE_DEFENSE = [1, 1, 1, 2, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 26, 31, 37, 44, 52,
+  62, 74, 88, 104, 122, 140, 158, 176, 194, 200];
+const SEQ_BASE_PLAYER = [1, 2, 3, 5, 7, 9, 11, 13, 16, 19, 22, 25, 28, 31, 35, 39, 43, 47, 51, 55,
+  60, 65, 70, 75, 80, 85, 90, 95, 100, 106, 112, 118, 124, 130, 136, 142, 148, 154, 160, 170,
+  180, 190, 200, 210, 220, 230, 240, 250];
+const SEQ_CHIP_MIN = 0.2;
+
+function seqQuantizeStart(v) {
+  const n = Number(v);
+  if (!isFinite(n) || n <= 0) return 1;
+  const q = Math.round(Math.round(n / SEQ_CHIP_MIN) * SEQ_CHIP_MIN * 100) / 100;
+  return q > 0 ? q : SEQ_CHIP_MIN;
+}
+
+function seqBaseArray() {
+  const kind = $('#inputSeqVariant')?.value || 'small';
+  if (kind === 'player') return SEQ_BASE_PLAYER;  // 元祖は型を適用しない
+  const shape = $('#inputSeqShape')?.value || 'attack';
+  if (shape === 'balance') return SEQ_SHAPE_BALANCE;
+  if (shape === 'defense') return SEQ_SHAPE_DEFENSE;
+  return SEQ_BASE_ATTACK;
+}
+
+function _updateSeqPreview() {
+  const el = $('#seqPreview');
+  if (!el) return;
+  const raw = $('#inputSeqStart')?.value;
+  const start = seqQuantizeStart(raw);
+  const base = seqBaseArray();
+  const seq = base.map((x) => Math.round(x * start * 100) / 100);
+  const fmt = (x) => (Number.isInteger(x) ? String(x) : x.toFixed(2).replace(/0$/, ''));
+  const headTxt = seq.slice(0, 8).map(fmt).join(', ');
+  const total = Math.round(seq.reduce((a, b) => a + b, 0) * 100) / 100;
+  const warn = (Math.abs(start - Number(raw)) > 1e-9)
+    ? `<span style="color:#ffcc66;">（$${raw} → $${start} に丸め）</span>` : '';
+  el.innerHTML = `階段: <b>${headTxt} …</b><br>`
+    + `段数 <b>${seq.length}</b> / 天井 <b>$${fmt(seq[seq.length - 1])}</b>`
+    + ` / 全段合計 <b>$${fmt(total)}</b> ${warn}`;
+}
+
 function _commitMoneyMode() {
   const t = $('#inputMoneyType')?.value || 'seq';
   let val;
-  if (t === 'seq') val = ($('#inputSeqVariant')?.value || 'small1');
+  if (t === 'seq') val = (($('#inputSeqVariant')?.value || 'small') === 'player') ? 'playercustom' : 'smallcustom';
   else if (t === 'kelly') val = 'kelly';
   else if (t === 'b123set') val = 'bet123set';
   else if (t === 'dalset') val = 'dalembertset';
@@ -978,9 +1037,26 @@ function _loadMoneyModeUI(mode) {
   const isFibgrid = m === 'fibgrid';
   if ($('#inputMoneyType')) $('#inputMoneyType').value = isKelly ? 'kelly'
     : (isSeq ? 'seq' : (isB123set ? 'b123set' : (isDalset ? 'dalset' : (isFibgrid ? 'fibgrid' : 'other'))));
-  if (isSeq) { if ($('#inputSeqVariant')) $('#inputSeqVariant').value = m; }
+  if (isSeq) {
+    // 旧モード名(small30 等)を「種類 + 開始額」に読み替える。
+    // ★階段は $1基準に統一されたため、旧 small02/3/6/10/30 は形が変わる
+    //   (旧: 開始額ごとの手書き配列 / 新: SEQ_BASE_ATTACK × 開始額)。
+    const LEGACY_START = {
+      small02: 0.2, small06: 0.6, small1: 1, small14: 1.4, small2: 2, small24: 2.4,
+      small3: 3, small6: 6, small10: 10, small30: 30,
+      player02: 0.2, player04: 0.4, player1: 1, player2: 2, player3: 3,
+    };
+    const kind = m.indexOf('player') === 0 ? 'player' : 'small';
+    if ($('#inputSeqVariant')) $('#inputSeqVariant').value = kind;
+    if ($('#inputSeqStart') && Object.prototype.hasOwnProperty.call(LEGACY_START, m)) {
+      $('#inputSeqStart').value = String(LEGACY_START[m]);
+    }
+  }
   else if (!isKelly && !isB123set && !isDalset && !isFibgrid) { if ($('#inputFlatVariant')) $('#inputFlatVariant').value = m; }
   if ($('#inputDualMoneyMode')) $('#inputDualMoneyMode').value = m;
+  // 旧モード名で読み込んだ場合も新方式(smallcustom/playercustom)に揃える。
+  // プレビュー表示と実際に使う階段を一致させるため。
+  _commitMoneyMode();
   _applyMoneyTypeVisibility();
 }
 
@@ -1268,10 +1344,13 @@ $('#btnSettings')?.addEventListener('click', async () => {
   // dual-line 設定の表示切替（assist/auto も含めて group を表示する）
   const isDL = isDualLineBetMode(normalizeBetMode($('#inputBetMode')?.value));
   if ($('#dualLineMoneyGroup')) $('#dualLineMoneyGroup').style.display = isDL ? '' : 'none';
-  _loadMoneyModeUI(s.dual_money_mode || 'small1');
+  // 保存済み開始額を先に入れてから _loadMoneyModeUI で旧モード名の読み替えを行う
+  // (旧モード名が来た場合はそちらの開始額で上書きされる)
+  if ($('#inputSeqStart') && Number(s.seq_start) > 0) $('#inputSeqStart').value = String(s.seq_start);
+  if ($('#inputSeqShape')) $('#inputSeqShape').value = (['balance','defense'].includes(s.seq_shape) ? s.seq_shape : 'attack');
+  _loadMoneyModeUI(s.dual_money_mode || 'smallcustom');
   if ($('#inputDualUnit')) $('#inputDualUnit').value = s.dual_unit || 100;
   if ($('#inputSeqTurns')) $('#inputSeqTurns').value = String(s.seq_turns === 5 ? 5 : 7);
-  if ($('#inputSeqShape')) $('#inputSeqShape').value = (['balance','defense'].includes(s.seq_shape) ? s.seq_shape : 'attack');
   if ($('#inputKellyBankroll') && s.kelly_bankroll) $('#inputKellyBankroll').value = s.kelly_bankroll;
   if ($('#inputFibProfitCol')) $('#inputFibProfitCol').value = (['C','D','E','F','G'].includes(s.fib_profit_col) ? s.fib_profit_col : 'C');
   if ($('#inputFibCapRows')) $('#inputFibCapRows').value = String([6,8,10,12,14,16].includes(Number(s.fib_cap_rows)) ? Number(s.fib_cap_rows) : 6);
@@ -1478,6 +1557,7 @@ $('#btnSaveSettings')?.addEventListener('click', async () => {
     dual_unit: parseFloat($('#inputDualUnit')?.value || 100),
     seq_turns: parseInt($('#inputSeqTurns')?.value || '7', 10),
     seq_shape: $('#inputSeqShape')?.value || 'attack',
+    seq_start: seqQuantizeStart($('#inputSeqStart')?.value || '1'),
     kelly_bankroll: parseFloat($('#inputKellyBankroll')?.value || 1000),
     fib_profit_col: $('#inputFibProfitCol')?.value || 'C',
     fib_cap_rows: parseInt($('#inputFibCapRows')?.value || '6', 10),

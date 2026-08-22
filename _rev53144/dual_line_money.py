@@ -110,7 +110,48 @@ SEQ_PLAYER02 = [round(x * 0.2, 4) for x in SEQ_PLAYER1]  # $0.2 start・天井$5
 SEQ_PLAYER04 = [round(x * 0.4, 4) for x in SEQ_PLAYER1]  # $0.4 start・天井$100
 SEQ_PLAYER2 = [x * 2 for x in SEQ_PLAYER1]               # $2 start・天井$500
 SEQ_PLAYER3 = [x * 3 for x in SEQ_PLAYER1]               # $3 start・天井$750
-PLAYER_SEQ_MODES = ("player02", "player04", "player1", "player2", "player3")
+PLAYER_SEQ_MODES = ("player02", "player04", "player1", "player2", "player3", "playercustom")
+
+# ── 任意開始額SEQ (2026-08-05) ────────────────────────────────────────
+# GUIで「スモールSEQ / 元祖SEQ」を選び、開始額を自由入力するためのモード。
+# 階段は $1基準の整数配列 × 開始額 で生成する(既存の balance/defense 型や
+# player* と同じ流儀)。整数 × ($0.2の倍数) = $0.2の倍数 なので、開始額が
+# チップ最小単位の倍数である限り全段が置ける額になる(丸め不要)。
+#   smallcustom  : 攻撃型= SEQ_BASE_ATTACK / 型指定時は balance・defense 配列
+#   playercustom : 元祖48段 (型は適用しない=元祖忠実)
+# 開始額は env `BACOPY_SEQ_START` で渡す。
+#
+# ★攻撃型の$1基準 = SEQ_SMALL1。small2/small14/small24 が既にこの配列の
+#   ×2 / ×1.4 / ×2.4 として定義されており、事実上の基準配列になっている。
+#   全段が整数なのでチップ妥当性が保証される。
+#   ※small02/small3/small6/small10/small30 は個別に手書きされた別形状で、
+#     段数(23〜29)も勾配も揃っていない。任意開始額では $1基準に統一する。
+SEQ_BASE_ATTACK = list(SEQ_SMALL1)
+
+CHIP_MIN = 0.2  # Stake/Pragmatic の最小チップ
+
+
+def _quantize_chip(v: float) -> float:
+    """開始額をチップ最小単位($0.2)の倍数に丸める。"""
+    return round(round(float(v) / CHIP_MIN) * CHIP_MIN, 2)
+
+
+def custom_seq_start() -> float:
+    """env `BACOPY_SEQ_START` から任意開始額を読む(既定 $1・$0.2刻みに丸め)。"""
+    raw = (os.getenv("BACOPY_SEQ_START", "") or "").strip()
+    try:
+        v = float(raw) if raw else 1.0
+    except ValueError:
+        logger.warning(f"[SEQ-CUSTOM] invalid BACOPY_SEQ_START={raw!r}; fallback $1")
+        v = 1.0
+    if v <= 0:
+        v = 1.0
+    q = _quantize_chip(v)
+    if q <= 0:
+        q = CHIP_MIN
+    if abs(q - v) > 1e-9:
+        logger.warning(f"[SEQ-CUSTOM] start ${v} -> ${q} (チップ最小単位${CHIP_MIN}に丸め)")
+    return q
 
 # ── SEQ 型(shape) — 階段の“並び”を $1 基準で定義し開始額で比例展開する ──────
 # 攻撃型(attack) = 上記 SEQ_SMALL* をそのまま使う(従来=ゼロ回帰)。
@@ -127,7 +168,7 @@ SEQ_SHAPE_DEFENSE = [  # CAND_B: 序盤最緩・天井200x(生存最優先)
     1, 1, 1, 2, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 22, 26, 31, 37, 44, 52,
     62, 74, 88, 104, 122, 140, 158, 176, 194, 200,
 ]
-SMALL_SEQ_MODES = ("small02", "small06", "small1", "small14", "small2", "small24", "small3", "small6", "small10", "small30") + PLAYER_SEQ_MODES
+SMALL_SEQ_MODES = ("small02", "small06", "small1", "small14", "small2", "small24", "small3", "small6", "small10", "small30", "smallcustom") + PLAYER_SEQ_MODES
 
 BET_MODES = {
     "flat": "1 unit flat",
@@ -146,6 +187,8 @@ BET_MODES = {
     "player1": "PLAYER SEQ $1 start (original 48-step, ceiling $250)",
     "player2": "PLAYER SEQ $2 start (original 48-step x2, ceiling $500)",
     "player3": "PLAYER SEQ $3 start (original 48-step x3, ceiling $750)",
+    "smallcustom": "SMALL SEQ custom start (BACOPY_SEQ_START x $1-base ladder)",
+    "playercustom": "PLAYER SEQ custom start (BACOPY_SEQ_START x original 48-step)",
     "martingale": "pure Martingale",
     "dalembert": "D'Alembert (+/-1 unit)",
     "bet123": "1-2-3 method (1/2/3 units cycle)",
@@ -360,6 +403,20 @@ class BetManager:
 
     def _resolve_seq(self) -> list[float]:
         m = self.mode
+        # ── 任意開始額 (2026-08-05): $1基準配列 × 開始額 ──────────────
+        if m in ("smallcustom", "playercustom"):
+            start = custom_seq_start()
+            if m == "playercustom":
+                # 元祖SEQは型を適用しない(元祖忠実)
+                return [round(x * start, 4) for x in SEQ_PLAYER1]
+            shape = (os.getenv("BACOPY_SEQ_SHAPE", "") or "").strip().lower()
+            if shape in ("balance", "a", "bal", "cand_a"):
+                base = SEQ_SHAPE_BALANCE
+            elif shape in ("defense", "defence", "b", "def", "cand_b"):
+                base = SEQ_SHAPE_DEFENSE
+            else:
+                base = SEQ_BASE_ATTACK
+            return [round(x * start, 4) for x in base]
         # 攻撃型(=従来)の基準配列
         attack = {
             "small02": SEQ_SMALL02, "small06": SEQ_SMALL06, "small1": SEQ_SMALL1,

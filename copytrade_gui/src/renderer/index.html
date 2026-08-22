@@ -451,23 +451,18 @@
             <div class="form-group" id="seqVariantGroup">
               <label>SEQ タイプ</label>
               <select id="inputSeqVariant">
-                <option value="small02">スモールSEQ 0.2$</option>
-                <option value="small06">スモールSEQ 0.6$</option>
-                <option value="small1">スモールSEQ 1$</option>
-                <option value="small14">スモールSEQ 1.4$</option>
-                <option value="small2">スモールSEQ 2$</option>
-                <option value="small24">スモールSEQ 2.4$</option>
-                <option value="small3">スモールSEQ 3$</option>
-                <option value="small6">スモールSEQ 6$</option>
-                <option value="small10">スモールSEQ 10$</option>
-                <option value="small30">スモールSEQ 30$（投資家向け）</option>
-                <option value="player02">プレイヤーSEQ 0.2$（元祖・天井$50）</option>
-                <option value="player04">プレイヤーSEQ 0.4$（元祖・天井$100）</option>
-                <option value="player1">プレイヤーSEQ 1$（元祖・48段・天井$250）</option>
-                <option value="player2">プレイヤーSEQ 2$（元祖・天井$500）</option>
-                <option value="player3">プレイヤーSEQ 3$（元祖・天井$750）</option>
+                <option value="small">スモールSEQ（28段・天井333倍）</option>
+                <option value="player">元祖SEQ（48段・天井250倍・大学ノート版）</option>
               </select>
               <div id="player1Note" style="display:none; font-size:11px; color:var(--text-muted); margin-top:3px;">大学ノート版の<b>元祖SEQ（48段・$1スタート・天井$250）を開始額で比例展開</b>した階段。スモールSEQより段数が多く勾配が緩やか。<b>型（攻撃/バランス/守備）は適用されず常に元祖の階段</b>で動く。</div>
+            </div>
+            <div class="form-group" id="seqStartGroup">
+              <label>開始額（$0.2刻み）</label>
+              <input type="number" id="inputSeqStart" min="0.2" step="0.2" value="1">
+              <div id="seqStartNote" style="font-size:11px; color:var(--text-muted); margin-top:3px;">
+                $1基準の階段に開始額を掛けて生成します。<b>最小チップ$0.2の倍数</b>に自動で丸められます。
+              </div>
+              <div id="seqPreview" style="font-size:11px; color:var(--text-muted); margin-top:4px; line-height:1.5;"></div>
             </div>
             <div class="form-group" id="seqShapeGroup">
               <label>型（階段の上げ方）</label>
