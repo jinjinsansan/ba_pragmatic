@@ -216,6 +216,38 @@ VPS: `bacopy-origin-check.timer` が**30分毎**に refresh+check。終了コー
 **残: 受け子側**(起動時と定期的に `/api/origin` を取得 → Chrome起動URLと
 エンジンの `BACOPY_STAKE_ORIGIN` に反映、451検知で次候補へ)。
 
+### 3-7. ③の配管を本番マスターで一周実証 (2026-09-12・実弾なし)
+
+`bacopy_executor_dryrun.py` はカジノに一切触れずに decision の往復を検証できる。
+本番 `https://master.bafather.uk` に対して実行した結果:
+
+```
+POST /api/decisions (卓415 / side=P / $0.2)  → {"accepted": true}
+  ↓
+受け子が 1.0秒後に取得して ack        ack_json に記録
+  ↓
+9秒後に結果を観測                     result_json outcome="banker"
+  ↓
+status = done
+```
+
+DB に残った記録から確認できたこと:
+
+| 項目 | 内容 |
+|---|---|
+| `side` | **P**(送った通り。取り違えなし) |
+| snapshot | 投入時点の罫線 `sequence="PPBTBPBPT"` をAPI側が自動付与 |
+| `derived_roads` | `big_eye_boy` / `small_road` / `cockroach_road` まで自動計算 |
+| ★**先読みが無い** | 投入時 `hands=9` / 結果観測時 `hands=10`。判断材料は決定時点のものだけで、結果は後から別途観測している |
+
+★ログの `-> banker` は**BET側ではなくその手の実際の勝敗**(`_infer_outcome` が
+`last_hand.winner` から判定)。読み違えやすいので注意。
+
+★`/api/executors` が空なのは dryrun ツールが `upsert_executor`(ハートビート)を
+呼ばないため。実エンジンでは登録される。
+
+テストデータは削除済み(`decisions` 0件)。
+
 ### 3-5. 3系統問題 — ★当初の方針が誤りだったので変更した
 
 計画書には「直下版を `_archive_regression/` へ隔離」と書いたが、**実行すると壊れる**:
