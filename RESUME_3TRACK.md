@@ -272,64 +272,38 @@ SEQ の段は結果確定後に進むので `決定を送る → BET → 勝敗�
 
 ---
 
-## 6. ★★未コミット — 再開時の最大リスク
+## 6. git の状態
 
-**2026-09-12 の作業は全て未コミット。** ファイルはディスク上にあるのでターミナルが落ちても消えないが、
-**git で守られていない**。再開したらまず状態を確認すること。
+### (a) ✅ コミット済み — 2026-09-12
 
-```bash
-cd V:/dev/Cusor/bacopy && git status --short && git diff --stat
-```
+ブランチ `feat/engine-heartbeat`。**追跡ファイルの未コミットはゼロ。**
 
-### (a) 変更した追跡ファイル 19本 — git で復元できる
-
-| ファイル | 増減 |
+| commit | 内容 |
 |---|---|
-| `.env.dist` | +8 / -1 |
-| `.env.template` | +8 / -1 |
-| `RESTART_KIT_2026-08-22.md` | +87 / -1 | ← ★**8/28 セッションからの持ち越し。今回は触っていない**
-| `_deploy_vps.ps1` | +25 / -0 |
-| `_vps_prod/laplace2/ai_pattern_analysis.py` | +15 / -1 |
-| `_vps_prod/laplace2/collector_pragmatic.py` | +99 / -63 |
-| `_vps_prod/laplace2/scripts/check_vps_sshd.sh` | +1 / -1 |
-| `_vps_prod/laplace2/scripts/laplace_admin.py` | +1 / -1 |
-| `_vps_prod/laplace2/scripts/provision_user_build.py` | +1 / -1 |
-| `ai_pattern_analysis.py` | +15 / -1 |
-| `bacopy_executor_pragmatic_ws_live.py` | +43 / -7 |
-| `copytrade_gui/scripts/provision-user-build.js` | +29 / -5 |
-| `copytrade_gui/src/main.js` | +15 / -10 |
-| `gui/setup.bat` | +13 / -5 |
-| `gui/src/main.js` | +1 / -1 |
-| `scripts/check_vps_sshd.sh` | +1 / -1 |
-| `scripts/deploy_master_to_vps.sh` | +1 / -1 |
-| `scripts/laplace_admin.py` | +1 / -1 |
-| `scripts/provision_user_build.py` | +1 / -1 |
+| `23f4f56` | docs: 3方向復活の計画書・作業台帳 + _deploy_vps.ps1 に実行停止ガード |
+| `d438a2e` | feat(collector): dga直結のみモード (BACOPY_DGA_ONLY) — ブラウザ不要にする |
+| `f006242` | feat(stake-origin): Stake のミラードメインに対応する |
+| `f510190` | fix(security): 解約済みVPS IPのハードコード除去 + 雛形の実キー掃除 |
 
-### (b) ★git では復元できない変更 — 未追跡 / gitignore 対象
+**まだ push していない**(4コミット先行)。push は `origin/feat/engine-heartbeat` へ。
 
-**ここが本当のリスク。** バックアップはセッション用スクラッチにしか無く、消える。
+### (b) ★git に入っていない変更 — ここだけ復元できない
 
-| 対象 | 何を変えたか |
-|---|---|
-| `copytrade_gui/build_staging/.env`(gitignore) | 4キーのみ。**実キー類には触れていない**:<br>`BACOPY_SUPPORT_ENABLED=1→0` / `BACOPY_SUPPORT_SSH_HOST` を空 / `BACOPY_LOBBY_URL` を空 / `BACOPY_STAKE_ORIGIN=` 追加 |
-| `analyze_*.py` 11本 / `verify_top3_regularity.py` / `scripts/test_all_tables.py` | `_LAPLACE_SSH_HOST()` ヘルパ挿入 + SSH先の置換 |
-| `dist_client/` 4本 | 旧IP無害化(§3-4 の A/E/F/G) |
-| `copytrade_gui/main.js` ほか asar 残骸 13本 | `BACOPY_API_FALLBACK_IPS` 行の無害化 |
+**意図的に除外されているファイル**なので追加しなかった。無害化はディスク上で完了しているが、
+**作業ツリーを失うと消える**。再適用は容易(いずれも1行のコメントアウト/env化)。
 
-### (c) 新規作成(未追跡・`git add` が要る)
+| 対象 | 除外理由 | 何を変えたか |
+|---|---|---|
+| `analyze_*.py` 11本 / `verify_top3_regularity.py` / `scripts/test_all_tables.py` | `.gitignore:22/49/50` で**意図的に除外**(ad-hoc 分析スクリプトの規約) | `_LAPLACE_SSH_HOST()` ヘルパ挿入 + SSH先の置換 |
+| `dist_client/` 4本 | `.gitignore` 対象(配布ステージング) | 旧IP無害化。★ここから配ると旧IPが出ていくので、**再生成時は必ず再確認** |
+| `copytrade_gui/build_staging/.env` | `.gitignore:1`(実キーを含むため) | 4キーのみ変更。実キー類には触れていない:<br>`BACOPY_SUPPORT_ENABLED=1→0` / `BACOPY_SUPPORT_SSH_HOST` を空 / `BACOPY_LOBBY_URL` を空 / `BACOPY_STAKE_ORIGIN=` 追加 |
+| `_asar_*` `_v2` `_live_verify` `_verify_asar` `copytrade_gui/{main.js,_verify,_asar_tmp,_asar_peek,.codex_app_asar_stage}` 計13本 | 未追跡のビルドスクラッチ | `BACOPY_API_FALLBACK_IPS` 行の無害化 |
 
-`REVIVAL_PLAN_3TRACK_2026-09-12.md` / `DUAL_LINE_VARIANTS.md` /
-`PHASE0_DGA_BASELINE_2026-09-12.md` / `STAKE_MIRRORS_2026-09-12.txt` / 本ファイル
+### (c) ★要ローテーション(コミットでは消えない)
 
-### ★推奨 — 先にコミットしてしまう
-
-未追跡ファイルが多く、うち一部は git で復元できない。**オーナーの指示があり次第コミットする**。
-`.gitignore` の `_*.py` で取りこぼす罠があるので、追加後に必ず突合すること:
-
-```bash
-git add -A && git status --short | wc -l      # 期待値と合うか
-git add -f <取りこぼした _*.py があれば>
-```
+`.env.dist:14` に実キー `LAPLACE_API_KEY` が直書きされていた。**2026-04-15 の初回コミット以来**
+入っていたもので、今回ファイルからは掃除したが**git 履歴には残る**。
+`CREDENTIAL_REVOCATION_CHECKLIST_2026-08-22.md` の作業と併せてローテーションすること。
 
 ---
 
