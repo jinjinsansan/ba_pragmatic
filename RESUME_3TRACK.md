@@ -364,9 +364,34 @@ snapshots.json         → 60卓収集 / うち56卓が罫線データ保持
 **残: DNS のみ。** `master.bafather.uk` の A を `160.251.211.181` へ向ければ、
 Caddy が Let's Encrypt から証明書を自動取得する(現在も再試行中)。
 
-### 5-2. DNS
+### 5-2. ✅ DNS — 完了 (2026-09-12)
 
-`master.bafather.uk` の A レコードを新VPSへ。**管理画面がどこか**(Cloudflare / レジストラ)が未確認。
+**`bafather.uk` の DNS は Cloudflare で管理**していた。
+
+★**発見**: `master.bafather.uk` の A レコードが**解約済みの旧Xserver IP
+`210.131.215.116` を指したまま**残っていた。受け子がこれを引くと、Xserver が
+再割当した第三者のサーバーへ接続しに行く状態だった。→ `160.251.211.181` へ変更済み。
+
+| レコード | 値 | プロキシ |
+|---|---|---|
+| `master.bafather.uk` A | **160.251.211.181** | ★**DNS のみ(灰色)** |
+| `bafather.uk` A | 216.150.1.1 (Vercel) | DNS のみ |
+| `www` CNAME | vercel-dns | DNS のみ |
+
+★★**`master.bafather.uk` は絶対にプロキシ(オレンジ雲)にしない。** 理由:
+1. **7/23 に `stake.com` を日本向け 451 にしたのは Cloudflare のプロキシ層そのもの。**
+   自らその経路に乗ると、マスターAPIが止まった時点で①②③が同時に止まる
+2. プロキシ経由だと Caddy の TLS-ALPN-01 検証が通らない
+
+**TLS 取得済み**: HTTP-01 チャレンジで成功(★80番を開けておいたのが効いた)。
+証明書は `/var/log/...` ではなく `/var/lib/caddy/.local/share/caddy/certificates/` 配下。
+
+```
+https://master.bafather.uk/api/health → {"ok": true}
+https://master.bafather.uk/master     → 302 → /master/login
+```
+
+**→ Phase 1 完了。** 次は Phase 2(③田辺・受け子ビルドと $0.20 テスト)。
 
 ### 5-3. Phase 0 実機スパイク(ログインが要るのでオーナーのみ・半日)
 
