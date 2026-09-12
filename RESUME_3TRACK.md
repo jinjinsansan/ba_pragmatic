@@ -318,6 +318,52 @@ VPS に載る pip → websockets, requests のみ
 
 ★運用に**インバウンド SSH は不要**(必要なのは 443 だけ)なので、22 は絞ってよい。
 
+#### ✅ 2026-09-12 構築完了 — 残るは DNS のみ
+
+```
+接続: ssh -i ~/.ssh/bacopy_vps_2026 root@160.251.211.181
+      ★パスワード認証は無効化済み。鍵のみ。締め出されたら ConoHa のコンソール(VNC)から
+        /etc/ssh/sshd_config.d/00-bacopy-hardening.conf を消して systemctl restart ssh
+```
+
+| 項目 | 状態 |
+|---|---|
+| OS | Ubuntu 24.04.3 LTS / kernel **6.8.0-139**(更新+再起動済み) |
+| スペック | 3 core / 1966MB / 99GB(6%使用) / Python 3.12.3 |
+| sshd | **パスワード認証 no / 鍵のみ**。`00-bacopy-hardening.conf`(★`50-cloud-init.conf` より先に読ませるため `00-` 命名。sshd は**最初の指定が勝つ**) |
+| ufw | active。22(OpenSSH) / 80 / 443 のみ |
+| ConoHa SG | `default` + **`bacopy-master`**(22は自宅IPのみ、80/443は全て) |
+
+**配置(依存関係を ast で閉包計算して転送・SHA256照合済み)**
+
+| 場所 | 内容 |
+|---|---|
+| `/opt/bacopy/` | `bacopy_api.py` `bacopy_db.py` `decision_logger.py` `snapshot_store.py` `dual_line_match.py` `dual_line_logic.py`(`8dde1db81f`) `bacopy_master_ui.py` `bacopy_master_ledger_ui.py` |
+| `/opt/collector/` | `collector_pragmatic.py`(★`_vps_prod` 版 `e69f386b6c`) `analytics_pragmatic_db.py` `snapshot_store.py` |
+| venv | `/opt/bacopy/.venv` に **websockets 17.1 / requests 2.34.2 のみ**(camoufox・playwright 無し) |
+| systemd | `bacopy-api.service`(127.0.0.1:8010) / `bacopy-collector.service` — 両方 enable+active |
+| Caddy | v2.11.4。`master.bafather.uk → 127.0.0.1:8010`。ログは **journald**(★`/var/log/caddy` はユニットの `ProtectSystem` で書けず起動失敗する) |
+
+**★秘密情報の置き場(この文書には値を書かない)**
+
+`/opt/bacopy/.env`(600)に `BACOPY_API_KEY` と `BACOPY_MASTER_PASSWORD` を
+サーバー上で `secrets.token_urlsafe` 生成済み。受け子ビルド時と `/master` ログイン時に使う。
+取り出しは `ssh ... 'grep BACOPY_API_KEY /opt/bacopy/.env'`。
+
+**動作確認済み(2026-09-12)**
+
+```
+/api/health            → {"ok": true}
+/master                → HTTP 302 (未ログインなのでログイン画面へ。正常)
+snapshots.json         → 60卓収集 / うち56卓が罫線データ保持
+                         各卓に sequence / last_results / good_roads_map / statistics
+メモリ                  → api 29MB + collector 38MB = 67MB (1966MB中)  ★1GBで十分だった
+外部到達                → 22/80/443 とも OK。80 は Caddy が 308 で HTTPS へ転送
+```
+
+**残: DNS のみ。** `master.bafather.uk` の A を `160.251.211.181` へ向ければ、
+Caddy が Let's Encrypt から証明書を自動取得する(現在も再試行中)。
+
 ### 5-2. DNS
 
 `master.bafather.uk` の A レコードを新VPSへ。**管理画面がどこか**(Cloudflare / レジストラ)が未確認。
