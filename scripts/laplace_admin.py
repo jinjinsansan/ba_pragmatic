@@ -31,7 +31,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REGISTRY_CSV = REPO_ROOT / "scripts" / "user_ports.csv"
 # 環境変数で上書き可 (運用時VPS移転時等)
-VPS_HOST = os.environ.get("LAPLACE_BASTION_HOST", "210.131.215.116")
+VPS_HOST = os.environ.get("LAPLACE_BASTION_HOST", "")  # 旧VPS解約済 (2026-09-12)
 BASTION_USER = os.environ.get("LAPLACE_BASTION_USER", "laplace")
 BASTION_KEY = Path(os.environ.get("LAPLACE_BASTION_KEY", str(Path.home() / ".ssh" / "laplace_vps")))
 ADMIN_KEY = Path(os.environ.get("LAPLACE_ADMIN_KEY", str(Path.home() / ".ssh" / "laplace_admin")))

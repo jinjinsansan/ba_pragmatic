@@ -35,12 +35,20 @@ powershell -Command "& { $k='%KEY_DST%'; $acl=Get-Acl $k; $acl.SetAccessRuleProt
 echo  [OK] SSH key permissions set
 
 :: Test VPS connection
-echo  [INFO] Testing VPS connection...
-ssh -i "%KEY_DST%" -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=10 laplace@210.131.215.116 "echo OK" > nul 2>&1
-if errorlevel 1 (
-  echo  [WARNING] VPS connection failed. Please check your network.
+:: [2026-09-12] 旧VPS 210.131.215.116 は解約済み。Xserver が別契約者へ再割当するため、
+:: ハードコード + StrictHostKeyChecking=no のままだと見知らぬ第三者のホストへ接続し、
+:: そのホスト鍵を known_hosts に焼き付けてしまう。既定値は持たせない。
+if "%LAPLACE_SSH_HOST%"=="" (
+  echo  [SKIP] LAPLACE_SSH_HOST is not set - skipping VPS connection test.
+  echo         旧VPS 210.131.215.116 は解約済みです。新しい踏み台を LAPLACE_SSH_HOST に設定してください。
 ) else (
-  echo  [OK] VPS connection verified
+  echo  [INFO] Testing VPS connection to %LAPLACE_SSH_HOST% ...
+  ssh -i "%KEY_DST%" -o BatchMode=yes -o ConnectTimeout=10 %LAPLACE_SSH_HOST% "echo OK" > nul 2>&1
+  if errorlevel 1 (
+    echo  [WARNING] VPS connection failed. Please check your network.
+  ) else (
+    echo  [OK] VPS connection verified
+  )
 )
 
 echo.

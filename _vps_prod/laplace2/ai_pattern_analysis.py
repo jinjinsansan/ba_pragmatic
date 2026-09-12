@@ -29,10 +29,24 @@ import math
 from collections import Counter, defaultdict
 import statistics
 
+def _LAPLACE_SSH_HOST():
+    """旧VPS 210.131.215.116 は 2026-08 に解約済み (Xserver が別契約者へ再割当する)。
+    ハードコードのままだと見知らぬ第三者のホストへ鍵を提示しにいく。
+    新しいデータ元を LAPLACE_SSH_HOST に入れて使うこと。 (2026-09-12)"""
+    import os as _os
+    h = (_os.environ.get("LAPLACE_SSH_HOST") or "").strip()
+    if not h:
+        raise SystemExit(
+            "LAPLACE_SSH_HOST が未設定です。旧VPS(210.131.215.116)は解約済みのため "
+            "既定値は持たせていません。新しいホストを指定してください。"
+        )
+    return h
+
+
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 SSH_KEY = r'C:\Users\USER\.ssh\laplace_vps'
-SSH_HOST = 'laplace@210.131.215.116'
+SSH_HOST = _LAPLACE_SSH_HOST()
 
 # Theoretical baccarat probabilities (8-deck)
 P_PROB = 0.4462

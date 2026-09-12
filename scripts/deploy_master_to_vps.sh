@@ -27,7 +27,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 DOMAIN=""
-VPS_HOST="210.131.215.116"
+VPS_HOST="${LAPLACE_BASTION_HOST:?旧VPSは解約済み (2026-09-12)。新しいVPSを LAPLACE_BASTION_HOST に指定してください}"
 VPS_USER="laplace"
 SSH_KEY="${HOME}/.ssh/laplace_vps"
 LE_EMAIL="${LE_EMAIL:-}"

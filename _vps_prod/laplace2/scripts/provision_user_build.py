@@ -57,7 +57,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 USER_BUILD_DIR = REPO_ROOT / "gui" / "user_build"
 REGISTRY_CSV = REPO_ROOT / "scripts" / "user_ports.csv"  # 管理者ローカルの台帳
 # 環境変数で上書き可
-_BASTION_HOST = os.environ.get("LAPLACE_BASTION_HOST", "210.131.215.116")
+_BASTION_HOST = os.environ.get("LAPLACE_BASTION_HOST", "")  # 旧VPS解約済 (2026-09-12)
 _BASTION_USER = os.environ.get("LAPLACE_BASTION_USER", "laplace")
 VPS_SSH = f"{_BASTION_USER}@{_BASTION_HOST}"
 VPS_KEY = Path(os.environ.get("LAPLACE_BASTION_KEY", str(Path.home() / ".ssh" / "laplace_vps")))

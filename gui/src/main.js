@@ -176,7 +176,7 @@ function startSshTunnel() {
     return;
   }
 
-  const sshHost = envFile.LAPLACE_SSH_HOST || process.env.LAPLACE_SSH_HOST || 'laplace@210.131.215.116';
+  const sshHost = envFile.LAPLACE_SSH_HOST || process.env.LAPLACE_SSH_HOST || ''  /* 旧VPS解約済 (2026-09-12): 既定値を持たせない */;
   const sshKey = envFile.LAPLACE_SSH_KEY || process.env.LAPLACE_SSH_KEY || path.join(os.homedir(), '.ssh', 'laplace_vps');
   const localPort = envFile.LAPLACE_LOCAL_PORT || '8000';
   const remotePort = envFile.LAPLACE_REMOTE_PORT || '8000';
