@@ -934,6 +934,75 @@ def _expected_api_key() -> str:
 _SESS_LOCK = threading.RLock()
 _SESSIONS: dict[str, dict[str, Any]] = {}  # token -> {csrf, exp}
 
+# ── /master/login のブルートフォース対策 (2026-09-12) ─────────────────────
+# マスター画面はインターネット全体から見える位置にあり、パスワードは運用上
+# 覚えやすいものが使われる (例: チーム名)。試行回数を制限しないと数分で破られ、
+# 破られた場合は「全受け子へ BET 指示を送れる」状態になる。
+#
+# 状態はプロセス内メモリのみ。再起動で消えるが、攻撃者は再起動を起こせないので
+# 実用上の問題はない (外部依存を増やさないことを優先した)。
+_LOGIN_LOCK = threading.RLock()
+_LOGIN_FAILS: dict[str, dict[str, float]] = {}  # ip -> {n, first, until}
+
+LOGIN_MAX_FAILS = int(os.getenv("BACOPY_LOGIN_MAX_FAILS", "5") or 5)
+LOGIN_WINDOW_SEC = int(os.getenv("BACOPY_LOGIN_WINDOW_SEC", "300") or 300)
+LOGIN_BLOCK_SEC = int(os.getenv("BACOPY_LOGIN_BLOCK_SEC", "900") or 900)
+
+
+def _client_ip(handler) -> str:
+    """接続元IP。
+
+    ★8010 は 127.0.0.1 にのみ束縛しており、外部からは必ず自分の Caddy を
+    経由する。したがって X-Forwarded-For は信用してよい (直接叩ける経路が無い)。
+    逆に XFF を見ないと、全員が 127.0.0.1 と見なされて共倒れになる。
+    """
+    xff = (handler.headers.get("X-Forwarded-For") or "").strip()
+    if xff:
+        return xff.split(",")[0].strip()[:64]
+    try:
+        return str(handler.client_address[0])[:64]
+    except Exception:
+        return "unknown"
+
+
+def _login_block_remaining(ip: str) -> int:
+    """ブロック中なら残り秒数、そうでなければ 0。"""
+    now = time.time()
+    with _LOGIN_LOCK:
+        rec = _LOGIN_FAILS.get(ip)
+        if not rec:
+            return 0
+        until = rec.get("until", 0.0)
+        if until > now:
+            return int(until - now) + 1
+        # 窓を過ぎた失敗はリセット
+        if now - rec.get("first", 0.0) > LOGIN_WINDOW_SEC:
+            _LOGIN_FAILS.pop(ip, None)
+        return 0
+
+
+def _login_record_fail(ip: str) -> None:
+    now = time.time()
+    with _LOGIN_LOCK:
+        rec = _LOGIN_FAILS.get(ip)
+        if not rec or now - rec.get("first", 0.0) > LOGIN_WINDOW_SEC:
+            rec = {"n": 0.0, "first": now, "until": 0.0}
+        rec["n"] = rec.get("n", 0.0) + 1
+        if rec["n"] >= LOGIN_MAX_FAILS:
+            rec["until"] = now + LOGIN_BLOCK_SEC
+        _LOGIN_FAILS[ip] = rec
+        # 際限なく増えないよう、古い記録を掃除する
+        if len(_LOGIN_FAILS) > 4096:
+            for k, v in list(_LOGIN_FAILS.items()):
+                if v.get("until", 0.0) < now and now - v.get("first", 0.0) > LOGIN_WINDOW_SEC:
+                    _LOGIN_FAILS.pop(k, None)
+
+
+def _login_clear(ip: str) -> None:
+    with _LOGIN_LOCK:
+        _LOGIN_FAILS.pop(ip, None)
+
+
 
 def _master_password() -> str:
     pw = os.getenv("BACOPY_MASTER_PASSWORD", "").strip()
@@ -1279,10 +1348,28 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         u = urlparse(self.path)
         if u.path == "/master/login":
+            ip = _client_ip(self)
+            remain = _login_block_remaining(ip)
+            if remain > 0:
+                # ★ここで弾かないと、覚えやすいパスワードは数分で破られる
+                return _send_html(
+                    self, 429,
+                    _master_login_page(
+                        error=f"試行回数の上限に達しました。{remain // 60 + 1} 分後にもう一度お試しください。"
+                    ),
+                )
             form = _read_form(self)
             pw = str(form.get("password") or "")
-            if pw != _master_password():
-                return _send_html(self, 401, _master_login_page(error="パスワードが違います"))
+            # 比較時間を一定にする (タイミングから文字数や一致長を推定させない)
+            if not secrets.compare_digest(pw, _master_password()):
+                _login_record_fail(ip)
+                left = max(0, LOGIN_MAX_FAILS - int(_LOGIN_FAILS.get(ip, {}).get("n", 0)))
+                suffix = f" (あと {left} 回)" if left else ""
+                return _send_html(
+                    self, 401,
+                    _master_login_page(error=f"パスワードが違います{suffix}"),
+                )
+            _login_clear(ip)
             tok = secrets.token_urlsafe(32)
             csrf = secrets.token_urlsafe(18)
             exp = time.time() + 60 * 60 * 12
