@@ -1548,6 +1548,30 @@ function stopBot() {
   stopWatchdog();
 }
 
+// ── スタンドアロン運用 (2026-09-12) ──────────────────────────────────
+// BACOPY_STANDALONE=1 で Supabase 依存 (ログイン / ライセンス / 課金) を切る。
+// 復活後の方針として、受け子GUIは .env の BACOPY_API_KEY だけで動かす
+// (オーナー決定 2026-08-28)。bafather.uk と Supabase は使わない。
+//
+// ★ここを切っても運用に必要な可視性は失われない。各受け子の残高・日次PnL・
+//   現在の卓・BET可否はハートビート (upsert_executor) 経由でマスター画面に出る。
+//   失うのは課金・ロックダウン・Web帳簿だけ。
+function _isStandalone() {
+  const v = String(process.env.BACOPY_STANDALONE || '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+function _standaloneIdentity() {
+  const id = String(process.env.BACOPY_EXECUTOR_ID || 'executor').trim() || 'executor';
+  const email = String(process.env.BACOPY_USER_EMAIL || '').trim() || `${id}@local`;
+  return {
+    user: { email, id: `standalone-${id}` },
+    access_token: '',
+    refresh_token: '',
+    expires_at: 0,
+  };
+}
+
 let _supabaseConfig = null;
 
 let _supabaseSession = null;
@@ -1759,6 +1783,8 @@ async function signInWithPassword(email, password) {
 }
 
 async function ensureSession() {
+  // スタンドアロンでは Supabase に一切問い合わせない
+  if (_isStandalone()) return _standaloneIdentity();
   if (!_supabaseSession) {
     const saved = _loadSavedSession();
     if (saved && saved.access_token && saved.refresh_token) {
@@ -1791,6 +1817,21 @@ async function ensureSession() {
 }
 
 async function billingStatus() {
+  // スタンドアロンではライセンス/課金の判定を行わず、常に利用可として返す。
+  // renderer 側は is_free=true / ok=true を見て残高チェックを飛ばす。
+  if (_isStandalone()) {
+    const s = _standaloneIdentity();
+    return {
+      ok: true,
+      balance: 0,
+      is_free: true,
+      bot_paid: true,
+      suspended: false,
+      email: s.user.email,
+      user_id: s.user.id,
+      standalone: true,
+    };
+  }
   const session = await ensureSession();
   if (!session || !session.user) {
     return { ok: false, reason: 'Not signed in', balance: 0 };

@@ -201,6 +201,16 @@ function main() {
   if (!laplaceApiKey) console.warn('[warn] LAPLACE_API_KEY not found - session-state POST (cron/settle) will not work');
   if (!bafatherEmail) console.warn('[warn] BACOPY_BAFATHER_EMAIL not found - session-state POST will rely on GUI login');
 
+  // スタンドアロン運用 (2026-09-12)。Supabase (ログイン/ライセンス/課金) を使わない。
+  // ★このとき LAPLACE_API_KEY と Supabase キーは「焼き込まない」。
+  //   エンジンの bafather 同期は LAPLACE_API_KEY 未設定なら即 return する fail-soft
+  //   だが、鍵を配ってしまえば意味がないので配布物から外す。
+  const standalone = String(
+    process.env.BACOPY_STANDALONE || localEnv.BACOPY_STANDALONE || ''
+  ).trim().toLowerCase();
+  const isStandalone = standalone === '1' || standalone === 'true' || standalone === 'yes';
+  if (isStandalone) console.log('[info] standalone build - Supabase / bafather keys are NOT embedded');
+
   // Stake オリジン (ミラー対応)。未指定なら stake.com のままだが、日本向けは 451 なので
   // 必ずミラーを指定すること。
   const stakeOrigin = String(
@@ -226,10 +236,12 @@ function main() {
     BACOPY_API_URL: 'https://master.bafather.uk',
     ...(apiKey ? { BACOPY_API_KEY: apiKey } : {}),
     ...(remoteApiKey ? { BACOPY_REMOTE_API_KEY: remoteApiKey } : {}),
-    ...(supabaseUrl ? { NEXT_PUBLIC_SUPABASE_URL: supabaseUrl } : {}),
-    ...(supabaseAnonKey ? { NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey } : {}),
-    ...(laplaceApiKey ? { LAPLACE_API_KEY: laplaceApiKey } : {}),
-    BACOPY_BAFATHER_EMAIL: bafatherEmail,
+    // ★standalone では Supabase / bafather 系の鍵を一切埋め込まない
+    ...(isStandalone ? { BACOPY_STANDALONE: '1' } : {}),
+    ...(!isStandalone && supabaseUrl ? { NEXT_PUBLIC_SUPABASE_URL: supabaseUrl } : {}),
+    ...(!isStandalone && supabaseAnonKey ? { NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey } : {}),
+    ...(!isStandalone && laplaceApiKey ? { LAPLACE_API_KEY: laplaceApiKey } : {}),
+    ...(!isStandalone ? { BACOPY_BAFATHER_EMAIL: bafatherEmail } : {}),
     BACOPY_EXECUTOR_ID: executorId,
     BACOPY_EXECUTOR_LABEL: executorId,
     // ── dual-line manual-assist distribution config ──
