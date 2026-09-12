@@ -2220,6 +2220,32 @@ app.whenReady().then(() => {
     }
   });
 
+  // 配布プロファイルを renderer へ渡す (2026-09-12)。
+  // BACOPY_MONEY_MODES に許可する資金管理モードをカンマ区切りで書く。
+  //   田辺チーム: dalembert,martingale,grand_martingale
+  //   梶原チーム: 未設定 (= 全モード)
+  //   韓国チーム: 空文字 (= サーバーが金額まで決めるので受け子は選ばない)
+  ipcMain.handle('get-profile', async () => {
+    try {
+      const envFile = loadDotEnv();
+      const raw = envFile.BACOPY_MONEY_MODES !== undefined
+        ? envFile.BACOPY_MONEY_MODES
+        : process.env.BACOPY_MONEY_MODES;
+      // ★未設定 (undefined) と空文字を区別する。空文字は「1つも許可しない」の意味。
+      const moneyModes = raw === undefined || raw === null
+        ? null
+        : String(raw).split(',').map((s) => s.trim()).filter(Boolean);
+      return {
+        ok: true,
+        standalone: _isStandalone(),
+        executorId: String(envFile.BACOPY_EXECUTOR_ID || process.env.BACOPY_EXECUTOR_ID || ''),
+        moneyModes,
+      };
+    } catch (e) {
+      return { ok: false, moneyModes: null, reason: e && e.message ? e.message : String(e) };
+    }
+  });
+
   ipcMain.handle('billing-status', async () => {
     try {
       return await billingStatus();

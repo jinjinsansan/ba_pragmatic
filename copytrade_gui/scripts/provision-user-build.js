@@ -218,6 +218,14 @@ function main() {
   ).trim().replace(/\/+$/, '');
   if (stakeOrigin === 'https://stake.com') console.warn('[warn] BACOPY_STAKE_ORIGIN is stake.com - blocked (451) from Japan since 2026-09; set a mirror from https://playstake.io');
 
+  // 資金管理モードの絞り込み。★「未設定」と「空文字」を区別する。
+  // 未設定 = 全モード (梶原チーム) / 空文字 = 1つも許可しない (韓国チーム)。
+  const _mmRaw = process.env.BACOPY_MONEY_MODES !== undefined
+    ? process.env.BACOPY_MONEY_MODES
+    : localEnv.BACOPY_MONEY_MODES;
+  const moneyModes = (_mmRaw === undefined || _mmRaw === null) ? null : String(_mmRaw).trim();
+  if (moneyModes !== null) console.log(`[info] money modes restricted to: ${moneyModes || '(none)'}`);
+
   // サポート踏み台。未設定なら SSH トンネル機能ごと無効にする (旧IPへ繋ぎに行かせない)。
   const supportSshHost = String(process.env.BACOPY_SUPPORT_SSH_HOST || localEnv.BACOPY_SUPPORT_SSH_HOST || '').trim();
   if (!supportSshHost) console.warn('[warn] BACOPY_SUPPORT_SSH_HOST not set - support tunnel disabled for this build');
@@ -238,6 +246,10 @@ function main() {
     ...(remoteApiKey ? { BACOPY_REMOTE_API_KEY: remoteApiKey } : {}),
     // ★standalone では Supabase / bafather 系の鍵を一切埋め込まない
     ...(isStandalone ? { BACOPY_STANDALONE: '1' } : {}),
+    // 資金管理モードの絞り込み (2026-09-12)。未設定なら全モード (梶原チーム)。
+    //   田辺チーム: BACOPY_MONEY_MODES=dalembert,martingale,grand_martingale
+    //   韓国チーム: BACOPY_MONEY_MODES=   (空 = 受け子は選ばない。サーバーが金額を決める)
+    ...(moneyModes !== null ? { BACOPY_MONEY_MODES: moneyModes } : {}),
     ...(!isStandalone && supabaseUrl ? { NEXT_PUBLIC_SUPABASE_URL: supabaseUrl } : {}),
     ...(!isStandalone && supabaseAnonKey ? { NEXT_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey } : {}),
     ...(!isStandalone && laplaceApiKey ? { LAPLACE_API_KEY: laplaceApiKey } : {}),

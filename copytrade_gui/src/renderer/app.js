@@ -970,6 +970,51 @@ function _applyMoneyTypeVisibility() {
   if ($('#b123setNote')) $('#b123setNote').style.display = b123set ? '' : 'none';
   if ($('#dalsetNote')) $('#dalsetNote').style.display = dalset ? '' : 'none';
 }
+
+// ── 配布プロファイルによる資金管理モードの絞り込み (2026-09-12) ──────────
+// .env の BACOPY_MONEY_MODES に許可モードをカンマ区切りで書くと、その3方式だけを出す。
+//   田辺チーム: dalembert,martingale,grand_martingale
+//   梶原チーム: 未設定 (= 全モード。従来どおり)
+// ★「未設定」と「空文字」は別物。空文字は1つも許可しない (韓国チーム: 金額はサーバーが決める)。
+let _allowedMoneyModes = null;
+
+async function _applyMoneyModeProfile() {
+  if (!window.valhalla || !window.valhalla.getProfile) return;
+  let prof = null;
+  try { prof = await window.valhalla.getProfile(); } catch (_) { return; }
+  if (!prof || !prof.ok) return;
+  const allowed = prof.moneyModes;
+  if (allowed === null || allowed === undefined) return;  // 絞り込みなし
+  _allowedMoneyModes = allowed;
+
+  // 詳細セレクト (flat/martingale/grand_martingale/dalembert/bet123) を絞る
+  const fv = $('#inputFlatVariant');
+  if (fv) {
+    Array.from(fv.options).forEach((o) => {
+      o.hidden = !allowed.includes(o.value);
+      o.disabled = o.hidden;
+    });
+    if (!allowed.includes(fv.value) && allowed.length) fv.value = allowed[0];
+  }
+
+  // 上位セレクトは「その他(フラット/マーチンゲール/ダランベール)」だけ残す。
+  // 許可が1つも無ければ資金管理セクションごと隠す。
+  const mt = $('#inputMoneyType');
+  if (mt) {
+    if (!allowed.length) {
+      const grp = mt.closest('.form-group');
+      if (grp) grp.style.display = 'none';
+    } else {
+      Array.from(mt.options).forEach((o) => {
+        o.hidden = (o.value !== 'other');
+        o.disabled = o.hidden;
+      });
+      mt.value = 'other';
+    }
+  }
+  _applyMoneyTypeVisibility();
+  if (typeof _commitMoneyMode === 'function') _commitMoneyMode();
+}
 // ── SEQ 階段プレビュー (2026-08-05) ──────────────────────────────────
 // エンジン (dual_line_money.py) の $1基準配列と同じ値。開始額を掛けて表示する。
 // 変更時は両方を必ず揃えること。
@@ -1058,6 +1103,9 @@ function _loadMoneyModeUI(mode) {
   // プレビュー表示と実際に使う階段を一致させるため。
   _commitMoneyMode();
   _applyMoneyTypeVisibility();
+  // ★保存済み設定を反映した「後」に絞り込む。順序を逆にすると、
+  //   許可されていないモードが復元されたまま残る。
+  _applyMoneyModeProfile();
 }
 
 // NOW 通知音: NOW(赤/青枠)が新規に出た時に2音チャイムを鳴らす。

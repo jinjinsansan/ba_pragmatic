@@ -9,6 +9,11 @@ contextBridge.exposeInMainWorld('valhalla', {
   setReverseBet: (on) => ipcRenderer.invoke('set-reverse-bet', !!on),
   resetCaught: () => ipcRenderer.invoke('reset-caught'),
 
+  // 配布プロファイル (2026-09-12)
+  // 田辺チームはダランベール/マーチンゲール/グランドマーチンゲールの3方式のみ、
+  // 梶原チームは全モード、という配り分けを .env の BACOPY_MONEY_MODES で行う。
+  getProfile: () => ipcRenderer.invoke('get-profile'),
+
   // Auth / billing
   authSignIn: (email, password) => ipcRenderer.invoke('auth-signin', { email, password }),
   authGetSession: () => ipcRenderer.invoke('auth-session'),
