@@ -1248,6 +1248,21 @@ class _Handler(BaseHTTPRequestHandler):
                 "complete_only": complete_only,
                 "records": records,
             })
+        if u.path == "/api/origin":
+            # 受け子が接続すべき Stake オリジンを配る (2026-09-12)。
+            # ★exe に焼かないことが目的。ミラーは 451 で1本ずつ焼かれるため、
+            #   焼き込むと毎回インストーラを作り直す羽目になる。
+            try:
+                import stake_origin
+                return _send_json(self, 200, stake_origin.public_state())
+            except Exception as e:
+                # フェイルソフト: モジュールや状態ファイルが無くても
+                # 既定値を返して受け子を止めない
+                return _send_json(self, 200, {
+                    "origin": (os.getenv("BACOPY_STAKE_ORIGIN", "") or "https://stake.com").rstrip("/"),
+                    "candidates": [],
+                    "error": str(e)[:120],
+                })
         if u.path == "/api/snapshots":
             qs = parse_qs(u.query or "")
             provider = (qs.get("provider") or [""])[0]
