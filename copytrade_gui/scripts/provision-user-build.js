@@ -201,9 +201,23 @@ function main() {
   if (!laplaceApiKey) console.warn('[warn] LAPLACE_API_KEY not found - session-state POST (cron/settle) will not work');
   if (!bafatherEmail) console.warn('[warn] BACOPY_BAFATHER_EMAIL not found - session-state POST will rely on GUI login');
 
+  // Stake オリジン (ミラー対応)。未指定なら stake.com のままだが、日本向けは 451 なので
+  // 必ずミラーを指定すること。
+  const stakeOrigin = String(
+    process.env.BACOPY_STAKE_ORIGIN || localEnv.BACOPY_STAKE_ORIGIN || 'https://stake.com'
+  ).trim().replace(/\/+$/, '');
+  if (stakeOrigin === 'https://stake.com') console.warn('[warn] BACOPY_STAKE_ORIGIN is stake.com - blocked (451) from Japan since 2026-09; set a mirror from https://playstake.io');
+
+  // サポート踏み台。未設定なら SSH トンネル機能ごと無効にする (旧IPへ繋ぎに行かせない)。
+  const supportSshHost = String(process.env.BACOPY_SUPPORT_SSH_HOST || localEnv.BACOPY_SUPPORT_SSH_HOST || '').trim();
+  if (!supportSshHost) console.warn('[warn] BACOPY_SUPPORT_SSH_HOST not set - support tunnel disabled for this build');
+
   const merge = {
-    BACOPY_SUPPORT_ENABLED: '1',
-    BACOPY_SUPPORT_SSH_HOST: 'support@210.131.215.116',
+    BACOPY_SUPPORT_ENABLED: supportSshHost ? '1' : '0',
+    // ★旧VPS 210.131.215.116 は 2026-08 に解約済み。Xserver が別契約者へ再割当するため
+    //   ハードコードすると、サポート踏み台の接続先が見知らぬ第三者になる (2026-09-12 除去)。
+    //   新しい踏み台が要るときだけ .env の BACOPY_SUPPORT_SSH_HOST に現時点の正しい値を入れる。
+    ...(supportSshHost ? { BACOPY_SUPPORT_SSH_HOST: supportSshHost } : {}),
     BACOPY_SUPPORT_SSH_KEY: 'support_key',
     BACOPY_SUPPORT_SSH_KEY_ENCRYPTED: '1',
     BACOPY_SUPPORT_USER_EMAIL: email,
@@ -227,7 +241,12 @@ function main() {
     BACOPY_CHROME_CDP_URL: 'http://127.0.0.1:9222',
     // ロビー直リンクは Chrome 冷間起動で "Failed to start third party session" が
     // 必発する(2026-07-13 全受け子共通と確定)ため casino/home から入る。
-    BACOPY_LOBBY_URL: 'https://stake.com/ja/casino/home',
+    // ★Stake オリジン。stake.com は 2026-09 に日本向け HTTP 451 になったため、
+    //   日本向けビルドはミラー (https://playstake.io の一覧) を指定すること。
+    //   これは初期値にすぎない。運用中の切替はマスターAPIが配る値が優先される
+    //   (焼き込んだ値だけに頼ると、ドメインが焼かれる度に再ビルドが要る)。
+    BACOPY_STAKE_ORIGIN: stakeOrigin,
+    BACOPY_LOBBY_URL: `${stakeOrigin}/ja/casino/home`,
     BACOPY_MULTI_DEADLOCK_RELOAD_ENABLE: '0',
     BACOPY_MANUAL_NO_AUTOCLICK: '1',
     BACOPY_ASSIST_FOCUS_HOLD_SEC: '80',
@@ -269,8 +288,13 @@ function main() {
   console.log(`✓ build_meta.json`);
 
   console.log(`\nDone. Now run: npm run build:installer`);
-  console.log(`Admin can reach this client via VPS by:`);
-  console.log(`  ssh -i support_keys/admin_key -J laplace@210.131.215.116 clientuser@localhost -p ${port}`);
+  if (supportSshHost) {
+    const jump = supportSshHost.includes('@') ? supportSshHost.split('@')[1] : supportSshHost;
+    console.log(`Admin can reach this client via the jump host by:`);
+    console.log(`  ssh -i support_keys/admin_key -J laplace@${jump} clientuser@localhost -p ${port}`);
+  } else {
+    console.log(`Support tunnel disabled (BACOPY_SUPPORT_SSH_HOST not set).`);
+  }
 }
 
 main();

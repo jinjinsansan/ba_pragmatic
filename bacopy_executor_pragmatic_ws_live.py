@@ -120,7 +120,43 @@ def _seq_for_bet_mode(mode: str) -> list:
 BA_ROOT = Path(__file__).parent.parent / "ba"
 sys.path.insert(0, str(BA_ROOT))
 
-LOBBY_URL = "https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat"
+# ======== Stake オリジン (ミラードメイン対応 / 2026-09-12) ========
+# stake.com は 2026-09 に日本向け HTTP 451 (総務省→Cloudflare 通知) になった。
+# ミラー (stake.bet / stake.games / stake1017.com ... 公式一覧は https://playstake.io) は
+# 生存しているが、通知される度に 1本ずつ焼かれる = ローテーションが前提。
+# ★オリジンを exe に焼くと、焼かれる度に全インストーラを作り直す羽目になる。
+#   必ず .env / マスターAPI から与えること。詳細は REVIVAL_PLAN_3TRACK_2026-09-12.md §4。
+STAKE_ORIGIN = (os.getenv("BACOPY_STAKE_ORIGIN", "") or "https://stake.com").strip().rstrip("/")
+STAKE_HOST = STAKE_ORIGIN.split("://", 1)[-1].split("/", 1)[0].strip().lower()
+
+# ★ロビー直リンクは Chrome 冷間起動で「Failed to start third party session」が必発
+#   (2026-07-13 全受け子共通で確定)。casino/home から入る。
+#   従来この定数は env を読んでおらず、GUI 側だけ casino/home に直っていたため、
+#   エンジンの復帰ナビゲーションだけ直リンクに戻る不整合があった (2026-09-12 修正)。
+LOBBY_URL = (os.getenv("BACOPY_LOBBY_URL", "") or f"{STAKE_ORIGIN}/ja/casino/home").strip()
+
+
+def _is_stake_host(url: str) -> bool:
+    """Stake 本体 (ミラー含む) の URL か。Pragmatic 系は除外する。"""
+    low = (url or "").lower()
+    if not low:
+        return False
+    if "pragmaticplaylive.net" in low:
+        return False
+    if STAKE_HOST and STAKE_HOST in low:
+        return True
+    # フェイルオーバー直後や、別ミラーで開いたままのタブから来るフレームも拾う。
+    # 公式ミラーは全て "stake" で始まる (stake.bet / stake1017.com / stake3015.com ...)。
+    return "stake" in low
+
+
+def _is_stake_account_ws(url: str) -> bool:
+    """Stake の口座/残高 WS か。旧 `"stake.com/_api/websockets" in url` の置き換え。
+
+    ★ここをドメイン固定のままミラーへ移すと、フレームを1つも拾わなくなり
+      **エラーを出さずに BET が飛ばなくなる**。判定は必ずこの関数を通すこと。
+    """
+    return "/_api/websockets" in (url or "").lower() and _is_stake_host(url)
 
 # ======== GUI IPC (stdout JSON) ========
 
@@ -1680,7 +1716,7 @@ def _stake_ws_diagnostic_log(state: _PragmaticState, url: str, data_str: str, is
             return
         low = (url or "").lower()
         # Stake 関連の候補 URL を広めに捕捉する (現行の `_api/websockets` 以外も).
-        if ("stake.com" not in low) and ("stake" not in low):
+        if not _is_stake_host(low):
             return
         # 既知 Pragmatic 系は除外 (既にログしている).
         if "pragmaticplaylive.net" in low or "dga.pragmaticplaylive.net" in low:
@@ -1952,7 +1988,7 @@ def _pump_ws_events(page, game_frame, state: _PragmaticState) -> None:
                     state.last_lobby_ws_recv_at = now
                 elif "pragmaticplaylive.net/game" in url:
                     state.last_game_ws_recv_at = now
-                elif "stake.com/_api/websockets" in url:
+                elif _is_stake_account_ws(url):
                     state.last_stake_ws_recv_at = now
             if "pragmaticplaylive.net/game" in url:
                 _maybe_update_from_game_ws_url(state, url)
@@ -1976,7 +2012,7 @@ def _pump_ws_events(page, game_frame, state: _PragmaticState) -> None:
                 _update_from_game_msg(state, obj)
             if is_recv and "dga.pragmaticplaylive.net/ws" in url:
                 _update_from_lobby_msg(state, obj)
-            if is_recv and "stake.com/_api/websockets" in url:
+            if is_recv and _is_stake_account_ws(url):
                 _update_from_stake_ws_msg(state, obj)
 
 
@@ -4673,7 +4709,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     state.last_lobby_ws_recv_at = now
                 elif "pragmaticplaylive.net/game" in url:
                     state.last_game_ws_recv_at = now
-                elif "stake.com/_api/websockets" in url:
+                elif _is_stake_account_ws(url):
                     state.last_stake_ws_recv_at = now
             except Exception:
                 pass
@@ -4698,7 +4734,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if isinstance(p, str) and "<" in p and "pragmaticplaylive.net/game" in url:
                     _update_from_game_xml(state, p)
                 return
-            if "stake.com/_api/websockets" in url:
+            if _is_stake_account_ws(url):
                 _update_from_stake_ws_msg(state, obj)
                 return
             if "betsopen" in obj or "betsclosed" in obj or "game" in obj or "timer" in obj or "bet" in obj:
@@ -4879,7 +4915,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     frame.page.go_back(timeout=5000)
                 except Exception:
                     try:
-                        frame.page.goto("https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat", timeout=15000)
+                        frame.page.goto(LOBBY_URL, timeout=15000)
                     except Exception:
                         pass
 

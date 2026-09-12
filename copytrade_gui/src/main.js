@@ -599,13 +599,21 @@ async function ensureCdpChrome(envFile) {
     );
     try { fs.mkdirSync(profileDir, { recursive: true }); } catch (_) {}
     // プラットフォーム別の初期URL。hh88 はカジノのログインページを開く(以後ユーザーが
-    // 手動で Pragmatic ライブバカラ→マルチエリアへ遷移する)。Stake は従来どおりロビー直行。
+    // 手動で Pragmatic ライブバカラ→マルチエリアへ遷移する)。
     const _isHh88 = String(env.BACOPY_PLATFORM || process.env.BACOPY_PLATFORM || 'stake').trim().toLowerCase() === 'hh88';
+    // Stake のオリジンはミラーへ切り替わりうる (2026-09: stake.com は日本から HTTP 451。
+    // 公式ミラー一覧 https://playstake.io。焼かれる度にローテーションが要る)。
+    // ★exe に焼かない。.env / マスターAPI が与えた値を使う。
+    const _stakeOrigin = String(
+      env.BACOPY_STAKE_ORIGIN || process.env.BACOPY_STAKE_ORIGIN || 'https://stake.com'
+    ).trim().replace(/\/+$/, '');
     const lobby = String(
       env.BACOPY_LOBBY_URL || process.env.BACOPY_LOBBY_URL
       || (_isHh88
         ? 'https://www.hh88vip5.com/en_hk/login'
-        : 'https://stake.com/ja/casino/games/pragmatic-play-live-lobby-baccarat')
+        // ★ロビー直リンクは Chrome 冷間起動で「Failed to start third party session」が
+        //   必発する (2026-07-13 全受け子共通で確定)。casino/home から入る。
+        : `${_stakeOrigin}/ja/casino/home`)
     );
     const args = [
       `--remote-debugging-port=${port}`,
@@ -955,14 +963,11 @@ function buildSpawnSpec(config) {
 
 
 
-  try {
-    const u = new URL(childEnv.BACOPY_API_URL);
-    if (u.hostname === 'master.bafather.uk') {
-      if (!childEnv.BACOPY_API_FALLBACK_IPS && !childEnv.BACOPY_API_FALLBACK_IP) {
-        childEnv.BACOPY_API_FALLBACK_IPS = '210.131.215.116';
-      }
-    }
-  } catch (_) {}
+  // ★フォールバックIPをここに書かない (2026-08-28)。
+  //   旧VPS 210.131.215.116 は 2026-08 に解約済みで、Xserver が別契約者へ再割当する。
+  //   ハードコードしたままだと DNS が引けない瞬間に BACOPY_API_KEY 付きのリクエストを
+  //   見知らぬ第三者のサーバーへ送ってしまう。必要なら .env の BACOPY_API_FALLBACK_IPS で
+  //   その時点の正しいIPを明示的に渡すこと (未設定なら DNS のみで解決する)。
 
 
 
