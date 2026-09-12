@@ -178,6 +178,44 @@ for f in copytrade_gui/src/main.js copytrade_gui/scripts/provision-user-build.js
 ★**`copytrade_gui/dist/BACOPYRECEIVER_user01..11_Setup.exe` は配布禁止のまま**
 (ビルド済みバイナリなので今回の修正は入っていない。再ビルドが要る)。
 
+### 3-6. Phase 2 着手分 (2026-09-12)
+
+**(a) `BACOPY_STANDALONE` — Supabase 依存を切る**(`copytrade_gui/src/main.js`)
+
+`ensureSession()` と `billingStatus()` の先頭で早期リターン。`is_free=true / ok=true`
+を返すので renderer は残高チェックを飛ばし、START が有効になる(表示は `FREE / UNLIMITED`)。
+`provision-user-build.js` は standalone ビルドで **Supabase / LAPLACE の4キーを焼き込まない**。
+
+★切っても運用に必要な可視性は失われない。残高・日次PnL・現在の卓・BET可否は
+ハートビート(`upsert_executor`)でマスター画面に出る。失うのは課金・ロックダウン・Web帳簿だけ。
+
+検証(実行して確認):
+```bash
+# _isStandalone の判定と、provision の merge を両モードで評価する
+# → standalone=true のとき Supabase/LAPLACE の4キーが入らないこと
+```
+
+**(b) `GET /api/origin` — ミラーの451を検知して自動切替**(`stake_origin.py` 新規)
+
+| 機能 | 内容 |
+|---|---|
+| `probe()` | 451/Legal Reasons → blocked、**403+"Just a moment" → ok**(実ブラウザなら通る) |
+| `refresh_candidates()` | `playstake.io` から121本を取得 |
+| `check_and_rotate()` | 焼けていたら候補へ切替 |
+| `GET /api/origin` | 要認証。モジュールが無くても既定値を返すフェイルソフト |
+
+VPS: `bacopy-origin-check.timer` が**30分毎**に refresh+check。終了コード10(切替発生)は
+`SuccessExitStatus=0 10` で成功扱い。状態は `/opt/bacopy/data/stake_origin.json`。
+
+★**日本のVPSだから成立する。** 海外VPSからは 451 にならないので、この判定は
+日本国内から行う必要がある。ConoHa を日本リージョンにしたことがここで効いている。
+
+検証: VPSから `stake.com`→451判定、候補121本取得、`stake.ac` へ自動切替、
+公開URL経由で origin 取得、認証なしは401。
+
+**残: 受け子側**(起動時と定期的に `/api/origin` を取得 → Chrome起動URLと
+エンジンの `BACOPY_STAKE_ORIGIN` に反映、451検知で次候補へ)。
+
 ### 3-5. 3系統問題 — ★当初の方針が誤りだったので変更した
 
 計画書には「直下版を `_archive_regression/` へ隔離」と書いたが、**実行すると壊れる**:
@@ -457,6 +495,7 @@ https://master.bafather.uk/master     → 302 → /master/login
 | `grep -P '[\x{3040}-...]'` が日本語を検出できない | ロケール依存。Python で数える |
 | PowerShell 5.1 が `.ps1` の日本語を化けさせる | **UTF-8 BOM を付ける**(`_deploy_vps.ps1` は付与済み) |
 | `open()` が cp932 で落ちる | 必ず `io.open(..., encoding='utf-8')` |
+| ★**heredoc にバックスラッシュを書くと1段落ちる** | `` が**リテラルのバックスペース(0x08)**としてファイルに入る。端末では不可視なので `sed`/`grep` で見ても気づけず、正規表現が無言で何にもマッチしなくなる。`co_consts` を見て初めて判明した。**バックスラッシュを含むコードは Write/Edit で書く** |
 | この環境には **camoufox が入っている** | dga-only の検証は偽モジュールで遮断しないと意味がない(§3-3) |
 
 ---
