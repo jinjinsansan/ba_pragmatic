@@ -18,6 +18,8 @@ const fs = require('fs');
 const https = require('https');
 const { spawn, execSync } = require('child_process');
 const os = require('os');
+// マスターが配る Stake オリジン (ミラー切替) を解決する
+const stakeOrigin = require('./stake_origin_client');
 
 let mainWindow = null;
 let botProcess = null;
@@ -603,18 +605,20 @@ async function ensureCdpChrome(envFile) {
     const _isHh88 = String(env.BACOPY_PLATFORM || process.env.BACOPY_PLATFORM || 'stake').trim().toLowerCase() === 'hh88';
     // Stake のオリジンはミラーへ切り替わりうる (2026-09: stake.com は日本から HTTP 451。
     // 公式ミラー一覧 https://playstake.io。焼かれる度にローテーションが要る)。
-    // ★exe に焼かない。.env / マスターAPI が与えた値を使う。
-    const _stakeOrigin = String(
-      env.BACOPY_STAKE_ORIGIN || process.env.BACOPY_STAKE_ORIGIN || 'https://stake.com'
-    ).trim().replace(/\/+$/, '');
-    const lobby = String(
-      env.BACOPY_LOBBY_URL || process.env.BACOPY_LOBBY_URL
-      || (_isHh88
-        ? 'https://www.hh88vip5.com/en_hk/login'
-        // ★ロビー直リンクは Chrome 冷間起動で「Failed to start third party session」が
-        //   必発する (2026-07-13 全受け子共通で確定)。casino/home から入る。
-        : `${_stakeOrigin}/ja/casino/home`)
-    );
+    // ★exe に焼かない。マスター (GET /api/origin) が配る値を最優先し、
+    //   繋がらない時だけ .env → stake.com と縮退する。
+    let _stakeOrigin;
+    try {
+      _stakeOrigin = await stakeOrigin.resolveOrigin(env);
+    } catch (_) {
+      _stakeOrigin = stakeOrigin.cachedOrigin(env);
+    }
+    const lobby = _isHh88
+      ? String(env.BACOPY_LOBBY_URL || process.env.BACOPY_LOBBY_URL || 'https://www.hh88vip5.com/en_hk/login')
+      // ★ロビー直リンクは Chrome 冷間起動で「Failed to start third party session」が
+      //   必発する (2026-07-13 全受け子共通で確定)。casino/home から入る。
+      : stakeOrigin.lobbyUrl(env);
+    console.log(`[cdp-chrome] stake origin = ${_stakeOrigin}`);
     const args = [
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${profileDir}`,
@@ -958,6 +962,15 @@ function buildSpawnSpec(config) {
   if (!childEnv.BACOPY_API_URL) childEnv.BACOPY_API_URL = 'https://master.bafather.uk';
   if (!childEnv.BACOPY_API_CONNECT_TIMEOUT_SEC) childEnv.BACOPY_API_CONNECT_TIMEOUT_SEC = '5';
   if (!childEnv.BACOPY_API_TIMEOUT_SEC) childEnv.BACOPY_API_TIMEOUT_SEC = '15';
+
+  // ★エンジンにも「今のオリジン」を渡す。Chrome の起動URLと食い違うと、
+  //   エンジンの WS フレーム選別 (_is_stake_account_ws) が一致せず、
+  //   エラーを出さないまま BET が飛ばなくなる。必ず同じ値を使う。
+  {
+    const _o = stakeOrigin.cachedOrigin(envFile);
+    childEnv.BACOPY_STAKE_ORIGIN = _o;
+    if (!childEnv.BACOPY_LOBBY_URL) childEnv.BACOPY_LOBBY_URL = stakeOrigin.lobbyUrl(envFile);
+  }
 
 
 
