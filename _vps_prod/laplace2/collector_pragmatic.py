@@ -33,7 +33,9 @@ from pathlib import Path
 BA_ROOT = Path(__file__).parent.parent / "ba"
 sys.path.insert(0, str(BA_ROOT))
 
-from camoufox.sync_api import Camoufox  # type: ignore
+# ★camoufox は「ブラウザを使うモード」でのみ必要。dga直結のみで回す VPS には
+#   camoufox / playwright を入れないため、モジュール冒頭では import しない
+#   (冒頭 import のままだと BACOPY_DGA_ONLY=1 でも ImportError で落ちる)。
 
 import requests
 
@@ -563,22 +565,97 @@ class Collector:
         ws.on("framereceived", handler)
         ws.on("close", lambda: logger.warning(f"[WS CLOSE] {url}"))
 
+    def _monitor_loop(self, page, start_ts: float, report_interval: int, duration) -> None:
+        """収集の監視ループ。ブラウザ有無の両モードで共有する。
+
+        page=None は dga直結のみ (BACOPY_DGA_ONLY=1) のモード。Playwright を持たないので
+        sleep で回し、ロビーDOM由来の qpid スキャンは行わない。
+        """
+        last_report = time.time()
+        last_db_stats = time.time()
+        # WS 受信ウォッチドッグ: 一定時間 msgs が増えなければ self-restart させる.
+        # dga WS の disconnect / Stake セッション失効で受信停止しても収集器は
+        # プロセスだけ生きている状態になるため, systemd Restart=always に任せて
+        # クリーン再起動するほうが確実.
+        ws_watchdog_stale_sec = int(os.getenv("BACOPY_COLLECTOR_WS_STALE_SEC", "180"))  # 3 min
+        last_msg_check_at = time.time()
+        last_msg_count = self.stats_msg
+        last_msg_change_at = time.time()
+        while not self.stop_flag:
+            if page is not None:
+                # page.wait_for_timeout yields to Playwright event loop, letting
+                # WebSocket frame handlers fire in real time (time.sleep would block them)
+                page.wait_for_timeout(1000)
+            else:
+                # dga-only: Playwright が居ないので素の sleep。
+                # dga フィードは daemon スレッドなので blocking しても支障ない。
+                time.sleep(1.0)
+            now = time.time()
+            if now - last_report >= report_interval:
+                elapsed = int(now - start_ts)
+                logger.info(
+                    f"[STATUS] elapsed={elapsed}s  msgs={self.stats_msg}  "
+                    f"shuffles={self.stats_shuffle}  saved={self.stats_save}  "
+                    f"tables={len(self.buffers)}"
+                )
+                last_report = now
+
+            # WS watchdog: 30s おきに msg 増分を check, stale なら exit(1) → systemd が restart.
+            if now - last_msg_check_at >= 30.0:
+                if self.stats_msg > last_msg_count:
+                    last_msg_count = self.stats_msg
+                    last_msg_change_at = now
+                last_msg_check_at = now
+                silence = now - last_msg_change_at
+                if silence >= ws_watchdog_stale_sec:
+                    logger.error(
+                        f"[ws-watchdog] no new msgs for {int(silence)}s "
+                        f"(stats_msg={self.stats_msg}). Triggering self-restart via exit(1)."
+                    )
+                    # 既存の snapshot push 完遂を待たず exit (systemd が Restart=always で拾う).
+                    os._exit(1)
+            if now - last_db_stats >= 300:
+                s = stats()
+                logger.info(f"[DB] {s}")
+                last_db_stats = now
+            if page is not None and self.qpid_scan_interval_sec > 0 and now - self.last_qpid_scan_at >= self.qpid_scan_interval_sec:
+                try:
+                    self._scan_lobby_qpid(page)
+                except Exception as e:
+                    logger.warning(f"[qpid-scan] scan failed: {e}")
+                self.last_qpid_scan_at = now
+            if duration and (now - start_ts) >= duration:
+                logger.info(f"Duration {duration}s reached, stopping.")
+                break
+
     def run(self, duration: int | None = None, profile_dir: Path | None = None,
             cookies_file: Path | None = None):
         import json as _json
         init_db()
-        profile = profile_dir or DEFAULT_PROFILE
-        profile.mkdir(parents=True, exist_ok=True)
 
-        # 初回起動で profile が空ならソースからコピー (ローカル開発時のみ)
-        is_empty = not any(profile.iterdir())
-        if is_empty and SOURCE_PROFILE.exists():
-            logger.info(f"Cloning profile {SOURCE_PROFILE} -> {profile}")
-            import shutil
-            # rmdir first then copytree
-            profile.rmdir()
-            shutil.copytree(str(SOURCE_PROFILE), str(profile))
-        logger.info(f"DB initialized. Profile: {profile}")
+        # ★dga直結のみモード (2026-09-12)
+        #   ブラウザを一切起動しない。必要な pip は websockets / requests だけになり、
+        #   1 vCPU / 1GB の VPS で足りる。卓グリッドと罫線は dga フィードだけで埋まる。
+        #   ロビーDOM 由来の qpid スキャンだけが失われる (卓IDは静的リストで足りる)。
+        dga_only = os.getenv("BACOPY_DGA_ONLY", "0").strip() == "1"
+        if dga_only and os.getenv("BACOPY_DGA_DIRECT", "1") != "1":
+            raise SystemExit("BACOPY_DGA_ONLY=1 には BACOPY_DGA_DIRECT=1 が要る (フィード源が無くなる)")
+
+        profile = profile_dir or DEFAULT_PROFILE
+        if not dga_only:
+            profile.mkdir(parents=True, exist_ok=True)
+
+            # 初回起動で profile が空ならソースからコピー (ローカル開発時のみ)
+            is_empty = not any(profile.iterdir())
+            if is_empty and SOURCE_PROFILE.exists():
+                logger.info(f"Cloning profile {SOURCE_PROFILE} -> {profile}")
+                import shutil
+                # rmdir first then copytree
+                profile.rmdir()
+                shutil.copytree(str(SOURCE_PROFILE), str(profile))
+            logger.info(f"DB initialized. Profile: {profile}")
+        else:
+            logger.info("DB initialized. [DGA-ONLY] ブラウザは起動しない")
 
         launch_opts = {
             "headless": self.headless,
@@ -600,6 +677,15 @@ class Collector:
         # dga直結フィード (Stake/Cloudflare完全バイパス・2026-08-03 Stake仕様変更対応)
         if os.getenv("BACOPY_DGA_DIRECT", "1") == "1":
             self._start_dga_direct_feed()
+
+        if dga_only:
+            self._monitor_loop(None, start_ts, report_interval, duration)
+            logger.info(f"Final: msgs={self.stats_msg}  saved={self.stats_save}")
+            logger.info(f"DB stats: {stats()}")
+            return 0
+
+        # ★ここで初めて camoufox を import する (dga-only の VPS には入っていない)
+        from camoufox.sync_api import Camoufox  # type: ignore
 
         with Camoufox(**launch_opts) as ctx:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -630,57 +716,7 @@ class Collector:
             except Exception as e:
                 logger.warning(f"[qpid-scan] initial scan failed: {e}")
 
-            last_report = time.time()
-            last_db_stats = time.time()
-            # WS 受信ウォッチドッグ: 一定時間 msgs が増えなければ self-restart させる.
-            # dga WS の disconnect / Stake セッション失効で受信停止しても収集器は
-            # プロセスだけ生きている状態になるため, systemd Restart=always に任せて
-            # クリーン再起動するほうが確実.
-            ws_watchdog_stale_sec = int(os.getenv("BACOPY_COLLECTOR_WS_STALE_SEC", "180"))  # 3 min
-            last_msg_check_at = time.time()
-            last_msg_count = self.stats_msg
-            last_msg_change_at = time.time()
-            while not self.stop_flag:
-                # page.wait_for_timeout yields to Playwright event loop, letting
-                # WebSocket frame handlers fire in real time (time.sleep would block them)
-                page.wait_for_timeout(1000)
-                now = time.time()
-                if now - last_report >= report_interval:
-                    elapsed = int(now - start_ts)
-                    logger.info(
-                        f"[STATUS] elapsed={elapsed}s  msgs={self.stats_msg}  "
-                        f"shuffles={self.stats_shuffle}  saved={self.stats_save}  "
-                        f"tables={len(self.buffers)}"
-                    )
-                    last_report = now
-
-                # WS watchdog: 30s おきに msg 増分を check, stale なら exit(1) → systemd が restart.
-                if now - last_msg_check_at >= 30.0:
-                    if self.stats_msg > last_msg_count:
-                        last_msg_count = self.stats_msg
-                        last_msg_change_at = now
-                    last_msg_check_at = now
-                    silence = now - last_msg_change_at
-                    if silence >= ws_watchdog_stale_sec:
-                        logger.error(
-                            f"[ws-watchdog] no new msgs for {int(silence)}s "
-                            f"(stats_msg={self.stats_msg}). Triggering self-restart via exit(1)."
-                        )
-                        # 既存の snapshot push 完遂を待たず exit (systemd が Restart=always で拾う).
-                        os._exit(1)
-                if now - last_db_stats >= 300:
-                    s = stats()
-                    logger.info(f"[DB] {s}")
-                    last_db_stats = now
-                if self.qpid_scan_interval_sec > 0 and now - self.last_qpid_scan_at >= self.qpid_scan_interval_sec:
-                    try:
-                        self._scan_lobby_qpid(page)
-                    except Exception as e:
-                        logger.warning(f"[qpid-scan] scan failed: {e}")
-                    self.last_qpid_scan_at = now
-                if duration and (now - start_ts) >= duration:
-                    logger.info(f"Duration {duration}s reached, stopping.")
-                    break
+            self._monitor_loop(page, start_ts, report_interval, duration)
 
         logger.info(f"Final: msgs={self.stats_msg}  saved={self.stats_save}")
         logger.info(f"DB stats: {stats()}")
