@@ -801,7 +801,7 @@ const DEFAULT_SETTINGS = {
   dga_auto_bet: false,
   dga_regular_only: true,
 };
-const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small06', 'small1', 'small14', 'small2', 'small24', 'small6', 'small10', 'small30', 'player02', 'player04', 'player1', 'player2', 'player3', 'kelly', 'dual_line', 'dual_line_assist', 'dual_line_auto', 'dual_line_auto_follow']);
+const ALLOWED_BET_MODES = new Set(['flat_1usd', 'seq_user10', 'newseq', 'newseq30', 'small3', 'small02', 'small06', 'small1', 'small14', 'small2', 'small24', 'small6', 'small10', 'small30', 'player02', 'player04', 'player1', 'player2', 'player3', 'kelly', 'martingale', 'grand_martingale', 'dalembert', 'dual_line', 'dual_line_assist', 'dual_line_auto', 'dual_line_auto_follow']);
 
 function normalizeBetMode(mode) {
   return ALLOWED_BET_MODES.has(mode) ? mode : 'flat_1usd';
@@ -986,6 +986,23 @@ async function _applyMoneyModeProfile() {
   const allowed = prof.moneyModes;
   if (allowed === null || allowed === undefined) return;  // 絞り込みなし
   _allowedMoneyModes = allowed;
+
+  // ★BET MODE セレクトも絞る。
+  //   GUI には資金管理の経路が2系統ある:
+  //     dual-line (梶原)        … --money-mode  → dual_line_money.BetManager
+  //     executor-pragmatic (田辺) … --bet-mode   → Seq7Session
+  //   田辺チームは後者なので、inputBetMode 側を3方式だけにしないと意味がない。
+  const bm = $('#inputBetMode');
+  if (bm && allowed.length) {
+    Array.from(bm.options).forEach((o) => {
+      o.hidden = !allowed.includes(o.value);
+      o.disabled = o.hidden;
+    });
+    if (!allowed.includes(bm.value)) {
+      bm.value = allowed[0];
+      try { bm.dispatchEvent(new Event('change')); } catch (_) {}
+    }
+  }
 
   // 詳細セレクト (flat/martingale/grand_martingale/dalembert/bet123) を絞る
   const fv = $('#inputFlatVariant');

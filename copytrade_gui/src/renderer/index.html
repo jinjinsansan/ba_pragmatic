@@ -380,6 +380,12 @@
               <option value="dual_line">デュアルラインアシスト</option>
               <option value="dual_line_auto">デュアルラインオート</option>
               <option value="dual_line_auto_follow">デュアルラインオート追従</option>
+              <!-- ミラー(マスター追随)モード用の進行 (2026-09-12・田辺チーム向け).
+                   マスター画面が side を決め、金額はここの設定で決まる。
+                   ★これらを選ぶとエンジンは executor-pragmatic で起動する。 -->
+              <option value="dalembert">ミラー — ダランベール（±1ユニット: 1,2,3,4...）</option>
+              <option value="martingale">ミラー — マーチンゲール（倍がけ: 1,2,4,8,16...）</option>
+              <option value="grand_martingale">ミラー — グランドマーチンゲール（2倍+1: 1,3,7,15,31...）</option>
               <!-- 旧モード(レガシー)は廃止。コード互換のため値のみコメントアウトで保持:
               <option value="flat_1usd">TEST — $1 fixed</option>
               <option value="seq_user10">SEQ — $10 start (10,20,30...)</option>

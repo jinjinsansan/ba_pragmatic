@@ -52,7 +52,37 @@ BET_MODE_SMALL3 = "small3"    # SMALL SEQ $3スタート (3,5,7,...,1000)
 BET_MODE_SMALL02 = "small02"  # SMALL SEQ $0.20スタート (0.2,0.4,...,66.6)
 BET_MODE_SMALL1 = "small1"    # SMALL SEQ $1スタート (SMALL3派生, 四捨五入, 最大333)
 BET_MODE_SMALL6 = "small6"    # SMALL SEQ $6スタート (SMALL3派生, 最大2000)
-BET_MODE_COUNTER_SEQ7 = "counter_seq7"  # legacy
+BET_MODE_COUNTER_SEQ7 = "counter_seq7"
+
+# ── 連敗ベースの進行 (2026-09-12・田辺チーム向け) ──────────────────────
+# 従来の SEQ 系は「7ターン1セットの勝ち越し/負け越し」で段を動かすが、
+# こちらは 1手ごとの勝敗で段を動かす別系統。マスター画面の人間が side を決め、
+# 金額は受け子側のこの設定で決まる、という運用のために追加した。
+BET_MODE_MARTINGALE = "martingale"
+BET_MODE_GRAND_MARTINGALE = "grand_martingale"
+BET_MODE_DALEMBERT = "dalembert"
+PROGRESSION_MODES = (BET_MODE_MARTINGALE, BET_MODE_GRAND_MARTINGALE, BET_MODE_DALEMBERT)
+
+
+def _progression_unit(mode: str, loss_count: int) -> float:
+    """連敗数から「単位の倍率」を返す。chip_base を掛ける前の値。
+
+    martingale       : 1, 2, 4, 8, 16 ...        = 2^n
+    grand_martingale : 1, 3, 7, 15, 31 ...       = 2^(n+1) - 1
+    dalembert        : 1, 2, 3, 4, 5 ...         = n + 1
+
+    ★dual_line_money.BetManager と同じ式。片方だけ直すと乖離するので、
+      変更時は必ず両方を揃えること。
+    """
+    n = max(0, int(loss_count))
+    m = str(mode or "").strip().lower()
+    if m == BET_MODE_MARTINGALE:
+        return float(2 ** n)
+    if m == BET_MODE_GRAND_MARTINGALE:
+        return float(2 ** (n + 1) - 1)
+    if m == BET_MODE_DALEMBERT:
+        return float(n + 1)
+    return 1.0  # legacy
 
 SEQ_USER10 = [
     10, 20, 30, 40, 50,
@@ -114,6 +144,10 @@ def _seq_for_bet_mode(mode: str) -> list:
     if m == BET_MODE_SMALL6:
         return list(SEQ_SMALL6)
     if m == BET_MODE_FLAT_1USD:
+        return [1]
+    if m in PROGRESSION_MODES:
+        # 連敗進行系は SEQ 配列を使わない (bet_unit() が倍率を直接計算する)。
+        # 状態ファイルの互換のためダミーを返す。
         return [1]
     return list(SEQ_COUNTER)  # legacy fallback
 
@@ -391,6 +425,9 @@ class Seq7Session:
         self.profit_session_limit = int(profit_session_limit or 0)
 
         self.tracker = MaruBatsuTracker(chip_base=self.chip_base, seq=self.seq, set_size=7)
+        # 連敗ベースの進行 (martingale / grand_martingale / dalembert) 用。
+        # SEQ系では使わない。tracker とは独立に持つ。
+        self.loss_count = 0
         self.session_count = 0
         self.profit_sessions = 0
 
@@ -482,6 +519,7 @@ class Seq7Session:
 
             turns = data.get("current_turns") or []
             self.tracker.current_turns = list(turns)
+            self.loss_count = int(data.get("loss_count", 0) or 0)
             self.tracker.total_o = int(data.get("total_o", 0) or 0)
             self.tracker.total_x = int(data.get("total_x", 0) or 0)
             self.state_load_ok_count += 1
@@ -525,6 +563,7 @@ class Seq7Session:
                 "prev_daily_bet_pnl_date": self.prev_daily_bet_pnl_date,
                 "sets": [s.__dict__ for s in self.tracker.sets[-200:]],
                 "current_turns": list(self.tracker.current_turns),
+                "loss_count": int(self.loss_count),
                 "total_o": self.tracker.total_o,
                 "total_x": self.tracker.total_x,
                 "saved_at": time.time(),
@@ -573,6 +612,9 @@ class Seq7Session:
         self._save_state()
 
     def bet_unit(self) -> float:
+        # 連敗ベースの進行 (martingale / grand_martingale / dalembert)
+        if self.bet_mode in PROGRESSION_MODES:
+            return _progression_unit(self.bet_mode, self.loss_count)
         # float対応: SMALL02など小数SEQでint()截断を防ぐ
         idx = self.tracker.current_unit_idx
         unit = self.seq[min(idx, len(self.seq) - 1)]
@@ -693,6 +735,17 @@ class Seq7Session:
         pre_turn_count = len(pre_turns)
         pre_wins = sum(1 for t in pre_turns if t == "O")
         pre_losses = pre_turn_count - pre_wins
+
+        # 連敗ベースの進行: 負けで段を上げ、勝ちで戻す。
+        # ★dalembert は 1段だけ下げる (下限0)。martingale 系は 0 に戻す。
+        if self.bet_mode in PROGRESSION_MODES:
+            if won:
+                if self.bet_mode == BET_MODE_DALEMBERT:
+                    self.loss_count = max(0, self.loss_count - 1)
+                else:
+                    self.loss_count = 0
+            else:
+                self.loss_count += 1
 
         completed_set = self.tracker.add_result("player" if won else "banker")
         self._save_state()
@@ -4248,7 +4301,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument(
         "--bet-mode",
         default=os.getenv("BACOPY_BET_MODE", BET_MODE_FLAT_1USD),
-        help="BET mode: flat_1usd | seq_user10 | newseq | newseq30 | small3 | small02 | small1 | small6 (legacy: counter_seq7)",
+        help=("BET mode. SEQ系: flat_1usd | seq_user10 | newseq | newseq30 | small3 | small02 | small1 | small6 "
+              "(legacy: counter_seq7) / 連敗進行系: martingale | grand_martingale | dalembert "
+              "(進行系は --chip-base または --flat-amount が開始額になる)"),
     )
     ap.add_argument("--flat-amount", type=float, default=1.0)
     ap.add_argument("--chip-base", type=float, default=0.0, help="Base bet ($) for SEQ7 (falls back to --flat-amount)")
