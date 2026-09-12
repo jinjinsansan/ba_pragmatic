@@ -276,7 +276,15 @@ kill <その python の PID>        # wrapper が約20秒で再起動する
       - ⚠️ **パスワードハッシュは返らない**(Supabase側で秘匿)。再開時はユーザー再作成が必要
       - ⚠️ `invite_codes` テーブルは**存在しなかった** = 8/17のマイグレーションSQLは未適用のまま停止した
       - ⚠️ メールアドレスを含むため **git禁止**。金庫のみ
-- [ ] **B: バックアップHDDへのミラー** — オーナー指示により後日(2026-08-22時点で未了)。
+- [x] **B: バックアップHDDへのミラー** — **完了 (2026-08-22 20:5x)**。方式(a)=アーカイブ442MBのみコピー。
+      `B:\V\_ARCHIVE_BACOPY_SHUTDOWN_20260822\` へ robocopy(8秒)→ **79/79ファイル ハッシュ完全一致**
+      (V: と B: を個別に sha256 して突合)+ 各 `SHA256SUMS.txt` 照合も B: 側で再実行し
+      data 27/27・supabase 33/33・lockdown 4/4・bafather 1/1 すべて OK。
+      **これで data/secrets/supabase の単一障害点は解消**。フル同期(`backup_vault.ps1` 525GB)は未実施。
+      ★B: の実体は `\Device\Harddisk2\Partition1`。Windows が **D:** の文字を割り当てるので
+      **エクスプローラーで D: を開かない**(「フォーマットしますか?」= 押すとバックアップ全損)。
+
+  <details><summary>旧記載(未了時の手順・参考)</summary>
 
       **★これが残っている間のリスク**: コードは 作業ツリー / V: / GitHub の三重化済みだが、
       **`data/` 440MB・`secrets/`・`supabase/` は V: の1箇所にしか無い**
@@ -299,6 +307,7 @@ kill <その python の PID>        # wrapper が約20秒で再起動する
       - `/R:1 /W:1` なので、他プロセスが掴んでいるファイルは1秒で諦めてスキップされる
       - 終了コード 8 以上が失敗。ログは `%TEMP%\backup_vault_*.log`
       - **終わったら B: をアンマウント**(常時マウントはランサムウェア・誤操作がバックアップまで届く)
+  </details>
 - [x] **`_vps_prod/` と本ファイルの git commit + push** — 完了 (`d1057b0` + `2e2bacc`)。
       240/240 ファイルが `origin/feat/engine-heartbeat` に反映済み。
       秘密情報スキャン実施済み=漏洩0件(`TR7NH...` は USDT-TRC20 の公式コントラクトで秘密ではない)
@@ -343,3 +352,80 @@ kill <その python の PID>        # wrapper が約20秒で再起動する
 ---
 
 *作成: 2026-08-22 / 保全作業と同一セッション*
+
+---
+
+## 9. ★追記 (2026-08-22 20:33) — 「.env を空にした」が効かない経路があった
+
+§4-4 (b) で「全宛先を空にしたので完全停止」と書いたが、**結果/決済チャンネルへの配信は
+その後も 2分おきに継続していた**(オーナーが気付いて発覚)。
+
+### 機序
+
+```
+run_dual_line_bot.sh  (PID 1597294 / 8月17日 11:52 起動 ← 一度も再起動していない)
+  └─ set -a; source /opt/bacopy/.env ; set +a     ← ★while ループの外。起動時に1回だけ
+      └─ while true: python dual_line_pragmatic_bot.py
+```
+
+1. ラッパーは **8/17 の値**をシェル環境に取り込んだまま常駐していた
+2. 19:35 に `.env` を空にし、19:36 に **python の子プロセスだけ**を再起動した
+3. 子プロセスは**ラッパーの古い環境を継承**する → `DUAL_LINE_RESULT_CHAT_ID=-1003981572727,-1004424762109` が生きたまま
+4. bot 側は `load_dotenv(_env_path, override=False)` — **既に環境にある値が .env より優先**。
+   空の `.env` では上書きできない
+
+証跡: `/proc/3392407/environ` に旧 chat_id が残存。ログ上は
+`_send_telegram`(メイン系)= `send skipped` 245件で停止できていたのに、
+`_send_telegram_result` 経由の `[V4-SIGNAL-TELEGRAM] firing #35939` は 20:30 まで継続していた。
+
+### 教訓(再開時にも同じ罠を踏む)
+
+- **`.env` を書き換えたら、それを source した「親」を再起動しないと反映されない。**
+  子プロセスの再起動では不十分。`/proc/<pid>/environ` で実際に確認すること
+- `load_dotenv(..., override=False)` は **継承環境が勝つ**。「.env が正」だと思い込まない
+- 「全スクリプト走査でハードコード chat_id なし」は正しかったが、**問題はハードコードではなく
+  プロセスのメモリ上に残った環境変数**だった。走査対象がファイルだけでは検出できない
+- 検証は「設定を変えた」ではなく **「送信が止まったログ」** で確認する
+
+### 20:33 時点で実施した完全停止
+
+| 対象 | 操作 | 備考 |
+|---|---|---|
+| `run_dual_line_bot.sh` (1597294) | kill | ★先にこれ。python だけ殺すと20秒後に古い環境で復活する |
+| `dual_line_freeze_watchdog.py` (1597297) | kill | `pkill -f` で bot を殺してラッパーに再起動させる作りなので先に停止 |
+| `dual_line_pragmatic_bot.py` (3392407) + playwright driver | kill | SIGTERM で正常終了。`Final: signals=16473 resolved=16465 pnl=$-3095.00` |
+| `/tmp/dual_line_bot.lock` / `..._freeze_watchdog.lock` | 削除 | |
+| root crontab 8本 / laplace crontab 4本 | `crontab -r` | バックアップ= VPS `/root/crontab_{root,laplace}_backup_20260822_fullstop.txt`。★`@reboot run_dual_line_bot.sh` があったので、消さないと再起動で復活していた |
+| systemd 5本 (bacopy-api / card-collector / hourly-stats-watch / pragmatic-collector / laplace-api) | stop + **disable** | disable まで実施済み=再起動しても上がらない |
+| **孤児 uvicorn (1377594)** | kill | ★**systemd 管理外**。5/20 に `nohup ... &` で手動起動された `laplace_api:app --port 8765`。受け子がポーリングする VPS API 本体。`systemctl stop` だけでは絶対に止まらない |
+
+停止確認: 8765 / 8010 ともに LISTEN なし、camoufox / playwright 残存プロセスなし。
+
+**★`systemctl` と `crontab` だけ見ても全部は止まらない。** 手動 `nohup` 起動の孤児が
+3ヶ月間走っていた。再開時も「起動方法が3種類ある」(systemd / cron / 手動nohup)前提で見ること。
+
+### 9-2. デスクトップクラウド bafather (162.43.83.54) の停止 — 20:38
+
+接続: `ssh -i ~/.ssh/laplace_vps Administrator@162.43.83.54`(Windows Server 2022)。
+★SSH越しの PowerShell は **Base64 EncodedCommand** で渡すこと(`|` や `"` がエスケープで壊れる)。
+
+停止前の状態: **GUI/engine(electron)は既に動いていなかった**。生きていたのは以下:
+
+| 対象 | 状態 | 操作 |
+|---|---|---|
+| タスク `bacopy_watchdog` | Running | Stop + **Disable** ★これが GUI を再起動させる本体 |
+| タスク `BACOPY-SupportTunnel` | Running | Stop + **Disable**(VPS が落ちた今は無意味) |
+| タスク `bacopy_gui_start` | Ready | **Disable**(ログオン/起動時トリガ) |
+| `chrome` 13プロセス(8/19 21:19 起動) | 稼働 | kill(賭け用CDPブラウザ) |
+| `ssh.exe`(トンネルクライアント) | 稼働 | タスク停止に伴い終了 |
+
+停止確認: chrome 0 / ssh クライアント 0 / electron・python・node 0 / タスク3本とも `Disabled`。
+9222・8010・8765 の LISTEN なし。
+
+★**再開時は3つのタスクを `Enable-ScheduledTask` で戻す**(`bacopy_watchdog` `bacopy_gui_start`
+`BACOPY-SupportTunnel`)。Disable のままだと「GUIが自動で上がらない」原因になり、
+プロセスを直接起動しても watchdog が居ないので落ちたら復旧しない。
+なお sshd は落としていない(落とすと自分の接続経路が消えるため)。
+
+**これで VPS・デスクトップクラウドとも稼働ゼロ。** 残タスクは §7 のとおり
+①B:ミラー → ②鍵の失効 → ③フォーマット → ④解約(+課金の最終精算)。
