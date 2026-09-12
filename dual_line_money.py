@@ -90,6 +90,7 @@ BET_MODES = {
     "small10": "SMALL SEQ $10 start",
     "small30": "SMALL SEQ $30 start (ex-NewSEQ30)",
     "martingale": "pure Martingale",
+    "grand_martingale": "Grand Martingale (double + 1 unit on loss)",
     "dalembert": "D'Alembert (+/-1 unit)",
     "bet123": "1-2-3 method (1/2/3 units cycle)",
 }
@@ -208,6 +209,20 @@ class BetManager:
                     return 0.0
                 amount = min(amount, remaining_loss)
             return max(amount, 0.0)
+        elif self.mode == "grand_martingale":
+            # Grand Martingale: 負けるたびに「2倍 + 1単位」。
+            #   u -> 2u+u=3u -> 2(3u)+u=7u -> 15u ... = u * (2^(n+1) - 1)
+            # ★純マーチンゲールより増え方が急。同じ連敗数でも必要資金は約2倍になる。
+            #   martingale_max_bet と loss_cut の設定は必須と考えること。
+            amount = self.unit * (2 ** (self.loss_count + 1) - 1)
+            if self.martingale_max_bet > 0:
+                amount = min(amount, self.martingale_max_bet)
+            if self.loss_cut > 0:
+                remaining_loss = self.loss_cut + self.session_pnl
+                if remaining_loss <= 0:
+                    return 0.0
+                amount = min(amount, remaining_loss)
+            return max(amount, 0.0)
         elif self.mode == "dalembert":
             # D'Alembert: 負けで +1 unit, 勝ちで -1 unit。loss_count を段数に使う。
             # 例 unit=2: 2 -> 4 -> 6 -> 8 -> (勝) 6 -> 4 ...
@@ -271,7 +286,7 @@ class BetManager:
                 self._seq7_tracker.add_result("player")
                 self.seq_level = self._seq7_tracker.current_unit_idx
             # 従来SEQ: 勝ったら先頭に戻る
-            elif self.mode not in ("flat", "martingale", "dalembert", "bet123"):
+            elif self.mode not in ("flat", "martingale", "grand_martingale", "dalembert", "bet123"):
                 self.seq_level = 0
             # Martingale: リセット / D'Alembert: 1段下げる(下限0)
             if self.mode == "dalembert":
@@ -286,10 +301,10 @@ class BetManager:
                 self._seq7_tracker.add_result("banker")
                 self.seq_level = self._seq7_tracker.current_unit_idx
             # 従来SEQ: レベル進行
-            elif self.mode not in ("flat", "martingale", "dalembert", "bet123"):
+            elif self.mode not in ("flat", "martingale", "grand_martingale", "dalembert", "bet123"):
                 self.seq_level = min(self.seq_level + 1, len(self.current_seq) - 1)
             # Martingale / D'Alembert: 1段上げる
-            if self.mode in ("martingale", "dalembert"):
+            if self.mode in ("martingale", "grand_martingale", "dalembert"):
                 self.loss_count += 1
 
         # 1-2-3打法: 1回目→必ず2単位 / 2回目→1回目と同結果なら3単位・割れたらリセット / 3回目→必ずリセット

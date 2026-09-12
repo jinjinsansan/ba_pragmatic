@@ -1808,9 +1808,21 @@ function updateButtonsGating(){
 
 function updateButtonVisibility(){
   const anyT = _state.executors.some(e=>e.caps&&e.caps.allow_tie);
-  // BANKER は常時表示 (PLAYER と同列の基本ボタン). TIE のみオプション表示.
+  // BANKER は常時表示 (PLAYER と同列の基本ボタン).
   document.body.classList.toggle('show-bt', true);  // BANKER 常時表示なのでレイアウト幅確保.
-  document.getElementById('btnT').style.display = anyT?'':'none';
+  // TIE: 2026-09-12 から「常に表示」する (田辺チームの運用で B/P/T の3択が要るため).
+  // ただし実行できる受け子が居ない間は押せないようにする。
+  // ★TIE の BETコードは未確定。B=10 / P=11 は実測値だが TIE は既定 "2" の推測値のまま。
+  //   誤ったコードで送ると意図しない側に賭ける恐れがあるため、受け子側は
+  //   --allow-tie を付けた時だけ TIE を実行する (caps.allow_tie で申告される)。
+  //   確定させるには受け子1台で sniff_pragmatic_bet_ws.py を回して
+  //   BACOPY_PRAGMATIC_BC_TIE を実測すること。
+  const bt = document.getElementById('btnT');
+  bt.style.display = '';
+  bt.disabled = !anyT;
+  bt.title = anyT
+    ? '全GUIにTIE BET'
+    : 'TIE を実行できる受け子が接続されていません (受け子側の --allow-tie と BETコードの実測が必要)';
 }
 
 // ---------- シグナル送信 ----------
