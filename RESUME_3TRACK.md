@@ -17,7 +17,8 @@
 | 1 | **本ファイル** | 現在地・完了/未完了・オーナー待ち・次の一手 |
 | 2 | `REVIVAL_PLAN_3TRACK_2026-09-12.md` | **設計と全体計画**(なぜそうするか) |
 | 3 | `DUAL_LINE_VARIANTS.md` | ★3系統の `dual_line_*.py` のどれが正か(SHA256付き) |
-| 4 | `PHASE0_DGA_BASELINE_2026-09-12.md` | dga実測の基準値・**60卓の qpid 対応表** |
+| 4 | **`MIRROR_BROWSER_PATH_2026-09-12.md`** | ★**実機テスト前に必読**。ミラー版が使うブラウザが Camoufox だと判明した件 |
+| 5 | `PHASE0_DGA_BASELINE_2026-09-12.md` | dga実測の基準値・**60卓の qpid 対応表** |
 | 5 | `STAKE_MIRRORS_2026-09-12.txt` | Stake ミラー121本の一覧 |
 | 6 | `RESTART_KIT_2026-08-22.md` | 停止時の全体像・金庫の中身・復元手順 |
 | 7 | `CREDENTIAL_REVOCATION_CHECKLIST_2026-08-22.md` | 旧鍵の失効(🔴6件が未着手) |
@@ -304,6 +305,69 @@ mirror / thin 用の spec を分ける必要がある。
 
 ★検証は**文字列検索ではなく実行**で行う(`SEQ_CUSTOM_START` の教訓)。
 
+### 3-10. ★ミラー版のブラウザ経路が想定と違った (2026-09-12)
+
+`MIRROR_REVIVAL_PLAN_2026-08-28.md` は「engine = `bacopy_executor_pragmatic_ws_live.py` が
+**実Chrome を :9222 CDP接続**」としていたが、**実測では誤り**。
+
+```
+grep -c                                 connect_over_cdp   chrome_attach
+  bacopy_executor_pragmatic_ws_live.py         0                0
+  dual_line_pragmatic_bot.py                   1               12
+```
+
+`executor-pragmatic` がミラー実行機なのは正しい(`api/decisions` を8箇所で参照、
+`SWITCH_TABLE` の割り込み処理あり)。**だがブラウザは Camoufox を自前で起動する。**
+`main()` が無条件に `from camoufox.sync_api import Camoufox` する(4356行)。
+
+★`build_staging/.env` の `BACOPY_BROWSER=chrome_attach` は
+`executor-pragmatic` では**読まれない**(文字列がファイル内に存在しない)。
+
+**なぜ気付かなかったか**: 8/28 と 9/12 の「一周実証」はどちらも
+`bacopy_executor_dryrun.py` で行った。これは**ブラウザに触れない**ツールなので、
+BET の実行経路は未検証のままだった。
+→ **「配管は通った」と「BETできる」は別**。
+
+**明日のリスク**: 2026-08-03 に VPS の headless Camoufox が Cloudflare に弾かれた
+前科がある。明日は headful なので通る見込みはあるが**確証は無い**。
+失敗時の選択肢3案は `MIRROR_BROWSER_PATH_2026-09-12.md` §4。本命は
+**`dual_line_pragmatic_bot.py` の chrome_attach 実装を移植する案**
+(受け子の実Chromeは 8/03 に無傷だったと実証済みで、Cloudflare 耐性が高い)。
+
+### 3-11. ミラー版 engine のビルド完了 (2026-09-12)
+
+```
+copytrade_gui/build_staging/engine_variants/
+    bacopy_engine_full.exe     66 MB   ← 梶原チーム用 (既存)
+    bacopy_engine_mirror.exe  214 MB   ← 田辺チーム用 (sha256 5a06cefc82b5ca6b)
+```
+
+★**検証は実行で行った**:
+
+```
+ミラー版  dual-line → ModuleNotFoundError: No module named 'dual_line_pragmatic_bot'
+full 版   dual-line → import は通り Chrome(:9222) へ接続を試みて失敗
+```
+
+→ 梶原ロジックがミラー版に**物理的に存在しない**ことを確認。無効化ではなく不在。
+
+★**`--help` では検証にならない。** argparse が遅延importの**前**に処理して exit 0 するので、
+除外できていなくても成功に見える。**importを実際に踏ませる引数**で試すこと。
+
+★**`build_staging/engine` は electron-builder が丸ごと同梱する。**
+full 版を置いたまま田辺版を焼くと梶原ロジックが流出する。
+→ `scripts/stage_engine.ps1 -Variant mirror|full` で**必ず1本だけ**置いてから梱包する。
+  engine の名前は `main.js` が `bacopy_engine.exe` で固定している(4箇所)ので、
+  どの版でもこの名前にリネームして置く必要がある。
+
+**インストーラ生成の手順**
+```powershell
+powershell -File scripts/stage_engine.ps1 -Variant mirror
+cd copytrade_gui
+node scripts/provision-user-build.js <...>   # BACOPY_MONEY_MODES 等を .env へ
+npm run build:installer
+```
+
 ### 3-5. 3系統問題 — ★当初の方針が誤りだったので変更した
 
 計画書には「直下版を `_archive_regression/` へ隔離」と書いたが、**実行すると壊れる**:
@@ -324,22 +388,36 @@ mirror / thin 用の spec を分ける必要がある。
 
 ## 4. ⬜ 未着手の作業
 
-### 4-1. 次の一手 — `GET /api/origin`(オリジン配信 + フェイルオーバー)
+### 4-1. 次の一手 — 明日 (2026-09-13) の実機テスト
 
-**①②③ 全チームで使う共通部品。** VPS が無くても実装だけは進む。
+**Xserver のデスクトップクラウドを契約 → 田辺版受け子を設置 → マスターから実際に動かす。**
 
-理由: ミラーは焼かれる度にローテーションが要る。オリジンを exe に焼くと
-**焼かれる度にインストーラ11本を作り直す**羽目になる。
+★**最初に確かめるのは Camoufox が Stake にログインできるか**(§3-10)。
+ここが通らなければ BET まで到達しない。順序と失敗時の3案は
+`MIRROR_BROWSER_PATH_2026-09-12.md` §3〜§4。
 
-| 要件 | 内容 |
+| # | 確認すること |
 |---|---|
-| マスターAPI | `GET /api/origin` を追加。現在のオリジンと候補リストを返す |
-| 受け子 | 起動時と定期的に取得。**451 を検知したら次の候補へ自動切替** |
-| ★切替直後 | **cookie はドメイン単位なので未ログインになる**。UIで通知し再ログイン導線を出す |
-| VPS 生存監視 | 候補を定期的に叩き 451 を落とす cron(旧 `_vps_block_watch.py` が近い) |
-| 一覧の供給元 | `https://playstake.io` を定期取得(Stake 自身が更新してくれる) |
+| 1 | Camoufox が起動し、ミラードメインに**ログインできるか** |
+| 2 | Cloudflare の JSチャレンジを通過するか |
+| 3 | ロビーから卓へ移動できるか (SWITCH_TABLE) |
+| 4 | `casinoId` が `ppcds00000003709` と一致するか |
+| 5 | **$0.20 の BET が受理されるか** |
+| 6 | ack と result がマスターへ返るか |
 
-受け入れ条件: オリジンをサーバー側で変えるだけで、**再ビルド無しに**受け子の接続先が変わること。
+**設置に要るもの**
+
+| 項目 | 値 |
+|---|---|
+| マスター | `https://master.bafather.uk` (`/master` のPWは `tanabe`) |
+| API キー | `ssh -i ~/.ssh/bacopy_vps_2026 root@160.251.211.181 'grep BACOPY_API_KEY /opt/bacopy/.env'` |
+| engine | `copytrade_gui/build_staging/engine/bacopy_engine_mirror.exe` |
+| `.env` | `BACOPY_STANDALONE=1` / `BACOPY_MONEY_MODES=dalembert,martingale,grand_martingale` / `BACOPY_API_URL` / `BACOPY_API_KEY` / `BACOPY_EXECUTOR_ID` |
+| オリジン | ★`.env` に焼かなくてよい。マスターの `/api/origin` が配る(現在 `https://stake.ac`) |
+
+★**Stake アカウントのログインが別途要る**。Camoufox のプロファイル
+(`auth_state/`)に手動で一度ログインしておくと、チャレンジを毎回通す必要がなくなる
+(`MIRROR_BROWSER_PATH_2026-09-12.md` §4 の案A)。
 
 ### 4-2. 以降(Phase 順)
 
